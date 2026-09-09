@@ -1,21 +1,23 @@
-# Core agent stack
-strands-agents[a2a]>=1.0.0
-strands-agents-tools>=0.1.0
-
-# AgentCore runtime + observability
-bedrock-agentcore>=0.1.0
-aws-opentelemetry-distro>=0.10.1
+# Agent stack -- PINNED. Every API path in CLAUDE.md was verified against these
+# exact versions on 10 Sep 2026. Four machines drifting to different minors
+# mid-sprint is a debugging session nobody has time for. Raise it in the group
+# before bumping.
+strands-agents[a2a]==1.55.0
+strands-agents-tools==0.8.8
+bedrock-agentcore==1.22.0
+aws-opentelemetry-distro==0.19.0
 
 # AWS
-boto3>=1.35.0
+boto3>=1.43.90
 
-# Scoring (brute-force cosine; do NOT add opensearch/faiss)
-numpy>=1.26.0
+# Scoring: brute-force cosine over a few hundred claims.
+# Do NOT add opensearch, faiss or pgvector -- see the rejected-alternatives note.
+numpy>=2.5.3
 
 # Config + data
-pyyaml>=6.0
-python-dotenv>=1.0.0
+pyyaml>=6.0.3
+python-dotenv>=1.2.3
 
 # Dev
-pytest>=8.0.0
-ruff>=0.6.0
+pytest>=9.1.1
+ruff>=0.16.6

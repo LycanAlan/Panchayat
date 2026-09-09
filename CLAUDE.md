@@ -72,7 +72,14 @@ quiet street it invokes no model for weeks.
 
 ## Verified API surface
 
-Checked against current docs. Copy these shapes rather than recalling them.
+Checked against the docs **and against the installed packages** on 10 Sep 2026:
+`strands-agents 1.55.0`, `strands-agents-tools 0.8.8`, `bedrock-agentcore 1.22.0`.
+Every import below was executed, not remembered. Versions are pinned in
+`requirements.txt` -- raise it in the group before bumping.
+
+Note `Swarm` takes keyword-only arguments after `nodes`.
+
+Copy these shapes rather than recalling them.
 
 ```python
 from strands.multiagent import GraphBuilder, Swarm
