@@ -76,10 +76,11 @@ The stream is what triggers Pattern Watch. Kartik needs it on from the start.
 
 ### 1.5 GitHub
 
-- [ ] Create a **private** repo `panchayat` under your account
+- [x] Repo created: https://github.com/LycanAlan/Panchayat (private)
 - [ ] Add Kartik, Alakshendra, Raghav as collaborators with write access
 - [ ] Push `main` (see §4)
-- [ ] Protect `main`: no direct pushes, PRs only, one approval
+- [x] Rulesets are not enforced on private free-plan repos, so the guard is
+      a version-controlled git hook instead. See 2.2.
 
 ---
 
@@ -94,15 +95,26 @@ The stream is what triggers Pattern Watch. Kartik needs it on from the start.
 | AWS CLI v2 | latest | `aws --version` |
 | Node | 18+ (Ali only, for the trace UI) | `node --version` |
 
-**AWS CLI is not installed on Ali's machine yet.** Windows:
-`winget install -e --id Amazon.AWSCLI` then reopen the terminal.
+Windows: `winget install -e --id Amazon.AWSCLI`, then **fully quit and reopen
+your editor** -- a new terminal tab inherits the old PATH.
 
 ### 2.2 Clone and install
 
+> **Windows: check which Python you are about to use.** If MSYS2, Git Bash or
+> Anaconda is on your PATH ahead of the real installer, `python -m venv` builds
+> a Unix-layout venv with `bin/` instead of `Scripts/`, and every command below
+> silently fails. Check with `py -0p`, then use the launcher explicitly.
+>
+> ```powershell
+> py -0p                 # lists every interpreter; pick the 3.12 under Programs\Python
+> py -3.12 -m venv .venv # use the launcher, not bare `python`
+> ```
+
 ```bash
-git clone https://github.com/<ali>/panchayat.git
-cd panchayat
-python -m venv .venv
+git clone https://github.com/LycanAlan/Panchayat.git
+cd Panchayat
+py -3.12 -m venv .venv     # Windows: use the launcher, see the note above
+# macOS/Linux: python3 -m venv .venv
 # Windows:  .venv\Scripts\activate
 # macOS:    source .venv/bin/activate
 pip install -r requirements.txt
