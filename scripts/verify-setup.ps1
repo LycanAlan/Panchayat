@@ -83,7 +83,25 @@ if ($identOk) {
     Check "bedrock reachable" ($models -match "^\d+$") "$models models visible" "check AmazonBedrockFullAccess on your IAM user"
 
     $titan = & aws bedrock list-foundation-models --region $region --profile $profile --query "modelSummaries[?contains(modelId,'titan-embed-text-v2')].modelId" --output text 2>&1
-    Check "titan embeddings" ($titan -match "titan-embed") "$titan" "Bedrock > Model access > enable Titan Text Embeddings V2 (Kartik is blocked without it)"
+    Check "titan listed" ($titan -match "titan-embed") "$titan" "Bedrock > Model access > enable Titan Text Embeddings V2 (Kartik is blocked without it)"
+
+    # Listing a model does NOT mean you can call it. A fresh account can list
+    # 123 models and invoke none of them. Only an actual invoke proves access.
+    $venvPy = Join-Path $repo ".venv\Scripts\python.exe"
+    if (Test-Path $venvPy) {
+        $probe = & $venvPy -c @"
+import boto3
+try:
+    boto3.Session(profile_name='panchayat', region_name='us-east-1').client('bedrock-runtime').converse(
+        modelId='us.amazon.nova-lite-v1:0',
+        messages=[{'role':'user','content':[{'text':'ok'}]}],
+        inferenceConfig={'maxTokens':5})
+    print('INVOKE_OK')
+except Exception as e:
+    print(type(e).__name__ + ': ' + str(e)[:120])
+"@ 2>&1
+        Check "model invocable" ($probe -match "INVOKE_OK") "$probe" "Bedrock > Model access > Modify. On a new account this can also be a verification hold -- wait and retry."
+    }
 }
 
 Write-Host ""
