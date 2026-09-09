@@ -107,6 +107,11 @@ python -m venv .venv
 # macOS:    source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+
+# enable the shared git hooks -- blocks commits to main, refuses staged AWS
+# keys and .env files. Run once, per machine.
+powershell -ExecutionPolicy Bypass -File scripts\setup-hooks.ps1
+# macOS / Linux:  sh scripts/setup-hooks.sh
 ```
 
 ### 2.3 Credentials

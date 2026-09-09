@@ -1,0 +1,85 @@
+#!/bin/sh
+#
+# Panchayat pre-commit guard.
+# Enabled per-machine by scripts/setup-hooks.ps1 (or .sh). Version controlled,
+# so fixing it once fixes it for everyone.
+#
+# Three jobs, in the order they will actually bite you:
+#   1. keep main clean         -- the rule branch protection would have enforced
+#   2. keep AWS keys out       -- the repo is private, so GitHub's secret
+#                                 scanning net does NOT apply to us
+#   3. keep .env out           -- belt and braces over .gitignore
+#
+# Escape hatch:  git commit --no-verify
+# Use it when you mean to. If you are reaching for it twice a day, say so in
+# the group -- the rule is probably wrong, not you.
+
+RED=''
+YEL=''
+GRN=''
+NC=''
+if [ -t 1 ]; then
+    RED='\033[0;31m'; YEL='\033[0;33m'; GRN='\033[0;32m'; NC='\033[0m'
+fi
+
+fail() {
+    printf "\n${RED}  COMMIT BLOCKED  ${NC}\n\n"
+    printf "%b\n" "$1"
+    printf "\n${YEL}Override (only if you mean it):${NC}  git commit --no-verify\n\n"
+    exit 1
+}
+
+# --------------------------------------------------------------- 1. branch
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$branch" = "main" ]; then
+    fail "You are committing directly to ${RED}main${NC}.
+
+Branch first, then open a PR:
+
+  ${GRN}git switch -c feat/<lane>-<thing>${NC}
+
+Lane prefixes:
+  ${YEL}feat/plat-*${NC}   Ali          platform, graph, deploy, trace UI
+  ${YEL}feat/mesh-*${NC}   Kartik       store, scoring, pattern watch, anti-abuse
+  ${YEL}feat/inst-*${NC}   Alakshendra  jurisdiction, remedy, institutions
+  ${YEL}feat/hh-*${NC}     Raghav       clock, intake, household, warden, watchdog
+
+Your work is not lost -- switching branches carries staged changes with you."
+fi
+
+# ----------------------------------------------------------------- 2. keys
+# Scan only what is staged, and only added lines.
+if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+.*AKIA[0-9A-Z]{16}'; then
+    fail "An ${RED}AWS access key ID${NC} (AKIA...) appears in your staged changes.
+
+This repo is private, so GitHub's secret scanning will NOT catch it for us.
+
+  ${GRN}git restore --staged <file>${NC}   then move the value into .env
+
+If it has already been pushed anywhere, rotate the key in IAM now -- do not
+just delete the line. Removing it from a file does not remove it from history."
+fi
+
+if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+.*aws_secret_access_key[[:space:]]*='; then
+    fail "An ${RED}AWS secret access key${NC} appears in your staged changes.
+Move it to .env or aws configure, then rotate the key in IAM."
+fi
+
+# ----------------------------------------------------------------- 3. .env
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+for f in $staged; do
+    case "$f" in
+        .env.example)
+            ;;
+        .env|.env.*|*/.env|*/.env.*)
+            fail "You are committing ${RED}$f${NC}.
+
+Real credentials live in .env, which is gitignored. Only .env.example belongs
+in the repo.
+
+  ${GRN}git restore --staged $f${NC}"
+            ;;
+    esac
+done
+
+exit 0
