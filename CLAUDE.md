@@ -1,0 +1,135 @@
+# Panchayat
+
+Read this before doing anything in this repo. It is the shared context for four
+people working in parallel, each with their own Claude session.
+
+## What we are building
+
+A neighbourhood agent mesh for the **AWS Agents for Humans hackathon, Good
+Neighbor track**, built on the **Strands Agents SDK** and deployed to **Bedrock
+AgentCore**. Context is urban India (Bengaluru, Ward 12).
+
+**One line:** every household reports alone; the street gets the leverage.
+
+**The problem is not discovery.** When the water fails, the building WhatsApp
+group knows in fifteen minutes. What nobody has is the stamina to file against
+the right body, track a statutory clock for eleven weeks, notice the day it
+breaches, and climb to the next authority. This is documented, not invented:
+Bengaluru citizens report BBMP tickets closed as "resolved" with no work done,
+and one pothole complaint was opened and re-closed at least fifteen times.
+
+**We do not fix pipes.** We pursue resolution. Never write "solves".
+
+## The shape: four execution paths, not one process
+
+This is the decision everything follows from, and the one most likely to be got
+wrong. Only ONE of the four things this system does is request-scoped.
+
+| Path | Trigger | Runs on |
+|---|---|---|
+| **Request** | a household reports | AgentCore Runtime, one Strands `Graph` |
+| **Ambient** | a claim row arrives | Lambda on DynamoDB Streams |
+| **Temporal** | a deadline passes | EventBridge Scheduler -> Lambda |
+| **Institutions** | called over A2A | separate processes, **their own state** |
+
+Do not try to model ambient or temporal work as Graph nodes. A Graph invocation
+cannot wait seven days or react to a row arriving.
+
+**Institutions must never touch our DynamoDB table.** Shared state would make
+the trust boundary decorative. That separation is the point of using A2A.
+
+## The spine runs at N=1
+
+The individual path is the product and it is complete on its own. Clustering is
+**ambient** -- it watches the claim stream and upgrades a case already in
+flight when a pattern crosses threshold. It never gates anything, and on a
+quiet street it invokes no model for weeks.
+
+`SIGNAL -> DELIBERATE -> REPRESENT -> ACT -> TRACK -> ESCALATE -> CLOSE`
+
+## Hard rules
+
+1. **Nothing calls `datetime.utcnow()`.** Take time from `core.clock.get_clock()`.
+   Both clock implementations drive the same Watchdog function. Never write
+   `if demo_mode:` inside the Watchdog -- if you want to, the clock is wrong.
+2. **`HouseholdPosition` never crosses the membrane.** Only `Claim` does, and
+   only the Warden emits one.
+3. **Jurisdiction is looked up, never generated.** A hallucinated authority
+   reproduces the exact failure we claim to fix. Every routing decision carries
+   a citation.
+4. **Agents draft, humans sign.** No filing against a public body is submitted
+   without a named person approving it. The liability lands on the household.
+5. **Every institutional action is idempotent.** A retrying Watchdog that files
+   twice produces a duplicate that reads as spam and gets both copies closed.
+6. **Merges are reversible.** Keep provenance in `case.merged_from`.
+7. **Aggregation points outward only.** Collective pressure may be assembled
+   against an institution, never against a person or household.
+8. **No autonomous police filing.** Read, track, advise only.
+9. **We promise minimisation, not anonymity.** Eight houses on a cross street
+   means any claim precise enough to file is precise enough to identify. What
+   we guarantee is that income, health, arrears and schooling never cross.
+10. **`core/types.py` is frozen.** Raise changes in the group before editing.
+
+## Verified API surface
+
+Checked against current docs. Copy these shapes rather than recalling them.
+
+```python
+from strands.multiagent import GraphBuilder, Swarm
+from strands.multiagent.a2a import A2AServer
+from strands.agent.a2a_agent import A2AAgent
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+
+builder = GraphBuilder()
+builder.add_node(agent, "id")
+builder.add_edge("src", "dst", condition=lambda state: ...)  # state.results["src"].result
+builder.set_entry_point("id")
+graph = builder.build()
+result = graph(payload)   # .status .execution_order .results .accumulated_usage
+
+swarm = Swarm([a, b, c], entry_point=a, max_handoffs=6,
+              execution_timeout=90.0, node_timeout=30.0)
+
+A2AServer(agent_factory=make_agent, host="0.0.0.0", port=9001).serve()
+remote = A2AAgent(endpoint="http://localhost:9001")
+
+app = BedrockAgentCoreApp()
+@app.entrypoint
+def invoke(payload): ...
+app.run()   # POST /invocations on :8080
+```
+
+`Swarm` maintains a **mutable `SharedContext` every agent reads and writes**.
+That is correct inside one household and catastrophic across households -- it is
+the verified reason the mesh uses A2A rather than a bigger swarm.
+
+## Scope for the five days
+
+**Built:** institutional tail only, text intake, 9 agents, one ward of curated
+jurisdiction data, calibrated institution simulators, the eval harness.
+
+**Designed, drawn, not built:** mutual-aid and shared-cost tails, voice and
+vernacular, per-member privacy inside a household, cross-neighbourhood
+federation. Say so plainly -- naming your own compromises reads as judgement.
+
+## Ownership
+
+| Who | Lane | Owns |
+|---|---|---|
+| **Ali** | platform + lead | `graph/`, `app.py`, deploy, observability, trace UI, `agents/digest.py`, video |
+| **Kartik** | data + mesh | `core/store.py`, `core/scoring.py`, `agents/pattern_watch.py`, `agents/anti_abuse.py`, corpus, tau sweep, density curve |
+| **Alakshendra** | institutions | `data/jurisdiction/`, `agents/remedy.py`, `institutions/`, routing accuracy |
+| **Raghav** | household + time | `core/clock.py`, `agents/intake.py`, `agents/household.py`, `agents/warden.py`, `agents/watchdog.py` |
+
+Your brief is in `docs/team/<YOURNAME>.md`. Read it and this file, then start.
+
+**Stay in your own files.** Ownership follows the membrane, so the A2A
+boundaries are also the merge boundaries. If you need something from another
+lane, use the agreed signature in the stub and let them fill it in.
+
+## Definition of done for any module
+
+- The stub's `NotImplementedError` is gone
+- It takes time from `Clock`, not the system clock
+- It has one pytest in `tests/` that runs without AWS credentials
+- `ruff check .` is clean

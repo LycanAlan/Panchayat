@@ -1,0 +1,21 @@
+# Core agent stack
+strands-agents[a2a]>=1.0.0
+strands-agents-tools>=0.1.0
+
+# AgentCore runtime + observability
+bedrock-agentcore>=0.1.0
+aws-opentelemetry-distro>=0.10.1
+
+# AWS
+boto3>=1.35.0
+
+# Scoring (brute-force cosine; do NOT add opensearch/faiss)
+numpy>=1.26.0
+
+# Config + data
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Dev
+pytest>=8.0.0
+ruff>=0.6.0
