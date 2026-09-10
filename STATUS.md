@@ -18,6 +18,7 @@ Last updated: **10 Sep, 21:10** by Ali
 | **Bedrock MODEL calls not authorised** (account flag, support case 178898467100367) | anything invoking a model | `core/models.py` seam: `PANCHAYAT_MODEL=anthropic` + an API key swaps provider in one env var. **AgentCore itself is LIVE** — the deploy target was never blocked. | Ali |
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
 | ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
+| **`case.escalation_tier` has two potential writers, no locking** -- Kartik's ambient `apply_upgrade()` and Raghav's `climb()` both read-modify-write it, and `put_case()` is a blind overwrite. Lost update or a double-escalation (files at the wrong tier/authority) are both real. Needs a decision: `climb()` as sole writer with `apply_upgrade` requesting rather than performing, or a conditional write on a version attribute. Same shape as the `put_case` stale-write hazard in Kartik's review -- likely one fix for both. | escalation correctness | none yet -- `climb()` writes the tier it read, does not attempt to resolve the race | Raghav + Kartik |
 
 **On that clock test** — Alakshendra's diagnosis was right and it is fixed.
 Worth knowing why it passed here and failed there: Windows' `monotonic()` has
@@ -48,10 +49,11 @@ what STATUS.md is for.
 | Alakshendra | `data/jurisdiction/ward12.yaml` | **DONE** | 31 entries. Water only. 24 BWSSB, 3 BBMP borewell, 3 builder line. **Sample can now be deleted** — see decisions log. |
 | Alakshendra | `agents/remedy.py` | **DONE** | `lookup(service, segment, feeder_id)` and `resolve(claim) -> (tail, entry, citation)`. Returns `None` on a miss, never a guess. |
 | Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005, agent cards verified. |
-| Raghav | `agents/intake.py` | not started | |
-| Raghav | `agents/household.py` | not started | |
-| Raghav | `agents/warden.py` | not started | |
-| Raghav | `agents/watchdog.py` | not started | |
+| Raghav | `core/clock.py` | **DONE** (on `feat/household-time`, in review) | Naive-UTC helper + `asyncio.get_running_loop()` fix. Kept main's memoised `get_clock()` through the rebase. |
+| Raghav | `agents/intake.py` | **DONE** (on `feat/household-time`, in review) | `parse()`/`read_back()`, injectable model, no AWS creds needed to test |
+| Raghav | `agents/household.py` | **DONE** (on `feat/household-time`, in review) | `build_swarm()`/`deliberate()`, dialysis fixture surfaces the elder's unstated deadline |
+| Raghav | `agents/warden.py` | **DONE** (on `feat/household-time`, in review) | `minimise()`, `consent_covers()`, `check_inference_leak()` -- all adversarially tested |
+| Raghav | `agents/watchdog.py` | **DONE** (on `feat/household-time`, in review) | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. **Review blocker B1 fixed** — closure check now looks backward over a `closure_lookback_days` window (default 7, matching `sla_days`), was looking forward and could never fire. |
 | Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
 | Ali | AgentCore deploy | not started | **do this Day 2, not Day 4** |
@@ -67,7 +69,7 @@ what STATUS.md is for.
 |---|---|---|
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
 | Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | — |
-| Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
+| Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | **PASSED.** Whole lane green, no AWS creds. 1 honest skip (`strands` not installed locally). |
 | Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
 
 ---
