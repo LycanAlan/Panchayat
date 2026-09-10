@@ -54,6 +54,12 @@ class Watchdog:
         # institutions/ + the graph's file node, not this lane. Defaulting
         # to "always reachable" keeps climb() usable before that exists;
         # tests inject failure to exercise the pause/retry path.
+        #
+        # PROVISIONAL SHAPE, not final: Alakshendra's real institution client
+        # (institutions/client.py, unmerged) returns a DeskReply with 8 distinct
+        # outcomes, not a bool -- see the note at the call site in climb() for
+        # specifics. Whoever wires the real client in needs an adapter here or
+        # a widened contract, agreed with the group first; do not guess it.
         self._submit = submit or (lambda filing: True)
 
     def _resolve_lookup(self) -> Callable:
@@ -187,6 +193,32 @@ class Watchdog:
             # institution unreachable -> pause the SLA clock, retry twice,
             # then surface. "Surface" is Ali's digest agent's job -- this
             # only logs and stops.
+            #
+            # KNOWN GAP, confirmed against Alakshendra's institutions/client.py
+            # (branch alakshendra/ladder-and-filing-client, not yet merged):
+            # `filing.signed_by` is never set anywhere in this method, for any
+            # tier. core/types.py's frozen Filing.signed_by is annotated
+            # "REQUIRED before submit", and his InstitutionClient.file() already
+            # enforces exactly that -- an empty signed_by returns
+            # Outcome.NEEDS_HUMAN rather than filing. So once `submit` is wired
+            # to the real client, EVERY tier (not just 1-3) will come back
+            # NEEDS_HUMAN, always, because nothing in this codebase yet captures
+            # a household member's approval and writes it onto the Filing before
+            # this call. This is a missing capability, not a policy choice
+            # between "sign once" and "sign every tier" -- there is currently no
+            # signing step for ANY tier. Needs a group decision on where that
+            # capture happens (likely Ali's agents/digest.py, "pings you when
+            # there's a real decision") before this can file anything for real.
+            #
+            # Separately, `submit`'s bool contract cannot represent his
+            # DeskReply's outcome space: `should_retry` is true ONLY for
+            # UNREACHABLE, while REJECTED sets `should_pause_sla` but NOT
+            # `should_retry` (it needs a human to supply missing particulars,
+            # not a blind resend of the same body) -- collapsing that onto a
+            # bool and retrying it exactly like UNREACHABLE is itself a second,
+            # distinct bug once real replies flow through here. Both items are
+            # tracked in STATUS.md; do not resolve either unilaterally in this
+            # file -- the seam shape affects Ali's graph wiring too.
             reachable = self._submit(filing) or self._submit(filing)
             if not reachable:
                 case.sla_paused = True
