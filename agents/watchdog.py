@@ -45,9 +45,11 @@ class Watchdog:
     """
 
     def __init__(self, store=db, lookup: Callable | None = None,
-                 submit: Callable[[Filing], bool] | None = None):
+                 submit: Callable[[Filing], bool] | None = None,
+                 closure_lookback_days: int = 7):
         self.db = store
         self._lookup = lookup
+        self.closure_lookback_days = closure_lookback_days
         # The real A2A institutional handoff belongs to whoever owns
         # institutions/ + the graph's file node, not this lane. Defaulting
         # to "always reachable" keeps climb() usable before that exists;
@@ -102,18 +104,29 @@ class Watchdog:
         could never have, because you know your own tap, not your
         neighbours'.
 
-        `Case` carries no `closed_at` (frozen contract). This treats the
-        moment of THIS check_closure wake as the observation instant, and
-        counts claims that postdate it -- new reports arriving after the
-        institution announced "resolved" are direct evidence it wasn't.
+        `Case` carries no `closed_at` (frozen contract), so there is no exact
+        instant to anchor on -- but the anchor must still look BACKWARD from
+        the check, never forward. A check always runs after the claims it is
+        meant to catch: real households file while the outage is live, and
+        the institution's "resolved" notice comes after that. Using
+        `clock.now()` itself as the floor (the old code) only matches claims
+        with `created_at >= now`, i.e. claims from the future relative to the
+        check -- which never happens in production, so it silently disputed
+        nothing, ever.
+
+        Instead this looks back `closure_lookback_days` (default 7, matching
+        the statutory `sla_days: 7` in data/jurisdiction/ward12.sample.yaml --
+        a claim older than the institution's own SLA window isn't evidence
+        about *this* closure) and counts claims filed inside that window as
+        live contradicting evidence.
         """
         clock = clock or get_clock()
         case = self.db.get_case(case_id)
         if case is None:
             return False
 
-        closed_at = clock.now()
-        claims = self.db.claims_in_window(case.segment, case.service, since=closed_at)
+        since = clock.now() - timedelta(days=self.closure_lookback_days)
+        claims = self.db.claims_in_window(case.segment, case.service, since=since)
         # Two member agents in one household is ONE household.
         live_households = {c.household_id for c in claims}
 

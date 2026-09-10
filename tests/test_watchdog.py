@@ -96,6 +96,9 @@ def test_sample_ladder_really_has_rti_at_tier_four():
 # ------------------------------------------------------------- reconcile
 
 def test_reconcile_closure_disputes_using_other_households_claims(outage):
+    """The check must run AFTER the claims it's meant to catch -- the
+    realistic order in production (the outage fixture's latest claim lands at
+    T0+33h, so the check instant is set well after that, not pinned to T0)."""
     db.reset()
     case = outage["case"]
     db.put_case(case)
@@ -104,11 +107,86 @@ def test_reconcile_closure_disputes_using_other_households_claims(outage):
     for decoy in outage["decoys"]:
         db.put_claim(decoy)
 
-    clock = RecordingClock(now=fakes.T0)
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=40))
     wd = Watchdog(store=db)
 
     disputed = wd.reconcile_closure(case.case_id, clock=clock)
     assert disputed is True
+
+
+def test_reconcile_closure_disputes_on_claims_filed_before_the_check():
+    """B1 repro (the reviewer's own scenario): seven households already filed
+    BEFORE the check instant -- the case a live production wake actually
+    faces, since claims are always filed while the outage is live and the
+    check runs afterward. Under the old forward-looking window (since=now)
+    this returned CLOSED, silently, for every real case; this is the test
+    that proves that bug is dead."""
+    db.reset()
+    case = fakes.a_case()
+    db.put_case(case)
+    now = fakes.T0 + timedelta(days=1)
+    for i in range(7):
+        db.put_claim(fakes.a_claim(
+            segment=case.segment, service=case.service,
+            created_at=now - timedelta(hours=i + 1)))
+
+    clock = RecordingClock(now=now)
+    wd = Watchdog(store=db)
+
+    disputed = wd.reconcile_closure(case.case_id, clock=clock)
+    assert disputed is True
+
+
+def test_reconcile_closure_disputes_on_claims_filed_before_the_check_traces_seven(capsys):
+    db.reset()
+    case = fakes.a_case()
+    db.put_case(case)
+    now = fakes.T0 + timedelta(days=1)
+    for i in range(7):
+        db.put_claim(fakes.a_claim(
+            segment=case.segment, service=case.service,
+            created_at=now - timedelta(hours=i + 1)))
+
+    clock = RecordingClock(now=now)
+    wd = Watchdog(store=db)
+    wd.reconcile_closure(case.case_id, clock=clock)
+
+    printed = capsys.readouterr().out
+    assert "7 live claim(s)" in printed
+
+
+def test_reconcile_closure_ignores_a_claim_older_than_the_lookback_window():
+    """A claim outside the (default 7-day) look-back window is not evidence
+    about THIS closure -- it predates the institution's own SLA period."""
+    db.reset()
+    case = fakes.a_case()
+    db.put_case(case)
+    now = fakes.T0 + timedelta(days=40)
+    db.put_claim(fakes.a_claim(
+        segment=case.segment, service=case.service,
+        created_at=now - timedelta(days=30)))  # older than the 7-day default
+
+    clock = RecordingClock(now=now)
+    wd = Watchdog(store=db)  # default closure_lookback_days=7
+
+    assert wd.reconcile_closure(case.case_id, clock=clock) is False
+
+
+def test_reconcile_closure_custom_lookback_widens_what_counts_as_evidence():
+    """The look-back window is an explicit, testable knob -- a 30-day window
+    picks up the same claim the default 7-day window correctly ignores."""
+    db.reset()
+    case = fakes.a_case()
+    db.put_case(case)
+    now = fakes.T0 + timedelta(days=40)
+    db.put_claim(fakes.a_claim(
+        segment=case.segment, service=case.service,
+        created_at=now - timedelta(days=30)))
+
+    clock = RecordingClock(now=now)
+    wd = Watchdog(store=db, closure_lookback_days=30)
+
+    assert wd.reconcile_closure(case.case_id, clock=clock) is True
 
 
 def test_reconcile_closure_stands_when_no_live_claims():
@@ -117,7 +195,7 @@ def test_reconcile_closure_stands_when_no_live_claims():
     db.put_case(case)
     # no claims seeded at all for this segment/service
 
-    clock = RecordingClock(now=fakes.T0)
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=1))
     wd = Watchdog(store=db)
     disputed = wd.reconcile_closure(case.case_id, clock=clock)
     assert disputed is False
@@ -129,7 +207,8 @@ def test_reconcile_closure_counts_distinct_households_not_claims(capsys):
 
     (The `outage` fixture's own duplicate pair lands in two different
     segments by construction, so it doesn't exercise this path; this test
-    builds the same-segment duplicate directly.)"""
+    builds the same-segment duplicate directly.) Both claims are dated BEFORE
+    the check instant, same as the real order of events."""
     db.reset()
     case = fakes.a_case()
     db.put_case(case)
@@ -140,7 +219,7 @@ def test_reconcile_closure_counts_distinct_households_not_claims(capsys):
     claims = db.claims_in_window(case.segment, case.service, since=fakes.T0)
     assert len(claims) == 2, "fixture sanity: two claims from the same household"
 
-    clock = RecordingClock(now=fakes.T0)
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=2))
     wd = Watchdog(store=db)
     assert wd.reconcile_closure(case.case_id, clock=clock) is True
 
