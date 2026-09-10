@@ -2,10 +2,13 @@
 Owner: Raghav
 
 No monkeypatching: uses the real core.db on its default in-memory backend,
-seeded with core.fakes. `agents.remedy.lookup()` is still a NotImplementedError
-stub (Alakshendra's lane), so a Watchdog under test is constructed with an
-injected `lookup` that reads the real curated sample ladder from
-data/jurisdiction/ward12.sample.yaml -- not retyped, loaded.
+seeded with core.fakes. `agents.remedy.lookup()` is real and merged
+(Alakshendra's lane) -- it reads the curated ladder from
+data/jurisdiction/ward12.yaml, so a Watchdog under test is constructed with
+`lookup=remedy.lookup` directly. That is also exactly what `climb()` resolves
+to on its own when no `lookup=` is injected (see `Watchdog._resolve_lookup`),
+so these tests exercise the same lookup path production uses and cannot drift
+from the real data format.
 
 Uses a small RecordingClock rather than VirtualClock: climb()/watchdog() tests
 are about business logic (pause, escalate, dispute), not about real elapsed
@@ -14,18 +17,15 @@ time, and a synchronous fake avoids entangling every test with an event loop.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
-import yaml
 
+from agents import remedy
 from agents.watchdog import ACTIONS, Watchdog
 from core import db, fakes
 from core.types import (
     CaseStatus,
-    EscalationStep,
     Filing,
-    JurisdictionEntry,
     Service,
 )
 
@@ -52,45 +52,27 @@ class RecordingClock:
         pass
 
 
-_SAMPLE_PATH = Path(__file__).resolve().parents[1] / "data" / "jurisdiction" / "ward12.sample.yaml"
+# The fixture claims (core/fakes.py) use this segment/feeder. Confirmed
+# against data/jurisdiction/ward12.yaml: ward12-4thcross / bwssb-tm-14 is a
+# real curated entry on the bwssb ladder.
+_lookup_fixture = remedy.lookup
 
 
-def _load_sample_entry(segment: str) -> JurisdictionEntry:
-    """Loaded from Alakshendra's real sample YAML, not retyped -- so this
-    test breaks if the curated ladder shape ever drifts from what climb()
-    actually reads."""
-    raw = yaml.safe_load(_SAMPLE_PATH.read_text())
-    for e in raw:
-        if e["service"] == "water" and e["segment"] == segment:
-            ladder = [
-                EscalationStep(tier=s["tier"], authority=s["authority"],
-                                window_days=s["window_days"],
-                                statute_ref=s.get("statute_ref", ""),
-                                description=s.get("description", ""))
-                for s in e["ladder"]
-            ]
-            return JurisdictionEntry(
-                service=Service.WATER, segment=e["segment"], feeder_id=e["feeder_id"],
-                authority=e["authority"], not_authority=e.get("not_authority", []),
-                sla_days=e.get("sla_days", 7), statute_ref=e.get("statute_ref", ""),
-                required_fields=e.get("required_fields", []), ladder=ladder,
-                helpline=e.get("helpline", ""),
-            )
-    raise ValueError(f"no sample entry for segment {segment!r}")
+def test_real_ladder_has_rti_at_tier_four():
+    """D1 ruling, checked against the real curated table rather than assumed.
 
-
-def _lookup_fixture(service, segment: str, feeder_id: str) -> JurisdictionEntry | None:
-    try:
-        return _load_sample_entry(segment)
-    except ValueError:
-        return None
-
-
-def test_sample_ladder_really_has_rti_at_tier_four():
-    """D1 ruling, checked against real data rather than assumed."""
-    entry = _load_sample_entry(fakes.SEGMENT)
+    Was pinned to the (now-deleted) sample YAML's exact tier-4 string. Assert
+    on the property the decision actually cares about -- tier 4 exists, is
+    RTI, and is draft-only -- rather than Alakshendra's exact wording, which
+    is free to change without breaking this test.
+    """
+    entry = remedy.lookup(Service.WATER, fakes.SEGMENT, fakes.FEEDER)
+    assert entry is not None
     tiers = {s.tier: s.authority for s in entry.ladder}
-    assert tiers[4] == "RTI (drafted only)"
+    assert 4 in tiers
+    authority = tiers[4].lower()
+    assert "rti" in authority
+    assert "draft" in authority
 
 
 # ------------------------------------------------------------- reconcile
@@ -262,13 +244,23 @@ def test_climb_does_not_file_twice_on_a_retry():
     """put_filing_once's idempotency key is (case_id, authority, tier) --
     the same values climb() would compute on a retry after a crash between
     submit and put_case. A duplicate filing reads as spam and gets both
-    copies closed."""
+    copies closed.
+
+    The authority is derived from the real ladder (not hardcoded) so that if
+    Alakshendra reworks the tier-1 wording, this still collides on the exact
+    key climb() computes -- a hardcoded string would silently stop colliding
+    and this test would stop testing idempotency at all.
+    """
     db.reset()
     case = fakes.a_case(escalation_tier=0)
     db.put_case(case)
 
+    entry = remedy.lookup(case.service, case.segment, case.feeder_id)
+    assert entry is not None
+    tier_one_authority = next(s.authority for s in entry.ladder if s.tier == 1)
+
     pre_existing = Filing(case_id=case.case_id, tier=1,
-                          authority="BWSSB Section Officer", body="already on file")
+                          authority=tier_one_authority, body="already on file")
     pre_existing.idempotency_key = pre_existing.compute_key()
     was_written, _ = db.put_filing_once(pre_existing)
     assert was_written is True
@@ -356,7 +348,7 @@ def test_climb_stalls_past_the_top_of_the_ladder():
 
 def test_climb_no_jurisdiction_entry_stalls_gracefully():
     db.reset()
-    case = fakes.a_case(segment="somewhere-not-in-the-sample-data")
+    case = fakes.a_case(segment="somewhere-not-in-the-jurisdiction-table")
     db.put_case(case)
     clock = RecordingClock(now=fakes.T0)
     wd = Watchdog(store=db, lookup=lambda service, segment, feeder_id: None, submit=lambda f: True)
