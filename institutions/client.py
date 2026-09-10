@@ -104,7 +104,11 @@ class InstitutionClient:
             return DeskReply(Outcome.UNREACHABLE, detail=type(exc).__name__)
 
         text = self._text_of(result)
-        if not any(outcome.value in text for outcome in Outcome):
+        # Asked through the protocol, not with a substring test of our own: a
+        # guard that matches more loosely than find() lets a reply through
+        # here only to have find() return UNKNOWN, which does not pause the
+        # SLA clock.
+        if not DeskReply.mentions_an_outcome(text):
             # The desk answered, but with nothing we recognise -- a model error,
             # a refusal to use its tools, a truncated stream. Nothing landed, so
             # this is downtime, not an UNKNOWN reference. Getting this wrong
@@ -113,6 +117,15 @@ class InstitutionClient:
             return DeskReply(Outcome.UNREACHABLE, detail="desk gave no usable answer")
 
         reply = DeskReply.find(text)
+        if reply.filed and not reply.ref:
+            # "I have ACCEPTED your grievance" with no number. Recording that
+            # as filed starts a statutory clock on a ticket we can never poll
+            # or escalate against, and the case looks handled while nothing
+            # can be chased. Treat it as downtime and try again.
+            emit(Tag.A2A, "filed_without_reference", desk=desk, text=text[:120])
+            return DeskReply(Outcome.UNREACHABLE,
+                             detail="desk claimed acceptance with no reference")
+
         emit(Tag.A2A, "reply", desk=desk, outcome=reply.outcome.value,
              ref=reply.ref or None)
         return reply
@@ -129,11 +142,18 @@ class InstitutionClient:
         caller. An empty signed_by refuses with NEEDS_HUMAN -- there is
         nothing to retry until a person approves the draft.
         """
-        if not signed_by:
-            emit(Tag.FILING, "unsigned", case_id=case_id, desk=desk)
+        # A member_id, not a name. core.types.new_id("mem") is the contract,
+        # so "resident" or "the household" -- what a model reaches for when a
+        # required argument is in its way -- does not satisfy rule 4. This
+        # checks the SHAPE only; verifying the id against the RWA register is
+        # Anti-Abuse's job, and deliberately not this layer's.
+        if not signed_by or not str(signed_by).startswith("mem_"):
+            emit(Tag.FILING, "unsigned", case_id=case_id, desk=desk,
+                 offered=signed_by or None)
             return DeskReply(Outcome.NEEDS_HUMAN, detail=(
-                "no signed_by: a filing against a public body is not "
-                "submitted until a named household member has approved it"
+                "no valid signed_by: a filing against a public body is not "
+                "submitted until a named household member has approved it. "
+                "Expects a member_id like 'mem_a1b2c3', not a name"
             ))
 
         emit(Tag.FILING, "submitting", case_id=case_id, desk=desk,

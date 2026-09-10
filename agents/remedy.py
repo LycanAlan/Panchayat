@@ -181,6 +181,15 @@ def _field_label(field: str) -> str:
     return FIELD_LABELS.get(field, field.replace("_", " "))
 
 
+def _sentence_case(text: str) -> str:
+    """Uppercase the first character and leave the rest alone.
+
+    str.capitalize() lowercases everything after it, which turned the curated
+    label "RR number" into "Rr number" in text going to a public body.
+    """
+    return text[:1].upper() + text[1:]
+
+
 def _is_missing(value: object) -> bool:
     """None or blank is missing. 0 is a real value -- affected_count=0 must
     not be treated the same as affected_count never having been supplied."""
@@ -212,7 +221,12 @@ def compose_filing(case: Case, entry: JurisdictionEntry, facts: dict,
     entry.statute_ref, the grounds for the first filing.
     """
     values = dict(facts)
-    if "affected_count" in entry.required_fields and "affected_count" not in values:
+    if ("affected_count" in entry.required_fields
+            and "affected_count" not in values
+            and case.corroboration > 0):
+        # Only when the Case actually knows. A case with no household_ids
+        # yet would otherwise auto-fill 0 and file "households affected: 0",
+        # which is not something we know -- it is something we made up.
         values["affected_count"] = case.corroboration
 
     missing = [f for f in entry.required_fields
@@ -227,11 +241,23 @@ def compose_filing(case: Case, entry: JurisdictionEntry, facts: dict,
         + ", segment " + case.segment + ".",
     ]
     for field in entry.required_fields:
-        lines.append(_field_label(field).capitalize() + ": "
+        lines.append(_sentence_case(_field_label(field)) + ": "
                      + str(values[field]) + ".")
+    if "affected_count" not in entry.required_fields:
+        # Stated even where this authority does not demand it. Two reasons:
+        # how many households are affected is material to any civic filing,
+        # and a receiving desk that screens on the word "affected" would
+        # otherwise reject every filing of this shape forever -- with each
+        # resubmission byte-identical to the last, so it can never clear.
+        lines.append("Households affected: " + str(case.corroboration) + ".")
     if step is not None:
-        lines.append("Tier " + str(step.tier) + ": "
-                     + (step.description or step.statute_ref) + ".")
+        # Both, never one or the other. `description or statute_ref` shipped
+        # every escalation with no citation at all, because every curated step
+        # has a description -- and "every routing decision carries a citation"
+        # is the claim this lane exists to make good on.
+        lines.append("Tier " + str(step.tier) + ": " + step.description + "."
+                     if step.description else "Tier " + str(step.tier) + ".")
+        lines.append("Filed under " + (step.statute_ref or entry.statute_ref) + ".")
     else:
         lines.append("Filed under " + entry.statute_ref + ".")
     if entry.required_fields:

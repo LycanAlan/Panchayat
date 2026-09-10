@@ -139,6 +139,18 @@ class DeskReply:
             return cls(outcome, detail=candidate)
         return cls(outcome, ref=ref.strip(), detail=detail.strip())
 
+    @staticmethod
+    def mentions_an_outcome(text: str) -> bool:
+        """Does this text contain a real outcome word?
+
+        Callers deciding "did the desk say anything usable" must ask through
+        here rather than with their own substring test. A guard that matches
+        loosely while find() matches on word boundaries lets a reply through
+        the guard only for find() to return UNKNOWN -- which does not pause
+        the SLA clock, so the window burns on a filing nobody understood.
+        """
+        return _OUTCOME_RE.search(text or "") is not None
+
     @classmethod
     def find(cls, text: str) -> DeskReply:
         """Pull a reply out of an agent's prose.
@@ -148,14 +160,30 @@ class DeskReply:
         its ticket number before the outcome word, or spill onto a second line.
         The outcome and the reference are found independently of each other's
         position for exactly that reason.
+
+        Which outcome wins, when prose mentions more than one: a match that
+        STARTS a line wins, because that is the rendered wire format. Failing
+        that the LAST match wins, because "was previously OPEN and is now
+        CLOSED" is how a desk narrates a change -- and taking the first match
+        there reports the state the ticket has just left. That specific
+        sentence, read as OPEN, means a false closure is never disputed.
         """
         haystack = text or ""
-        match = _OUTCOME_RE.search(haystack)
-        if match is None:
+        matches = list(_OUTCOME_RE.finditer(haystack))
+        if not matches:
             return cls(Outcome.UNKNOWN, detail=haystack.strip()[:200])
+
+        match = next(
+            (m for m in matches if m.start() == 0 or haystack[m.start() - 1] == "\n"),
+            matches[-1],
+        )
         outcome = Outcome(match.group(1))
 
-        ref_match = _REF_RE.search(haystack)
+        # Prefer a reference that comes AFTER the outcome word: a desk that
+        # quotes an earlier ticket before announcing a new one would otherwise
+        # have the old number recorded against the new filing.
+        ref_match = (_REF_RE.search(haystack, match.end())
+                     or _REF_RE.search(haystack))
         ref = ref_match.group(0) if ref_match else ""
 
         remainder = haystack[match.end():].strip()

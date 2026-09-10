@@ -88,6 +88,41 @@ def test_a_desk_that_answers_nonsense_pauses_the_clock():
     assert reply.should_pause_sla
 
 
+def test_an_acceptance_with_no_reference_is_not_treated_as_filed():
+    # Regression. "I have ACCEPTED your grievance" with no number gave
+    # filed=True, ref='' -- a statutory clock running on a ticket that can
+    # never be polled or escalated against, while the case looks handled.
+    class Vague(InstitutionClient):
+        def _agent(self, desk):
+            class Stub:
+                def __call__(self, _instruction):
+                    class R:
+                        message = "I have ACCEPTED your grievance."
+                    return R()
+            return Stub()
+
+    reply = Vague().file("bwssb", "case_1", "water", "duration 3, affected 9",
+                         "idem-noref", signed_by="mem_lakshmi")
+    assert not reply.filed
+    assert reply.should_pause_sla
+
+
+def test_a_name_is_not_a_signature():
+    # Regression. signed_by was any non-empty string, so a model with a
+    # required argument in its way could satisfy rule 4 with "resident".
+    sent = []
+
+    class Spy(InstitutionClient):
+        def send(self, desk, instruction):
+            sent.append(instruction)
+            return DeskReply(Outcome.ACCEPTED, "BWSSB-1")
+
+    reply = Spy().file("bwssb", "case_1", "water", "duration 3, affected 9",
+                       "idem-name", signed_by="resident")
+    assert reply.outcome is Outcome.NEEDS_HUMAN
+    assert sent == []
+
+
 def test_an_agent_message_is_read_as_text_not_as_a_repr():
     # Regression, and the worst of the batch. str() on a Strands message yields
     # a Python repr, whose trailing "'}]}" ended up inside the ticket reference

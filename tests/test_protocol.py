@@ -117,6 +117,55 @@ def test_detail_on_a_following_line_is_not_dropped():
     assert "sla_days=7" in reply.detail
 
 
+def test_a_narrated_change_reports_the_state_it_ended_in():
+    # Regression, and it is the demo's peak moment. "previously OPEN and is
+    # now CLOSED" taking the FIRST match reported OPEN -- so a false closure
+    # would never be disputed, because nothing ever saw a closure.
+    reply = DeskReply.find(
+        "Ticket BWSSB-100001 was previously OPEN and is now CLOSED: supply restored"
+    )
+    assert reply.outcome is Outcome.CLOSED
+    assert reply.ref == "BWSSB-100001"
+
+
+def test_a_line_anchored_outcome_beats_a_later_mention():
+    # The rendered wire format starts a line. That has to win over prose
+    # further down, or a desk's own chatter could override its answer.
+    reply = DeskReply.find(
+        "Certainly, here is the record.\n"
+        "ACCEPTED BWSSB-100042: sla_days=7\n"
+        "It is not CLOSED yet."
+    )
+    assert reply.outcome is Outcome.ACCEPTED
+    assert reply.ref == "BWSSB-100042"
+
+
+def test_a_quoted_earlier_ticket_does_not_steal_the_new_reference():
+    # Regression. The first ref-shaped token anywhere used to win, so a desk
+    # that cites your previous ticket before issuing a new one had the OLD
+    # number recorded against the new filing.
+    reply = DeskReply.find(
+        "Regarding your earlier BWSSB-100001, we have ACCEPTED BWSSB-100999"
+    )
+    assert reply.ref == "BWSSB-100999"
+
+
+def test_a_reference_before_the_outcome_is_still_found():
+    # The fallback still has to work: nothing follows the outcome word here.
+    assert DeskReply.find("Ticket BWSSB-100001 is now CLOSED").ref == "BWSSB-100001"
+
+
+def test_the_guard_and_the_parser_agree_on_what_counts():
+    # Regression for the seam that reopened C1-C3: a guard matching more
+    # loosely than find() let a reply through only for find() to return
+    # UNKNOWN -- which does not pause the SLA clock.
+    for text in ["The ticket was REOPENED.", "It was DISCLOSED to the AEE",
+                 "no outcome word at all"]:
+        assert DeskReply.mentions_an_outcome(text) is (
+            DeskReply.find(text).outcome is not Outcome.UNKNOWN
+        ), text
+
+
 def test_garbage_never_raises_on_the_filing_path():
     # An exception here would abort a filing that may already have landed.
     assert DeskReply.parse("").outcome is Outcome.UNKNOWN

@@ -160,7 +160,14 @@ class Desk:
                          "sla_days=" + str(self.profile.sla_days))
 
     def reject(self, ref: str, reason: str) -> DeskReply:
-        """Explicit refusal with a legible reason. The trace UI shows this string."""
+        """Explicit refusal with a legible reason. The trace UI shows this string.
+
+        Rejecting a ticket this desk previously accepted is deliberate, and so
+        is the reply reading `filed=False` afterwards. A row still exists in
+        this office's records, but there is no live filing being processed --
+        the household has to fix what was wrong and resubmit, and the clock
+        must not run in the meantime. That is what the caller needs to know.
+        """
         ticket = self.tickets.get(ref)
         if ticket is None:
             return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)

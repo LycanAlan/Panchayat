@@ -189,13 +189,24 @@ def test_a_complete_filing_produces_a_body_and_no_missing_fields():
 
 
 def test_a_missing_field_refuses_to_file_rather_than_guess():
-    # affected_count auto-fills from the case (here: 0, an empty household
-    # list) -- rr_number has no such source and must come from facts.
     entry = lookup(Service.WATER, "ward12-4thcross")
     case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14")
     body, missing = compose_filing(case, entry, {"duration_days": 3})
     assert body == ""
-    assert missing == ["rr_number"]
+    assert set(missing) == {"rr_number", "affected_count"}
+
+
+def test_an_empty_case_does_not_invent_a_household_count():
+    # A Case with no household_ids knows nothing about how many are affected.
+    # Auto-filling 0 there filed "households affected: 0" -- not something we
+    # know, something we made up.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14",
+                  household_ids=[])
+    _body, missing = compose_filing(
+        case, entry, {"rr_number": "RR-4521", "duration_days": 3},
+    )
+    assert "affected_count" in missing
 
 
 def test_affected_count_is_filled_from_the_case_when_not_given():
@@ -253,7 +264,11 @@ def test_a_different_required_fields_shape_still_composes():
     assert "G-204" in body and "Green Meadows" in body
 
 
-def test_an_escalation_step_is_cited_instead_of_the_original_statute():
+def test_an_escalation_carries_its_own_citation():
+    # Regression, and it is the claim this lane exists to make good on:
+    # "every routing decision carries a citation". `description or
+    # statute_ref` meant every escalation shipped with no citation at all,
+    # because every curated step has a description.
     entry = lookup(Service.WATER, "ward12-4thcross")
     case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14")
     step = next_step(entry, 1)   # tier 2
@@ -264,7 +279,52 @@ def test_an_escalation_step_is_cited_instead_of_the_original_statute():
     )
     assert missing == []
     assert "Tier 2" in body
-    assert step.authority not in body  # the authority is who we file WITH, not part of the body
+    assert step.statute_ref in body, "an escalation with no citation is a guess"
+    assert step.description in body
+
+
+def test_every_tier_of_every_entry_composes_with_a_citation():
+    # Not just tier 2 of one entry -- the property has to hold across the
+    # whole curated table, or one uncited step slips through in the demo.
+    for entry in load_table().values():
+        case = a_case(segment=entry.segment, feeder_id=entry.feeder_id,
+                      household_ids=["hh_1", "hh_2"])
+        facts = {f: "supplied" for f in entry.required_fields}
+        for step in ladder_for(entry):
+            body, missing = compose_filing(case, entry, facts, step=step)
+            assert missing == [], entry.segment
+            assert (step.statute_ref or entry.statute_ref) in body, (
+                entry.segment + " tier " + str(step.tier) + " has no citation"
+            )
+
+
+def test_the_household_count_is_stated_even_when_not_required():
+    # The layout-developer entries do not require affected_count, so the body
+    # contained no "affected" at all -- and a desk screening on that word
+    # would reject every such filing forever, each resubmission byte-identical
+    # to the last, so it could never clear.
+    entry = lookup(Service.WATER, "ward12-greenmeadows")
+    case = a_case(segment="ward12-greenmeadows", feeder_id=entry.feeder_id,
+                  household_ids=["hh_1", "hh_2"])
+    body, missing = compose_filing(
+        case, entry,
+        {"flat_number": "G-204", "layout_name": "Green Meadows", "duration_days": 5},
+    )
+    assert missing == []
+    assert "affected" in body.lower()
+
+
+def test_a_curated_label_is_not_mangled_by_capitalisation():
+    # str.capitalize() lowercases the rest, turning "RR number" into
+    # "Rr number" in text going to a public body.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14",
+                  household_ids=["hh_1"])
+    body, _missing = compose_filing(
+        case, entry, {"rr_number": "RR-4521", "duration_days": 3},
+    )
+    assert "RR number" in body
+    assert "Rr number" not in body
 
 
 def test_no_required_fields_composes_without_a_particulars_line():
