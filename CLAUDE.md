@@ -225,7 +225,7 @@ Every cross-lane dependency already has a fake, shipped and tested:
 | storage | Kartik's `store.py` | `from core.db import ...` (memory backend by default) |
 | a `Claim`, `Case`, `HouseholdPosition` | whoever owns that agent | `core/fakes.py` |
 | the 12-household outage scenario | Pattern Watch | `fakes.the_outage()` |
-| jurisdiction entries | Alakshendra's `ward12.yaml` | `data/jurisdiction/ward12.sample.yaml` |
+| jurisdiction entries | nothing, it landed 10 Sep | `from agents.remedy import lookup, resolve` — 31 curated entries. The sample is dead and the loader ignores it. |
 | a compressed clock | nothing | the `clock` fixture in `tests/conftest.py` |
 
 ```bash
@@ -262,6 +262,39 @@ and it prevents someone rebuilding what already exists.
 
 **Merge to `main` daily.** A branch that lives three days is a merge conflict
 with legs. Ali merges same day.
+
+## Nothing reaches main unreviewed
+
+Settled 10 Sep. Applies to everyone including Ali.
+
+1. **Work on a branch.** The pre-commit hook refuses `main`. Lane prefixes:
+   `feat/plat-*` `feat/mesh-*` `feat/inst-*` `feat/hh-*`.
+2. **Run `/code-review` on your branch before you ask a human to look.** Fix
+   what it finds, or say why you disagree. Do not spend a teammate's attention
+   on something a machine would have caught.
+3. **Push it and post it in the group.** Everyone gets the chance to look --
+   that is the point, not four sign-offs.
+4. **Then merge, by this bar:**
+
+| Change | Bar before merge |
+|---|---|
+| Normal lane work | posted + `/code-review` clean + a look from the lane that **consumes** it |
+| `core/types.py`, the hard rules, `requirements.txt` | **all four, explicitly.** Everyone codes against these |
+| Red suite, broken `main`, a blocker on someone else | **merge now, tell the group after** |
+
+**Silence is assent, not a veto.** A branch that waits for the slowest reviewer
+lives overnight, and a branch that lives three days is a merge conflict with
+legs. If you need someone's eyes specifically, say whose and say why.
+
+**The last row is not a loophole, it is the point.** On 10 Sep a failing clock
+test sat flagged-but-unfixed because it straddled two other people's files,
+while everyone else read a red suite as their own breakage. Making that wait
+for four approvals makes the blocked teammate wait longer.
+
+**Reviewing outside your lane is still worth it.** You will not out-argue
+Alakshendra on which body owns a borewell. You will absolutely catch a missing
+clock call, a swallowed exception, or a claim crossing the membrane -- and
+those are the bugs that actually sink us.
 
 ## Definition of done for any module
 

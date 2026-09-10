@@ -15,8 +15,19 @@ Last updated: **11 Sep, 02:40** by Kartik
 
 | Blocker | Who it stops | Workaround in place | Owner |
 |---|---|---|---|
-| **Bedrock not authorised** (AWS account flag, support case 178898467100367) | anything invoking a model | none needed yet, Day 1 work has no model calls | Ali |
+| **Bedrock MODEL calls not authorised** (account flag, support case 178898467100367) | anything invoking a model | `core/models.py` seam: `PANCHAYAT_MODEL=anthropic` + an API key swaps provider in one env var. **AgentCore itself is LIVE** — the deploy target was never blocked. | Ali |
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
+| ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
+
+**On that clock test** — Alakshendra's diagnosis was right and it is fixed.
+Worth knowing why it passed here and failed there: Windows' `monotonic()` has
+15.625ms resolution, so both `now()` calls usually land in the SAME tick and the
+drift is exactly zero. On a finer clock it never is. The assertion was really
+testing the platform's timer. It now asserts the gap corresponds to under a
+second of REAL elapsed time, which is stable everywhere.
+
+**Good catch, and the right call to flag rather than edit.** That is exactly
+what STATUS.md is for.
 
 ---
 
@@ -27,9 +38,9 @@ Last updated: **11 Sep, 02:40** by Kartik
 | **shared** | `core/types.py` | **DONE, FROZEN** | Raise changes in the group |
 | **shared** | `core/clock.py` | **DONE** | Real + virtual, one code path |
 | **shared** | `core/memstore.py` | **DONE** | In-memory, full interface |
-| **shared** | `core/db.py` | **DONE** | The seam. Import from here. |
+| **shared** | `core/db.py` | **DONE** | The seam. Import from here. Missing backend fns now raise by name instead of binding `None`. |
 | **shared** | `core/fakes.py` | **DONE** | `the_outage()` has 12 claims + a decoy |
-| **shared** | `tests/` | **DONE** | 7 contract tests, no AWS needed |
+| **shared** | `tests/` | **DONE** | **114 passing / 23 skipped** on memory, **137 passing** on dynamodb. No AWS needed. |
 | Kartik | `core/store.py` | **DONE, REVIEWED** | DynamoDB, 17 fns. All 5 review findings fixed. Membership writes are narrow + conditional + transactional, so ambient can no longer clobber the Watchdog's breach. Verified on DynamoDB Local, **not yet the real table**. |
 | Kartik | `core/scoring.py` | **DONE, REVIEWED** | `correlate()` renormalises when semantic is absent. `semantic_score()` is **gone** -- use `cosine()`, which returns `None`. `embed()` written but never executed. |
 | Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes. Numbers under D3 below. |
@@ -37,16 +48,18 @@ Last updated: **11 Sep, 02:40** by Kartik
 | Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
 | Kartik | `agents/pattern_watch.py` | not started | |
 | Kartik | `agents/anti_abuse.py` | not started | |
-| Alakshendra | `data/jurisdiction/ward12.yaml` | not started | **sample with 4 entries exists** |
-| Alakshendra | `agents/remedy.py` | not started | |
-| Alakshendra | `institutions/` | not started | |
+| Alakshendra | `data/jurisdiction/ward12.yaml` | **DONE** | 31 entries. Water only. 24 BWSSB, 3 BBMP borewell, 3 builder line. **Sample can now be deleted** — see decisions log. |
+| Alakshendra | `agents/remedy.py` | **DONE** | `lookup(service, segment, feeder_id)` and `resolve(claim) -> (tail, entry, citation)`. Returns `None` on a miss, never a guess. |
+| Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005, agent cards verified. |
 | Raghav | `agents/intake.py` | not started | |
 | Raghav | `agents/household.py` | not started | |
 | Raghav | `agents/warden.py` | not started | |
 | Raghav | `agents/watchdog.py` | not started | |
-| Ali | `graph/request_path.py` | not started | |
+| Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
 | Ali | AgentCore deploy | not started | **do this Day 2, not Day 4** |
+| Ali | `graph/trace.py` | **DONE** | `CaseTrace`. The demo surface, built with the spine not after it. |
+| Ali | `core/models.py` | **DONE** | Model seam. `get_model("reason"|"cheap")`. Never hardcode a model ID. |
 | Ali | trace UI | not started | |
 
 ---
@@ -55,10 +68,10 @@ Last updated: **11 Sep, 02:40** by Kartik
 
 | Who | Gate | Result |
 |---|---|---|
-| Alakshendra | 50 labelled complaints routed, **target ≥80%** | — |
-| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** Now **95 passed** on dynamodb, **72 passed / 23 skipped** on memory. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
+| Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
+| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** After merging main: **137 passed** on dynamodb, **114 passed / 23 skipped** on memory, zero failures either way. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
-| Ali | one claim in, one filing out, **on deployed infra** | — |
+| Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
 
 ---
 
@@ -70,6 +83,15 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **10 Sep** — Everyone develops against the in-memory backend. Same tests must pass on both.
 - **10 Sep** — Agent stack versions pinned. Raise in group before bumping.
 - **10 Sep** — Branch protection is a git hook, not a GitHub ruleset (not enforced on private free-plan repos).
+- **10 Sep** — `agents/remedy.load_table()` skips `*.sample.yaml`. The sample duplicates two segments and adds a garbage entry that is out of scope, and a real filing must never go out backed by scaffolding. `ward12.sample.yaml` is now safe to delete whenever Kartik and Raghav confirm nothing local still loads it — the loader already ignores it either way.
+- **10 Sep** — `ward12-9thmain` is curated into the real table because `core.fakes.the_outage()` uses it as the decoy. The fixture keeps working after the sample file goes.
+- **10 Sep** — The jurisdiction table is **water only**, per the Day 1 brief: one ward deep beats five wards shallow. A garbage or pothole complaint therefore resolves to nothing and the Remedy Agent says so and asks. That is the designed answer, not a gap — `eval/routing_accuracy.py` scores declining as correct.
+- **10 Sep** — The table deliberately answers three different authorities. If every segment answered BWSSB, a stub returning the string would score 100% on the routing gate.
+- **10 Sep** — The request spine is wired with every node stubbed rather than waiting for agents. Nodes call the real implementation and fall back **only** on `NotImplementedError`, marking the trace `(STUB)`. Any other exception fails loudly: canned data that hides a teammate's bug is worse than a red run. Your stub marker disappears the moment your module lands — no rewiring, no `if demo_mode:`.
+- **10 Sep** — Per-request state travels in Strands' `invocation_state`, not a module global. Two households reporting at once must not write into each other's case.
+- **10 Sep** — Models go through `core/models.py`. Never construct a `BedrockModel` in an agent file and never hardcode a model ID — Claude 3.5 is EOL and is exactly what gets copied off a blog post. `us-east-1`, because **ap-south-1 has no Anthropic inference profiles at all**.
+- **10 Sep** — A missing embedding makes the semantic term **unavailable, not zero**. Scored as zero the ceiling is 0.65 against TAU 0.72, so two houses on one trunk main reporting the same fault a minute apart would never cluster, silently. Renormalise over the weights that ran; see CLAUDE.md.
+- **10 Sep** — Embedding does **not** happen in `put_claim()`. Both db backends must match, so that puts a Bedrock call in the offline suite. It belongs in the ambient Pattern Watch pass.
 - **10 Sep** — `core/store.py` is real. `PANCHAYAT_BACKEND=dynamodb` works; set
   `PANCHAYAT_DDB_ENDPOINT=http://localhost:8000` to run it against DynamoDB
   Local. Nothing else changes -- keep importing `core.db`.
@@ -89,10 +111,11 @@ Append here when something is settled, so nobody relitigates it at 2am.
   claims only from `merged_from`, so a case's FOUNDING household splits into a
   child with no claims. `core/memstore.py:95` has it too, so it must be fixed
   in both or the backends diverge.
-- **10 Sep** — `test_virtual_clock_compresses_a_statutory_week` fails 5/5 on
-  clean `f59598a` with only the stubs. It compares `start + 7 days` against a
-  LATER `clock.now()`, and at scale 86400 even ~40us between the calls is ~3.4
-  virtual seconds, so `.days` floors to 6. Raghav's lane.
+- **10 Sep** — ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~
+  **FIXED by Ali in `0befb9b`.** It compared `start + 7 days` against a LATER
+  `clock.now()`, and at scale 86400 even ~40us between the calls is ~3.4
+  virtual seconds, so `.days` floored to 6. The suite is now green on both
+  backends with nothing skipped that should run.
 - **10 Sep** — `ruff check .` is not clean repo-wide: 70 errors, 57 outside the
   mesh lane (`core/types.py` 18, `scripts/scaffold_stubs.py` 16,
   `core/clock.py` 9, `core/fakes.py` 8, `core/memstore.py` 4).
