@@ -101,7 +101,16 @@ class InstitutionClient:
             emit(Tag.A2A, "unreachable", desk=desk, error=type(exc).__name__)
             return DeskReply(Outcome.UNREACHABLE, detail=type(exc).__name__)
 
-        reply = DeskReply.find(self._text_of(result))
+        text = self._text_of(result)
+        if not any(outcome.value in text for outcome in Outcome):
+            # The desk answered, but with nothing we recognise -- a model error,
+            # a refusal to use its tools, a truncated stream. Nothing landed, so
+            # this is downtime, not an UNKNOWN reference. Getting this wrong
+            # runs the statutory clock against a filing that was never made.
+            emit(Tag.A2A, "unparseable", desk=desk, text=text[:120])
+            return DeskReply(Outcome.UNREACHABLE, detail="desk gave no usable answer")
+
+        reply = DeskReply.find(text)
         emit(Tag.A2A, "reply", desk=desk, outcome=reply.outcome.value,
              ref=reply.ref or None)
         return reply

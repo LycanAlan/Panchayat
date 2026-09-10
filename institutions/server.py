@@ -265,10 +265,16 @@ def serve(name: str) -> None:
     from strands.multiagent.a2a import A2AServer
 
     profile = load_profile(name)
+    # host is where we BIND; http_url is what the agent card ADVERTISES, and an
+    # A2A client dials whatever the card says. Advertising 0.0.0.0 makes the
+    # card fetch succeed and every actual call fail with ConnectError, which
+    # reads like the desk is down rather than like a config error.
+    public_host = os.environ.get("PANCHAYAT_PUBLIC_HOST", "localhost")
     A2AServer(
         agent_factory=build_agent_factory(profile),
-        host="0.0.0.0",
+        host=os.environ.get("PANCHAYAT_BIND_HOST", "0.0.0.0"),
         port=profile.port,
+        http_url="http://" + public_host + ":" + str(profile.port),
     ).serve()
 
 

@@ -46,6 +46,24 @@ def test_an_unfilable_authority_needs_a_human_rather_than_a_resubmission():
     assert "Rs 10" in reply.detail or "fee" in reply.detail
 
 
+def test_a_desk_that_answers_nonsense_pauses_the_clock():
+    # A live desk whose model fails returns prose like "Agent execution failed".
+    # Nothing landed, so it must not read as UNKNOWN -- UNKNOWN does not pause
+    # the SLA, and the statutory window would burn against a filing never made.
+    class Broken(InstitutionClient):
+        def _agent(self, desk):
+            class Stub:
+                def __call__(self, _instruction):
+                    class R:
+                        message = "Agent execution failed"
+                    return R()
+            return Stub()
+
+    reply = Broken().file("bwssb", "case_1", "water", "body", "idem-9")
+    assert reply.outcome is Outcome.UNREACHABLE
+    assert reply.should_pause_sla
+
+
 def test_an_agent_message_is_read_as_text_not_as_a_repr():
     # Regression, and the worst of the batch. str() on a Strands message yields
     # a Python repr, whose trailing "'}]}" ended up inside the ticket reference
