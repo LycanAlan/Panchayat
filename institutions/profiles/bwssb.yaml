@@ -1,0 +1,30 @@
+# BWSSB -- Bangalore Water Supply and Sewerage Board.
+#
+# The institutional tail's primary counterparty and the one the demo turns on.
+# Adversarial by calibration, not by mood: every rate below is a parameter, so
+# Kartik can sweep it and the resolution-rate number means something. That is
+# the difference between a benchmark and a prop.
+
+name: bwssb
+port: 9002
+sla_days: 7
+accepts_services: [water, sewage]
+
+reject_malformed_rate: 0.15
+unreachable_rate: 0.08
+breach_rate: 0.45
+false_closure_rate: 0.30
+mean_response_hours: 36
+
+calibration_note: >
+  false_closure_rate derived from reported Sahaaya and BWSSB behaviour --
+  Bengaluru citizens report civic tickets closed as "resolved" with no work
+  done, and one pothole complaint was opened and re-closed at least fifteen
+  times by hand. breach_rate anchored on Sakala overdue volumes: the state
+  carries over one lakh overdue applications, so a breached statutory window is
+  the normal case rather than the exception. reject_malformed_rate reflects
+  refusal on a missing or mismatched RR number, and unreachable_rate the
+  portal downtime a filing agent has to survive without letting the SLA clock
+  run against a filing that never landed. mean_response_hours is set inside the
+  seven-day charter window so that a breach is a decision the profile makes,
+  not an artefact of the response never arriving.

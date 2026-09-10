@@ -22,8 +22,9 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timedelta
-from typing import Callable, Optional, Protocol
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 WATCHDOG_LAMBDA_ARN = os.environ.get("WATCHDOG_LAMBDA_ARN", "")
 SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN", "")
@@ -53,7 +54,11 @@ class RealClock:
         self._scheduler = scheduler_client
 
     def now(self) -> datetime:
-        return datetime.utcnow()
+        # utcnow() is deprecated and slated for removal. This returns the same
+        # naive-UTC value, which is what the rest of the codebase compares
+        # against -- going timezone-aware here would break every comparison
+        # with a naive datetime, so that is a change to make deliberately.
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _client(self):
         if self._scheduler is None:
@@ -92,10 +97,10 @@ class VirtualClock:
     86400 means one statutory day per real second.
     """
 
-    def __init__(self, scale: float = 86400.0, epoch: Optional[datetime] = None,
-                 on_fire: Optional[Callable[[str, str], None]] = None):
+    def __init__(self, scale: float = 86400.0, epoch: datetime | None = None,
+                 on_fire: Callable[[str, str], None] | None = None):
         self.scale = scale
-        self.epoch = epoch or datetime.utcnow()
+        self.epoch = epoch or datetime.now(timezone.utc).replace(tzinfo=None)
         self._t0 = time.monotonic()
         self._handles: dict[str, asyncio.TimerHandle] = {}
         self._n = 0
@@ -130,10 +135,10 @@ class VirtualClock:
             h.cancel()
 
 
-_ACTIVE: Optional[Clock] = None
+_ACTIVE: Clock | None = None
 
 
-def get_clock(on_fire: Optional[Callable[[str, str], None]] = None) -> Clock:
+def get_clock(on_fire: Callable[[str, str], None] | None = None) -> Clock:
     """The only place TIME_SCALE is read. Import this, not the classes.
 
     MEMOISED, and that is not an optimisation. A VirtualClock fixes its epoch

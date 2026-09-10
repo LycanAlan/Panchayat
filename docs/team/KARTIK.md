@@ -36,9 +36,38 @@ is already decided — implement it, don't redesign it:
 | Claim | `CLAIM#<id>` | `META` | `SEG#<seg>#SVC#<svc>` | `TS#<iso>` |
 | Case | `CASE#<id>` | `META` | `STATUS#<s>` | `TS#<iso>` |
 | Case member | `CASE#<id>` | `HH#<hh>` | — | — |
-| Consent | `HH#<id>` | `CONSENT#<ts>` | — | — |
+| Consent | `HH#<id>` | `CONSENT#<ts>#<grant_id>` | — | — |
 | Filing | `CASE#<id>` | `FILING#<idem>` | — | — |
-| Disclosure | `HH#<id>` | `DISC#<ts>` | — | — |
+| Disclosure | `HH#<id>` | `DISC#<ts>#<uniq>` | — | — |
+| **Case by feeder** | `FEEDER#<f>#SVC#<svc>` | `TS#<iso>#CASE#<id>` | — | — |
+| **Grant pointer** | `GRANT#<grant_id>` | `META` | — | — |
+
+The last four rows differ from the table as it was handed to me. All four were
+raised on Day 1 and **approved by Ali in `docs/review/mesh-day1.md`, D2**. None
+adds a GSI and none changes a declared entity key.
+
+* **Case by feeder.** `recurrence_count()` asks "how many prior cases on this
+  feeder", and the declared Case GSI1 is keyed on `STATUS#`, so there is no
+  index on `feeder_id` at all. Without this row that question is a Scan with a
+  filter — on the number most of the escalation argument rests on. The SK
+  carries `created_at` so the `since` bound is a key condition rather than a
+  filter over every case the feeder ever had. A row is written only once the
+  case HAS a feeder, which is what stops the `""`-to-routed transition
+  stranding one: a stale row would be a permanent +1, drifting in the direction
+  that manufactures a pattern.
+* **Grant pointer.** `revoke_consent()` is handed a `grant_id` and needs the
+  `household_id` to build the PK. The alternatives were a Scan with a filter
+  (which in a single-table design reads every claim, case and filing to find
+  one consent row) or a second GSI. One small write on a rare path makes
+  revocation two O(1) calls, and it lands in the same transaction as the
+  consent so the two cannot drift.
+* **The two uniquifiers.** `CONSENT#<ts>` alone collides when a household
+  grants two scopes in one tick — one screen, two checkboxes — and the second
+  silently overwrites the first. `DISC#<ts>` collides the same way when two
+  fields are released together, and there it under-reports the cumulative
+  disclosure budget, in the direction that lets more through. memstore keeps
+  both rows in each case. An append-only log that silently drops a row is the
+  one bug this table must not have.
 
 `Claim.gsi1pk()` and `.gsi1sk()` already exist in `core/types.py`. Use them.
 

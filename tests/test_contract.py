@@ -113,8 +113,26 @@ def test_virtual_clock_compresses_a_statutory_week(clock):
     """Seven days must be reachable inside a five-day build."""
     start = clock.now()
     deadline = start + timedelta(days=7)
-    assert (deadline - clock.now()).days == 7
+    remaining = (deadline - clock.now()).total_seconds()
+
+    # NOT `.days == 7`. The two now() calls are not simultaneous, and at 86400x
+    # a few microseconds of real time is minutes of virtual time, so .days
+    # truncates 6d23h59m to 6. Whether that happens depends on the platform:
+    # Windows' monotonic clock is coarse (15.6ms) so both calls usually land in
+    # one tick and drift is exactly zero, while a finer clock drifts every run.
+    # Asserting equality made the suite pass here and fail 5/5 for Alakshendra.
+    #
+    # So assert the thing that is actually stable: the gap corresponds to under
+    # a second of REAL elapsed time.
+    drift_real_seconds = (7 * 86400 - remaining) / clock.scale
+    assert 0 <= drift_real_seconds < 1.0, (
+        "two now() calls should be within a second of each other in real time; "
+        "got " + str(drift_real_seconds) + "s"
+    )
+
+    # And the compression itself: seven statutory days cost seven real seconds.
     assert clock.scale == 86400.0
+    assert (7 * 86400) / clock.scale == 7.0
 
 
 def test_missing_backend_function_names_itself():

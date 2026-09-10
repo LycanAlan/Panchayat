@@ -1,0 +1,24 @@
+# Water tanker vendor -- counterparty for the shared-cost tail.
+#
+# SCOPE HONESTY: the shared-cost tail is designed and drawn, not built in the
+# five days. Serves an agent card so the fork is real in the trace.
+
+name: vendor
+port: 9004
+sla_days: 1
+accepts_services: [water]
+
+reject_malformed_rate: 0.08
+unreachable_rate: 0.10
+breach_rate: 0.20
+false_closure_rate: 0.00
+mean_response_hours: 3
+
+calibration_note: >
+  Commercial, not statutory. A tanker vendor has no service guarantee to
+  breach and no incentive to close a job it did not do -- it is paid on
+  delivery, so false_closure_rate is exactly zero rather than merely small.
+  breach_rate models a missed delivery slot during a shortage, when demand
+  spikes across a whole ward at once. unreachable_rate is the highest of the
+  five because a single-operator vendor not answering the phone at 4am is the
+  ordinary case.
