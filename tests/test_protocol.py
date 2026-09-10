@@ -155,6 +155,20 @@ def test_a_reference_before_the_outcome_is_still_found():
     assert DeskReply.find("Ticket BWSSB-100001 is now CLOSED").ref == "BWSSB-100001"
 
 
+def test_an_unclassifiable_reply_still_keeps_its_ticket_number():
+    # The second half of C2, found by Kartik. REOPENED is exactly the reply we
+    # cannot classify and most need to trace -- reopen-and-reclose is the
+    # behaviour named in CLAUDE.md's first paragraph. Dropping the ref leaves
+    # the case unable to say which ticket it is about.
+    reply = DeskReply.find("REOPENED BWSSB-100001: back in queue")
+    assert reply.outcome is Outcome.UNKNOWN
+    assert reply.ref == "BWSSB-100001"
+
+
+def test_an_unclassifiable_reply_with_no_ticket_number_is_still_fine():
+    assert DeskReply.find("no outcome and no ref here").ref == ""
+
+
 def test_the_guard_and_the_parser_agree_on_what_counts():
     # Regression for the seam that reopened C1-C3: a guard matching more
     # loosely than find() let a reply through only for find() to return

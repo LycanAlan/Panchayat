@@ -171,7 +171,15 @@ class DeskReply:
         haystack = text or ""
         matches = list(_OUTCOME_RE.finditer(haystack))
         if not matches:
-            return cls(Outcome.UNKNOWN, detail=haystack.strip()[:200])
+            # No outcome we recognise -- but if the desk named a ticket, keep
+            # it. "REOPENED BWSSB-100001" is precisely the reply we cannot
+            # classify and most need to trace: reopen-and-reclose is the
+            # documented behaviour in CLAUDE.md's opening paragraph, and
+            # dropping the reference leaves the case unable to name the
+            # ticket it is about.
+            stray = _REF_RE.search(haystack)
+            return cls(Outcome.UNKNOWN, ref=stray.group(0) if stray else "",
+                       detail=haystack.strip()[:200])
 
         match = next(
             (m for m in matches if m.start() == 0 or haystack[m.start() - 1] == "\n"),
