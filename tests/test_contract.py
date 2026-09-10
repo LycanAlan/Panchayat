@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from core import db, fakes
-from core.types import CaseStatus, ConsentScope, Service
+from core.types import ConsentScope, Service
 
 
 def test_claims_in_window_filters_by_segment_service_and_time():
@@ -35,7 +37,7 @@ def test_filing_is_idempotent():
     """A retrying Watchdog must not file twice. The second call returns the
     STORED filing, not the new one."""
     first = fakes.a_filing(case_id="case_x", tier=1)
-    written, stored = db.put_filing_once(first)
+    written, _stored = db.put_filing_once(first)
     assert written is True
 
     duplicate = fakes.a_filing(case_id="case_x", tier=1)
@@ -113,3 +115,20 @@ def test_virtual_clock_compresses_a_statutory_week(clock):
     deadline = start + timedelta(days=7)
     assert (deadline - clock.now()).days == 7
     assert clock.scale == 86400.0
+
+
+def test_missing_backend_function_names_itself():
+    """A half-built backend must fail where you called it, saying which
+    function and which backend. Binding None instead gives you
+    "TypeError: 'NoneType' object is not callable" four layers into an agent.
+    """
+    stub = db._unavailable("put_claim")
+    with pytest.raises(NotImplementedError, match="put_claim"):
+        stub(fakes.a_claim())
+
+
+def test_the_seam_declares_the_whole_interface():
+    """REQUIRED is the contract. If someone adds a function to memstore and
+    forgets the seam, the DynamoDB backend silently never needs it."""
+    for name in db.REQUIRED:
+        assert callable(getattr(db, name)), name

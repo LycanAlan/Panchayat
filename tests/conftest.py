@@ -13,8 +13,8 @@ import pytest
 # Force the in-memory backend before anything imports core.db.
 os.environ.setdefault("PANCHAYAT_BACKEND", "memory")
 
-from core import fakes, memstore  # noqa: E402
-from core.clock import VirtualClock  # noqa: E402
+from core import fakes, memstore
+from core.clock import VirtualClock
 
 
 @pytest.fixture(autouse=True)
