@@ -121,11 +121,19 @@ Probed 10 Sep 2026, all three regions, both vendors.
   `us.anthropic.claude-haiku-4-5-20251001-v1:0` for cheap ones.
 - **Claude 3.5 is dead.** It returns `ResourceNotFoundException: This model
   version has reached the end of its life`. Do not copy it from a blog post.
-- **Our account is not yet authorized.** Every invoke returns
-  `ValidationException: Operation not allowed` -- all vendors, all regions,
+- **The block is only the model data plane. AgentCore is live.** Probed
+  10 Sep: Runtime, Memory, Gateway, Identity and Code Interpreter all answer
+  clean. Our deploy target was never blocked -- and that is the part the
+  hackathon grades. Do not plan around losing it.
+- **What IS blocked:** every `bedrock-runtime` invoke returns
+  `ValidationException: Operation not allowed`, all vendors, all regions,
   while the control plane happily lists 120 models. Listing is not access.
-  Support case 178898467100367. Until it clears, build on
-  `PANCHAYAT_BACKEND=memory`; no gate on the Day 1 board needs a model.
+  Account-level authorization, not IAM and not model access; nothing in the
+  console fixes it. Support case 178898467100367.
+- **Read the error, it tells you which problem you have.**
+  `AccessDeniedException` = your IAM user is missing a policy, you can fix it.
+  `ValidationException: Operation not allowed` = the account, you cannot.
+  We wasted a day conflating the two.
 
 ## Scope for the five days
 
