@@ -32,14 +32,21 @@ def invoke(payload: dict) -> dict:
         "language":     "kn",
     }
     """
+    if payload.get("action") == "health":
+        return health(payload)
+
     from graph.request_path import run_request_path
 
     return {"result": run_request_path(payload)}
 
 
-@app.entrypoint
+# NOT @app.entrypoint. BedrockAgentCoreApp.entrypoint does
+# `self.handlers["main"] = func`, so a second decorated function silently
+# REPLACES the first -- health was shadowing invoke, and the deployed runtime
+# would have answered every POST /invocations with {"ok": true} while the whole
+# spine sat unreachable. Reached through the payload instead.
 def health(payload: dict) -> dict:
-    """Day 1 smoke test. Delete once run_request_path is real."""
+    """Smoke test. `{"action": "health"}` to the one entrypoint."""
     return {
         "ok": True,
         "time_scale": os.environ.get("TIME_SCALE", "1"),

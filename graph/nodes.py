@@ -71,22 +71,3 @@ class FunctionNode(MultiAgentBase):
                 )
             },
         )
-
-
-def with_fallback(real: Callable[..., Any], fallback: Callable[..., Any]):
-    """Call the lane's implementation; fall back only if it is still a stub.
-
-    Catches NotImplementedError and NOTHING else on purpose. A real bug in a
-    teammate's code must surface as a failure, not get quietly papered over by
-    canned data that makes the demo look fine.
-
-    Returns (value, was_stubbed).
-    """
-
-    def _call(*args, **kwargs):
-        try:
-            return real(*args, **kwargs), False
-        except NotImplementedError:
-            return fallback(*args, **kwargs), True
-
-    return _call
