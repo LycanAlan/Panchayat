@@ -135,6 +135,58 @@ Probed 10 Sep 2026, all three regions, both vendors.
   `ValidationException: Operation not allowed` = the account, you cannot.
   We wasted a day conflating the two.
 
+## Clustering without embeddings
+
+Settled 10 Sep after the 0.65 ceiling turned up. Read this before touching
+`core/scoring.py`.
+
+**A missing embedding means the semantic term is UNAVAILABLE, not zero.**
+Score it as zero and the ceiling is `0.40 + 0.25 = 0.65`, below `TAU = 0.72`.
+Two houses on one trunk main reporting the same fault a minute apart score a
+perfect 1.0 on both components that ran and still never cross. Nothing errors,
+nothing logs; Pattern Watch just never fires and you lose Day 3 hunting a bug
+that is a missing field.
+
+So: drop the term and renormalise over the weights that did run.
+
+```python
+if a.embedding is None or b.embedding is None:
+    total = (W_TOPOLOGY * topo + W_RECENCY * rec) / (W_TOPOLOGY + W_RECENCY)
+    semantic_available = False
+```
+
+This degrades safely: the decoy on the other feeder scores topology 0, so its
+renormalised ceiling is 0.385 and it still does not cluster.
+
+**`CorrelationScore.semantic_available` must reach the trace UI.** While
+Bedrock is blocked, EVERY cluster forms this way. A demo that shows clusters
+without saying semantic never ran is claiming agreement it did not compute,
+and that is the kind of thing a judge asks about.
+
+### Where embedding does NOT go: `put_claim()`
+
+Tempting and wrong. `core/db.py` requires both backends to behave the same, so
+embedding on write means `memstore` embeds too -- which puts a Bedrock call in
+the offline test suite and takes it from green to unrunnable, today, on a
+blocked account. It also drops a network call, a cost and a failure mode into
+the storage layer, on the household's request path, for a value nothing reads
+until the ambient pass runs.
+
+**Embed in the ambient Pattern Watch Lambda**, on the stream record, off the
+request path, where it can retry and where a failure degrades to the
+renormalised score instead of losing the claim. Storage stores.
+
+### Floats do not go into DynamoDB
+
+`to_dict()` passes `list[float]` straight through and boto3 refuses it:
+`TypeError: Float types are not supported. Use Decimal types instead.` The
+obvious fix is a `Decimal` per element, and that is the trap -- measured, a
+1024-dim vector becomes **~32KB** of full-precision Decimals per claim against
+a 400KB item ceiling, on every write.
+
+**Pack as base64 float16: ~2.7KB, twelve times smaller.** Correctness first,
+and the cost story survives.
+
 ## Scope for the five days
 
 **Built:** institutional tail only, text intake, 9 agents, one ward of curated

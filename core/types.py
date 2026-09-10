@@ -69,8 +69,19 @@ def new_id(prefix: str) -> str:
 
 
 def _now() -> datetime:
-    """Defaults only. Production code takes time from core.clock.Clock."""
-    return datetime.utcnow()
+    """Defaults only -- production code should still pass time explicitly.
+
+    But the default has to come from the clock too. `created_at` defaults are
+    what a Claim built mid-demo actually gets, and under TIME_SCALE=86400 a
+    wall-clock stamp is one the Watchdog's compressed deadlines will never
+    agree with: the claim looks days old the instant it is created, or never
+    ages at all. Hard rule 1 has no exception for defaults.
+
+    Late import so `core.types` stays importable on its own.
+    """
+    from core.clock import get_clock
+
+    return get_clock().now()
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +284,12 @@ class CorrelationScore:
     semantic: float
     total: float
     above_threshold: bool
+    # False when neither claim carried an embedding, so `semantic` is absent
+    # rather than genuinely zero and `total` was renormalised over the two
+    # components that ran. The trace and the eval harness MUST surface this:
+    # while Bedrock is blocked every cluster forms this way, and a demo that
+    # hides it is claiming semantic agreement it never computed.
+    semantic_available: bool = True
 
 
 @dataclass

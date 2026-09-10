@@ -130,9 +130,34 @@ class VirtualClock:
             h.cancel()
 
 
+_ACTIVE: Optional[Clock] = None
+
+
 def get_clock(on_fire: Optional[Callable[[str, str], None]] = None) -> Clock:
-    """The only place TIME_SCALE is read. Import this, not the classes."""
-    scale = float(os.environ.get("TIME_SCALE", "1"))
-    if scale <= 1.0:
-        return RealClock()
-    return VirtualClock(scale=scale, on_fire=on_fire)
+    """The only place TIME_SCALE is read. Import this, not the classes.
+
+    MEMOISED, and that is not an optimisation. A VirtualClock fixes its epoch
+    and its monotonic origin at construction, so two of them are two unrelated
+    timelines. Under TIME_SCALE=86400, a clock built ten real seconds after the
+    first one reports a virtual `now` **ten days earlier** than its sibling.
+    Deadlines set on one would be compared against the other and the Watchdog
+    would fire at nonsense times, or never.
+
+    One process, one timeline. Call this as often as you like.
+    """
+    global _ACTIVE
+    if _ACTIVE is None:
+        scale = float(os.environ.get("TIME_SCALE", "1"))
+        _ACTIVE = RealClock() if scale <= 1.0 else VirtualClock(
+            scale=scale, on_fire=on_fire)
+    # A later caller may be the one that knows how to fire the Watchdog.
+    if on_fire is not None and isinstance(_ACTIVE, VirtualClock):
+        _ACTIVE._on_fire = on_fire
+    return _ACTIVE
+
+
+def reset_clock() -> None:
+    """Tests only. Drops the memoised clock so the next get_clock() re-reads
+    TIME_SCALE. Never call this from application code."""
+    global _ACTIVE
+    _ACTIVE = None
