@@ -100,7 +100,7 @@ try:
 except Exception as e:
     print(type(e).__name__ + ': ' + str(e)[:120])
 "@ 2>&1
-        Check "model invocable" ($probe -match "INVOKE_OK") "$probe" "Bedrock > Model access > Modify. On a new account this can also be a verification hold -- wait and retry."
+        Check "model invocable" ($probe -match "INVOKE_OK") "$probe" "'Operation not allowed' = the ACCOUNT is not authorized for Bedrock's data plane. Not fixable in the console (the Model access page is retired); it needs a support case. Build offline with PANCHAYAT_BACKEND=memory until it clears."
     }
 }
 

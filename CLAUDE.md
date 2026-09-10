@@ -110,6 +110,23 @@ app.run()   # POST /invocations on :8080
 That is correct inside one household and catastrophic across households -- it is
 the verified reason the mesh uses A2A rather than a bigger swarm.
 
+## Bedrock: which region, which model
+
+Probed 10 Sep 2026, all three regions, both vendors.
+
+- **Models run in `us-east-1`.** `ap-south-1` has **no Anthropic inference
+  profiles at all** -- our data stays in ap-south-1, the model calls do not.
+- **Use the region-prefixed inference profile ID, never the bare model ID:**
+  `us.anthropic.claude-sonnet-5` for reasoning nodes,
+  `us.anthropic.claude-haiku-4-5-20251001-v1:0` for cheap ones.
+- **Claude 3.5 is dead.** It returns `ResourceNotFoundException: This model
+  version has reached the end of its life`. Do not copy it from a blog post.
+- **Our account is not yet authorized.** Every invoke returns
+  `ValidationException: Operation not allowed` -- all vendors, all regions,
+  while the control plane happily lists 120 models. Listing is not access.
+  Support case 178898467100367. Until it clears, build on
+  `PANCHAYAT_BACKEND=memory`; no gate on the Day 1 board needs a model.
+
 ## Scope for the five days
 
 **Built:** institutional tail only, text intake, 9 agents, one ward of curated
