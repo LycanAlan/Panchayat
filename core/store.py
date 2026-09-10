@@ -25,6 +25,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 import boto3
 import numpy as np
@@ -48,12 +49,20 @@ from core.types import (
 
 TABLE = os.environ.get("PANCHAYAT_TABLE", "panchayat")
 
-# Set to http://localhost:8000 to run the contract tests against DynamoDB Local
-# instead of the real table. Unset in production, where boto3 resolves the
-# regional endpoint itself.
-ENDPOINT = os.environ.get("PANCHAYAT_DDB_ENDPOINT") or None
-
 _table = None
+
+
+def _endpoint() -> str | None:
+    """Set PANCHAYAT_DDB_ENDPOINT to http://localhost:8000 to run the contract
+    tests against DynamoDB Local instead of the real table. Unset in
+    production, where boto3 resolves the regional endpoint itself.
+
+    Read HERE, at call time, rather than captured at import. Captured, a test
+    that set the variable after the module was imported moved the reset guard's
+    verdict but not the already-built table handle -- so the guard could
+    approve one endpoint while the wipe ran against another.
+    """
+    return os.environ.get("PANCHAYAT_DDB_ENDPOINT") or None
 
 
 def _t():
@@ -66,15 +75,12 @@ def _t():
     """
     global _table
     if _table is None:
-        _table = boto3.resource("dynamodb", endpoint_url=ENDPOINT).Table(TABLE)
+        _table = boto3.resource(
+            "dynamodb", endpoint_url=_endpoint()).Table(TABLE)
     return _table
 
 
 # --------------------------------------------------------------- encoding
-
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt is not None else None
-
 
 def _dt(raw: Any) -> datetime | None:
     return datetime.fromisoformat(raw) if raw else None
@@ -154,7 +160,11 @@ def _claim_item(claim: Claim) -> dict:
     d.update(
         PK="CLAIM#" + claim.claim_id,
         SK="META",
-        GSI1PK=claim.gsi1pk(),
+        # NOT claim.gsi1pk(): that helper is in the frozen core/types.py and
+        # does `self.service.value`, which raises AttributeError on the bare
+        # string memstore accepts happily -- the seam's whole job is to catch
+        # that, and this is the write path of the busiest entity we have.
+        GSI1PK="SEG#" + claim.segment + "#SVC#" + _svc(claim.service),
         GSI1SK=claim.gsi1sk(),
         _type="claim",
     )
@@ -250,14 +260,40 @@ def _case_from(item: dict) -> Case:
 
 def _feeder_index_key(feeder_id: str, service, created_at: datetime,
                       case_id: str) -> dict:
+    """PK=FEEDER#<feeder>#SVC#<svc>  SK=TS#<created_at>#CASE#<case_id>.
+
+    THE SK IS IMMUTABLE for the life of a case: created_at never changes and
+    neither does case_id. The instability was never in the SK -- it is in the
+    PK, because feeder_id genuinely changes. A Case is opened with the
+    dataclass default feeder_id="" and is given a real feeder once routing
+    runs, so "the feeder moved" is the normal life of a case, not an edge.
+
+    Keeping the timestamp in the SK is the one place I have not followed the
+    review. Keying on `CASE#<id>` alone makes the row stable in the SK, but the
+    SK was already stable, and it would move recurrence_count's `since` bound
+    out of the key condition and into a filter -- reading and billing for every
+    case ever opened on that feeder before discarding the old ones. That is the
+    same argument as claims_in_window and I would rather not make it twice in
+    opposite directions. The orphan the review is aiming at is closed by
+    _feeder_index_item and put_case below instead.
+    """
     return {
         "PK": "FEEDER#" + feeder_id + "#SVC#" + _svc(service),
         "SK": "TS#" + created_at.isoformat() + "#CASE#" + case_id,
     }
 
 
-def _feeder_index_item(case: Case) -> dict:
-    """Lets recurrence_count() be a Query instead of a Scan. See that function."""
+def _feeder_index_item(case: Case) -> dict | None:
+    """The row that lets recurrence_count() be a Query instead of a Scan.
+
+    None until the case has a feeder. That is what closes the orphan: the
+    ""-to-routed transition is the only key move a case makes in its normal
+    life, and there is nothing at the "" key to leave behind because we never
+    wrote one. An unrouted case is not a prior case on any feeder, so it is
+    also the right answer to the question recurrence_count asks.
+    """
+    if not case.feeder_id:
+        return None
     d = _feeder_index_key(case.feeder_id, case.service, case.created_at,
                           case.case_id)
     d.update(_type="case_by_feeder", case_id=case.case_id)
@@ -267,30 +303,34 @@ def _feeder_index_item(case: Case) -> dict:
 def put_case(case: Case) -> None:
     """Writes the case and maintains its feeder index row.
 
-    The index key is derived from feeder_id, service and created_at, so it is
-    NOT stable across a case's life: a Case opened with the dataclass default
-    feeder_id="" and given a real feeder once routing runs moves to a different
-    key, and the row at the old one would otherwise survive forever. Nothing
-    reads those rows except recurrence_count, which counts them -- so a stale
-    row is a permanent +1 on the number the whole escalation argument rests on,
-    drifting in the direction that manufactures a pattern.
+    ONE round trip, not two. This used to open with a GetItem to find where the
+    case's index row lived before, which graph/request_path.py paid on every
+    request for a brand-new case_id -- a guaranteed miss on the hot path.
+    PutItem returns the previous item for free with ReturnValues=ALL_OLD, so
+    the same question is answered by the write itself.
 
-    Hence the read before the write: one GetItem to find where this case's
-    index row used to live, and a delete if it has moved.
+    That also removes a stale-read hazard rather than moving it: the old
+    GetItem was an eventually-consistent read of an item three writers touch,
+    so it could return a feeder that was already out of date and delete the
+    wrong row. ALL_OLD is what this write actually replaced.
+
+    A re-route -- a case genuinely moved from one feeder to another, which is a
+    correction rather than routine -- is the only case that still moves the
+    key, and the returned old image is what catches it.
     """
-    stored = _t().get_item(
-        Key={"PK": "CASE#" + case.case_id, "SK": "META"}).get("Item")
-    new_key = _feeder_index_key(case.feeder_id, case.service, case.created_at,
-                                case.case_id)
-    if stored:
-        old_key = _feeder_index_key(
-            stored.get("feeder_id", ""), stored.get("service", ""),
-            _dt(stored["created_at"]), case.case_id)
-        if old_key != new_key:
-            _t().delete_item(Key=old_key)
+    old = _t().put_item(
+        Item=_case_item(case), ReturnValues="ALL_OLD").get("Attributes")
 
-    _t().put_item(Item=_case_item(case))
-    _t().put_item(Item=_feeder_index_item(case))
+    new_row = _feeder_index_item(case)
+    if new_row is not None:
+        _t().put_item(Item=new_row)
+
+    if old and old.get("feeder_id"):
+        old_key = _feeder_index_key(
+            old["feeder_id"], old.get("service", ""),
+            _dt(old["created_at"]), case.case_id)
+        if not new_row or old_key["PK"] != new_row["PK"]:
+            _t().delete_item(Key=old_key)
 
 
 def get_case(case_id: str) -> Case | None:
@@ -606,14 +646,29 @@ def filings_for_case(case_id: str) -> list[Filing]:
 
 # ----------------------------------------------------------------- tests
 
-_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+_LOCAL_HOSTS = frozenset(
+    ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal", "::1"))
 
 
-def _reset_is_allowed() -> bool:
-    """True only for a local endpoint, or an explicit opt-in."""
+def _reset_is_allowed(endpoint: str | None) -> bool:
+    """True only for a local endpoint, or an explicit opt-in.
+
+    Compares the parsed HOST, not a substring of the URL. `"localhost" in
+    "http://localhost.example.com/"` is True, and that is a real host on the
+    public internet which any DNS wildcard can point wherever it likes -- so
+    the substring version approved a wipe of somebody else's table.
+
+    Takes the endpoint as an argument rather than reading it, so reset() can
+    hand it the endpoint the delete is ACTUALLY going to: read from the
+    environment here, the guard could clear one endpoint while the cached table
+    handle pointed at another.
+    """
     if os.environ.get("PANCHAYAT_ALLOW_DESTRUCTIVE_RESET", "").lower() == "yes":
         return True
-    return bool(ENDPOINT) and any(h in ENDPOINT for h in _LOCAL_HOSTS)
+    if not endpoint:
+        return False
+    host = urlparse(endpoint).hostname or ""
+    return host.lower() in _LOCAL_HOSTS
 
 
 def reset() -> None:
@@ -632,15 +687,23 @@ def reset() -> None:
     PANCHAYAT_DDB_ENDPOINT at DynamoDB Local -- silently empties the shared
     team table. Set PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes if you genuinely
     mean the real one.
+
+    The endpoint checked is the one on the LIVE client, not the one in the
+    environment. They can differ -- the handle is built once and cached, so a
+    variable set afterwards changes what the guard reads and not where the
+    deletes land -- and of the two it is the client's that decides what gets
+    destroyed.
     """
-    if not _reset_is_allowed():
+    table = _t()
+    live = table.meta.client.meta.endpoint_url
+    if not _reset_is_allowed(live):
         raise RuntimeError(
             "store.reset() would delete every row in table '" + TABLE
-            + "' at " + (ENDPOINT or "the real AWS endpoint")
+            + "' at " + (live or "the real AWS endpoint")
             + ". Point PANCHAYAT_DDB_ENDPOINT at DynamoDB Local, or set "
             "PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes if you mean it."
         )
-    table = _t()
+
     start: dict | None = None
     while True:
         kwargs: dict[str, Any] = {"ProjectionExpression": "PK, SK"}
