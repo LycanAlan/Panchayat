@@ -7,7 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **10 Sep, 19:44** by Alakshendra
+Last updated: **10 Sep, 21:10** by Ali
 
 ---
 
@@ -15,19 +15,19 @@ Last updated: **10 Sep, 19:44** by Alakshendra
 
 | Blocker | Who it stops | Workaround in place | Owner |
 |---|---|---|---|
-| **Bedrock not authorised** (AWS account flag, support case 178898467100367) | anything invoking a model | none needed yet, Day 1 work has no model calls | Ali |
+| **Bedrock MODEL calls not authorised** (account flag, support case 178898467100367) | anything invoking a model | `core/models.py` seam: `PANCHAYAT_MODEL=anthropic` + an API key swaps provider in one env var. **AgentCore itself is LIVE** — the deploy target was never blocked. | Ali |
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
-| `test_virtual_clock_compresses_a_statutory_week` fails 5/5 | anyone reading a red suite as their own breakage | none — see note below | Raghav / Ali |
+| ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
 
-**On that failing clock test** (found 10 Sep by Alakshendra, not fixed — not my
-lane). It is the test that is wrong, not `core/clock.py`. At `scale=86400` the
-~20 microseconds between the two `now()` calls advances virtual time about 1.7
-seconds, so `(deadline - clock.now()).days` truncates 6d 23h 59m 58s down to 6
-and the `== 7` assertion fails. It is not intermittent on this machine; it fails
-every time. Comparing whole seconds rather than `.days` fixes it. Flagging
-rather than editing, because `tests/test_contract.py` is Ali's and
-`core/clock.py` is Raghav's — but until one of you takes it, everyone else sees
-a red suite and has to work out it is not theirs.
+**On that clock test** — Alakshendra's diagnosis was right and it is fixed.
+Worth knowing why it passed here and failed there: Windows' `monotonic()` has
+15.625ms resolution, so both `now()` calls usually land in the SAME tick and the
+drift is exactly zero. On a finer clock it never is. The assertion was really
+testing the platform's timer. It now asserts the gap corresponds to under a
+second of REAL elapsed time, which is stable everywhere.
+
+**Good catch, and the right call to flag rather than edit.** That is exactly
+what STATUS.md is for.
 
 ---
 
@@ -38,9 +38,9 @@ a red suite and has to work out it is not theirs.
 | **shared** | `core/types.py` | **DONE, FROZEN** | Raise changes in the group |
 | **shared** | `core/clock.py` | **DONE** | Real + virtual, one code path |
 | **shared** | `core/memstore.py` | **DONE** | In-memory, full interface |
-| **shared** | `core/db.py` | **DONE** | The seam. Import from here. |
+| **shared** | `core/db.py` | **DONE** | The seam. Import from here. Missing backend fns now raise by name instead of binding `None`. |
 | **shared** | `core/fakes.py` | **DONE** | `the_outage()` has 12 claims + a decoy |
-| **shared** | `tests/` | **DONE** | 7 contract tests, no AWS needed |
+| **shared** | `tests/` | **DONE** | **58 passing**, no AWS needed |
 | Kartik | `core/store.py` | not started | DynamoDB. Must pass `tests/test_contract.py`. |
 | Kartik | `core/scoring.py` | not started | |
 | Kartik | `agents/pattern_watch.py` | not started | |
@@ -52,9 +52,11 @@ a red suite and has to work out it is not theirs.
 | Raghav | `agents/household.py` | not started | |
 | Raghav | `agents/warden.py` | not started | |
 | Raghav | `agents/watchdog.py` | not started | |
-| Ali | `graph/request_path.py` | not started | |
+| Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
 | Ali | AgentCore deploy | not started | **do this Day 2, not Day 4** |
+| Ali | `graph/trace.py` | **DONE** | `CaseTrace`. The demo surface, built with the spine not after it. |
+| Ali | `core/models.py` | **DONE** | Model seam. `get_model("reason"|"cheap")`. Never hardcode a model ID. |
 | Ali | trace UI | not started | |
 
 ---
@@ -66,7 +68,7 @@ a red suite and has to work out it is not theirs.
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
 | Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | — |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
-| Ali | one claim in, one filing out, **on deployed infra** | — |
+| Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
 
 ---
 
@@ -82,3 +84,8 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **10 Sep** — `ward12-9thmain` is curated into the real table because `core.fakes.the_outage()` uses it as the decoy. The fixture keeps working after the sample file goes.
 - **10 Sep** — The jurisdiction table is **water only**, per the Day 1 brief: one ward deep beats five wards shallow. A garbage or pothole complaint therefore resolves to nothing and the Remedy Agent says so and asks. That is the designed answer, not a gap — `eval/routing_accuracy.py` scores declining as correct.
 - **10 Sep** — The table deliberately answers three different authorities. If every segment answered BWSSB, a stub returning the string would score 100% on the routing gate.
+- **10 Sep** — The request spine is wired with every node stubbed rather than waiting for agents. Nodes call the real implementation and fall back **only** on `NotImplementedError`, marking the trace `(STUB)`. Any other exception fails loudly: canned data that hides a teammate's bug is worse than a red run. Your stub marker disappears the moment your module lands — no rewiring, no `if demo_mode:`.
+- **10 Sep** — Per-request state travels in Strands' `invocation_state`, not a module global. Two households reporting at once must not write into each other's case.
+- **10 Sep** — Models go through `core/models.py`. Never construct a `BedrockModel` in an agent file and never hardcode a model ID — Claude 3.5 is EOL and is exactly what gets copied off a blog post. `us-east-1`, because **ap-south-1 has no Anthropic inference profiles at all**.
+- **10 Sep** — A missing embedding makes the semantic term **unavailable, not zero**. Scored as zero the ceiling is 0.65 against TAU 0.72, so two houses on one trunk main reporting the same fault a minute apart would never cluster, silently. Renormalise over the weights that ran; see CLAUDE.md.
+- **10 Sep** — Embedding does **not** happen in `put_claim()`. Both db backends must match, so that puts a Bedrock call in the offline suite. It belongs in the ambient Pattern Watch pass.
