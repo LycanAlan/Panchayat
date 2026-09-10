@@ -1,0 +1,119 @@
+"""Calibrated adversary. Runs without AWS credentials and without a live A2A server.
+
+Owner: Alakshendra
+"""
+
+import ast
+import pathlib
+
+import pytest
+
+from core.types import InstitutionProfile
+from institutions.server import PROFILE_DIR, UNREACHABLE, Desk, load_profile
+
+NAMES = ["ward", "bwssb", "school", "vendor", "payments"]
+
+
+def _profile(**kw) -> InstitutionProfile:
+    base = {"name": "test", "port": 9999, "sla_days": 7,
+            "reject_malformed_rate": 0.0, "unreachable_rate": 0.0,
+            "breach_rate": 0.0, "false_closure_rate": 0.0,
+            "mean_response_hours": 36.0, "accepts_services": ["water"],
+            "calibration_note": "test fixture"}
+    base.update(kw)
+    return InstitutionProfile(**base)
+
+
+def test_all_five_profiles_load_on_their_agreed_ports():
+    ports = {name: load_profile(name).port for name in NAMES}
+    assert ports == {"ward": 9001, "bwssb": 9002, "school": 9003,
+                     "vendor": 9004, "payments": 9005}
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_every_rate_is_cited(name):
+    # An uncited rate is a number we made up, and it turns the benchmark back
+    # into a prop.
+    profile = load_profile(name)
+    assert len(profile.calibration_note) > 80
+    for rate in (profile.reject_malformed_rate, profile.unreachable_rate,
+                 profile.breach_rate, profile.false_closure_rate):
+        assert 0.0 <= rate <= 1.0
+
+
+def test_an_uncited_profile_is_refused(tmp_path, monkeypatch):
+    (tmp_path / "sloppy.yaml").write_text("name: sloppy\nport: 9100\n", encoding="utf-8")
+    monkeypatch.setattr("institutions.server.PROFILE_DIR", tmp_path)
+    with pytest.raises(ValueError, match="calibration_note"):
+        load_profile("sloppy")
+
+
+def test_no_institution_touches_our_table():
+    # Shared state would make the trust boundary decorative and the A2A
+    # argument with it. This is the one import that must never appear.
+    # Parsed, not grepped: the string itself is all over the docstrings saying
+    # exactly this.
+    for path in pathlib.Path(__file__).resolve().parents[1].glob("institutions/*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith("core.store"), path.name
+            elif isinstance(node, ast.Import):
+                assert all(not a.name.startswith("core.store") for a in node.names), path.name
+
+
+def test_a_retry_does_not_file_twice():
+    desk = Desk(_profile())
+    first = desk.accept("case_1", "water", "duration 3 days, affected 9 houses", "idem-1")
+    second = desk.accept("case_1", "water", "duration 3 days, affected 9 houses", "idem-1")
+    assert first.startswith("ACCEPTED")
+    assert second.startswith("DUPLICATE")
+    assert len(desk.tickets) == 1
+
+
+def test_wrong_office_is_refused():
+    desk = Desk(_profile(accepts_services=["water"]))
+    assert desk.accept("case_1", "roads", "pothole", "idem-2").startswith("REJECTED")
+
+
+def test_downtime_does_not_produce_a_ticket():
+    # The caller must pause the SLA clock rather than run it against a filing
+    # that never landed.
+    desk = Desk(_profile(unreachable_rate=1.0))
+    assert desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-3").startswith(UNREACHABLE)
+    assert desk.tickets == {}
+
+
+def test_false_closure_says_resolved_when_it_is_not():
+    # The demo's peak. The Watchdog disputes this with live claims from other
+    # households -- ground truth a single citizen could never hold.
+    desk = Desk(_profile(false_closure_rate=1.0))
+    ref = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-4").split()[1]
+    closed = desk.close(ref)
+    assert "resolved" in closed
+    assert desk.tickets[ref].actually_resolved is False
+
+
+def test_an_honest_closure_is_marked_honest():
+    desk = Desk(_profile(false_closure_rate=0.0))
+    ref = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-5").split()[1]
+    desk.close(ref)
+    assert desk.tickets[ref].actually_resolved is True
+
+
+def test_a_breaching_ticket_stays_open_past_the_window():
+    desk = Desk(_profile(breach_rate=1.0, sla_days=0, mean_response_hours=0.0))
+    ref = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-6").split()[1]
+    assert desk.status(ref).startswith("OPEN")
+
+
+def test_rejections_are_legible():
+    # Ali's trace UI shows this string. "REJECTED" on its own tells a household
+    # nothing it can act on.
+    desk = Desk(_profile())
+    ref = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-7").split()[1]
+    assert "RR number" in desk.reject(ref, "RR number does not match the address")
+
+
+def test_profiles_directory_holds_exactly_the_five():
+    assert sorted(p.stem for p in PROFILE_DIR.glob("*.yaml")) == sorted(NAMES)

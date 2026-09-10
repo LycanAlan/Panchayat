@@ -1,0 +1,514 @@
+# Panchayat jurisdiction table -- Ward 12, water services.
+#
+# CURATED, NEVER GENERATED. The Remedy Agent may return one of these entries or
+# say it does not know. It may not invent an authority. A hallucinated body
+# reproduces the exact failure this project claims to fix: filing against the
+# wrong department is the most common way a valid complaint dies, and the
+# citizen is never told that is what happened -- only that the ticket closed.
+#
+# Owner: Alakshendra. Adding a segment means curating it by hand.
+#
+# ---------------------------------------------------------------------------
+# Why this table is not a constant function
+#
+# Twenty-four of these thirty segments answer BWSSB. If that were all of them,
+# the routing eval would prove nothing -- a stub returning "BWSSB" would score
+# 100%. Three real discriminations are curated in, and each is a documented
+# Bengaluru failure mode rather than a synthetic hard case:
+#
+#   1. BWSSB trunk mains (24 segments). Water supply and sewerage are BWSSB's;
+#      the standing wrong answer is BBMP.
+#   2. BBMP borewell supply (3 segments). Areas in the 110 villages absorbed
+#      into BBMP in 2008 were on local-body borewells before BWSSB extended the
+#      Cauvery network. There the correct body is BBMP and the helpline is 1533,
+#      not 1915 -- so the right answer depends on which side of an absorption
+#      boundary the house sits, which nobody living there can be expected to
+#      know.
+#   3. Builder's internal line, pre-handover (3 segments). In a private layout
+#      the internal distribution belongs to the developer until formal handover.
+#      BWSSB will decline these, correctly, and the household reads that as
+#      being ignored.
+#
+# ---------------------------------------------------------------------------
+# Citations
+#
+# statute_ref names a document and the kind of clause relied on. It does not
+# invent clause numbers. Before the demo, verify each against the published
+# charter and replace with the exact clause -- an unverifiable citation on
+# camera is worse than a general one.
+#
+#   BWSSB Citizen Charter        supply interruption, restoration windows
+#   Sakala (Karnataka Guarantee of Services to Citizens Act, 2011)
+#                                per-service statutory day counts, appeal to a
+#                                named Competent Officer against a GSC number,
+#                                and compensation of Rs 20/day up to Rs 500
+#                                deducted from the responsible officer's salary
+#   Karnataka Apartment Ownership Act, 1972
+#                                maintenance of common services pending handover
+#
+# Helplines: BWSSB 1915. BBMP 1533.
+#
+# ---------------------------------------------------------------------------
+# feeder_id is load-bearing and is the field people forget.
+#
+# Kartik's topology score is 1.0 for a shared trunk main and 0.15 for an
+# adjacent segment on a different one. Two houses fifty metres apart on
+# different feeders are not the same fault; two houses four hundred metres
+# apart on one trunk main are. It costs nothing to record while curating and
+# cannot be recovered afterwards.
+#
+# aliases feed the intake extractor -- how a person actually writes the street
+# in a complaint. Curated here so the mapping lives with the data and not in
+# three copies across the eval, the corpus and the agent.
+# ---------------------------------------------------------------------------
+
+ladders:
+
+  bwssb: &ladder_bwssb
+    - tier: 1
+      authority: "BWSSB Assistant Engineer, sub-division office"
+      window_days: 7
+      statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+      description: "First filing. Complaint number issued against the RR number."
+    - tier: 2
+      authority: "BWSSB Assistant Executive Engineer, service station"
+      window_days: 7
+      statute_ref: "BWSSB Citizen Charter, escalation on unresolved complaint"
+      description: "Reopen with contradicting evidence. Corroborated household count matters here."
+    - tier: 3
+      authority: "Sakala Competent Officer, public grievance portal"
+      window_days: 15
+      statute_ref: "Karnataka Guarantee of Services to Citizens Act 2011, appeal against a GSC number"
+      description: "Statutory window. Compensation of Rs 20/day up to Rs 500 from the officer's salary."
+    - tier: 4
+      authority: "RTI application (drafted only, never filed by the system)"
+      window_days: 30
+      statute_ref: "Right to Information Act 2005, section 6 application to the PIO"
+      description: "Needs a citizen name, address and Rs 10. The system supplies none of the three."
+
+  bbmp: &ladder_bbmp
+    - tier: 1
+      authority: "BBMP Assistant Engineer, ward office"
+      window_days: 3
+      statute_ref: "BBMP ward-level water supply, tanker arrangement on borewell failure"
+      description: "Borewell areas have no metered RR number. Ward number identifies the connection."
+    - tier: 2
+      authority: "BBMP Executive Engineer, zonal office"
+      window_days: 7
+      statute_ref: "BBMP grievance escalation, Sahaaya ticket unresolved at ward level"
+      description: "Sahaaya tickets are closed as resolved without work done. Reopen with live claims."
+    - tier: 3
+      authority: "Sakala Competent Officer, public grievance portal"
+      window_days: 15
+      statute_ref: "Karnataka Guarantee of Services to Citizens Act 2011, appeal against a GSC number"
+      description: "BBMP alone carries 10,000+ pending Sakala applications. The breach is the norm."
+    - tier: 4
+      authority: "RTI application (drafted only, never filed by the system)"
+      window_days: 30
+      statute_ref: "Right to Information Act 2005, section 6 application to the PIO"
+      description: "Requests the ward's borewell maintenance log."
+
+  developer: &ladder_developer
+    - tier: 1
+      authority: "Layout developer maintenance desk"
+      window_days: 7
+      statute_ref: "Karnataka Apartment Ownership Act 1972, maintenance of common services pending handover"
+      description: "Contractual, not statutory. There is no clock the state will enforce."
+    - tier: 2
+      authority: "Residents' welfare association managing committee"
+      window_days: 7
+      statute_ref: "Karnataka Apartment Ownership Act 1972, association's maintenance obligation"
+      description: "The RWA is the only body with leverage before handover."
+    - tier: 3
+      authority: "BBMP ward engineer, urban local body of record"
+      window_days: 15
+      statute_ref: "Karnataka Guarantee of Services to Citizens Act 2011, appeal against a GSC number"
+      description: "The ULB can compel handover. It cannot repair an unhanded-over line itself."
+    - tier: 4
+      authority: "RTI application (drafted only, never filed by the system)"
+      window_days: 30
+      statute_ref: "Right to Information Act 2005, section 6 application to the PIO"
+      description: "Asks BWSSB whether the layout was ever handed over. Usually the whole answer."
+
+entries:
+
+  # -- bwssb-tm-14 -- Cauvery trunk main, cross-street cluster ---------------
+
+  - service: water
+    segment: ward12-4thcross
+    feeder_id: bwssb-tm-14
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["4th cross", "4th cross road", "fourth cross"]
+
+  - service: water
+    segment: ward12-5thcross
+    feeder_id: bwssb-tm-14
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["5th cross", "5th cross road", "fifth cross"]
+
+  - service: water
+    segment: ward12-3rdcross
+    feeder_id: bwssb-tm-14
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["3rd cross", "3rd cross road", "third cross"]
+
+  - service: water
+    segment: ward12-templestreet
+    feeder_id: bwssb-tm-14
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["temple street", "temple road"]
+
+  - service: water
+    segment: ward12-mainroad
+    feeder_id: bwssb-tm-14
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["ward 12 main road", "12th ward main road"]
+
+  # -- bwssb-tm-15 -- main-road cluster, north of the tank ------------------
+
+  - service: water
+    segment: ward12-6thmain
+    feeder_id: bwssb-tm-15
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["6th main", "6th main road", "sixth main"]
+
+  - service: water
+    segment: ward12-7thmain
+    feeder_id: bwssb-tm-15
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["7th main", "7th main road", "seventh main"]
+
+  - service: water
+    segment: ward12-8thmain
+    feeder_id: bwssb-tm-15
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["8th main", "8th main road", "eighth main"]
+
+  - service: water
+    segment: ward12-parkextension
+    feeder_id: bwssb-tm-15
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["park extension", "park extn"]
+
+  - service: water
+    segment: ward12-lakeviewroad
+    feeder_id: bwssb-tm-15
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["lake view road", "lakeview road"]
+
+  # -- bwssb-tm-16 -- staged layout, east ------------------------------------
+
+  - service: water
+    segment: ward12-1ststage
+    feeder_id: bwssb-tm-16
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["1st stage", "first stage"]
+
+  - service: water
+    segment: ward12-2ndstage
+    feeder_id: bwssb-tm-16
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["2nd stage", "second stage"]
+
+  - service: water
+    segment: ward12-3rdstage
+    feeder_id: bwssb-tm-16
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["3rd stage", "third stage"]
+
+  - service: water
+    segment: ward12-schoolstreet
+    feeder_id: bwssb-tm-16
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["school street", "school road"]
+
+  - service: water
+    segment: ward12-hospitalroad
+    feeder_id: bwssb-tm-16
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["hospital road", "hospital street"]
+
+  # -- bwssb-tm-22 -- station side ------------------------------------------
+
+  - service: water
+    segment: ward12-stationroad
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["station road", "railway station road"]
+
+  - service: water
+    segment: ward12-marketroad
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["market road", "market street"]
+
+  - service: water
+    segment: ward12-busstandroad
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["bus stand road", "bus stop road"]
+
+  - service: water
+    segment: ward12-postofficelane
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["post office lane", "post office road"]
+
+  - service: water
+    segment: ward12-libraryroad
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["library road", "library street"]
+
+  # -- bwssb-tm-23 -- industrial edge ---------------------------------------
+
+  - service: water
+    segment: ward12-millroad
+    feeder_id: bwssb-tm-23
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["mill road", "mill street"]
+
+  - service: water
+    segment: ward12-factorylane
+    feeder_id: bwssb-tm-23
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["factory lane", "factory road"]
+
+  - service: water
+    segment: ward12-depotroad
+    feeder_id: bwssb-tm-23
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["depot road", "bus depot road"]
+
+  - service: water
+    segment: ward12-warehousestreet
+    feeder_id: bwssb-tm-23
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["warehouse street", "godown street", "godown road"]
+
+  # -- bbmp-bore-07 -- absorbed village, borewell supply ---------------------
+  # The 110 villages absorbed into BBMP in 2008 were on local-body borewells
+  # before the Cauvery network reached them. Here BWSSB is the WRONG answer and
+  # the helpline is 1533. Nobody living on this street can be expected to know
+  # that, which is exactly why the lookup is grounded.
+
+  - service: water
+    segment: ward12-oldvillage
+    feeder_id: bbmp-bore-07
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 3
+    statute_ref: "BBMP ward-level water supply, tanker arrangement on borewell failure"
+    required_fields: [ward_number, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp
+    aliases: ["old village", "hale ooru", "village area"]
+
+  - service: water
+    segment: ward12-keremohalla
+    feeder_id: bbmp-bore-07
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 3
+    statute_ref: "BBMP ward-level water supply, tanker arrangement on borewell failure"
+    required_fields: [ward_number, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp
+    aliases: ["kere mohalla", "kere mohalla road", "lake mohalla"]
+
+  - service: water
+    segment: ward12-gunduthopelane
+    feeder_id: bbmp-bore-07
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 3
+    statute_ref: "BBMP ward-level water supply, tanker arrangement on borewell failure"
+    required_fields: [ward_number, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp
+    aliases: ["gundu thope lane", "gundu thope", "gunduthope road"]
+
+  # -- layout internal lines, pre-handover -----------------------------------
+  # Internal distribution belongs to the developer until formal handover.
+  # BWSSB will decline these correctly, and the household reads the decline as
+  # being ignored. Each layout has its own line, so each has its own feeder.
+
+  - service: water
+    segment: ward12-greenmeadows
+    feeder_id: layout-internal-gm
+    authority: "Green Meadows Layout developer (internal line, pre-handover)"
+    not_authority: [BWSSB, BBMP]
+    sla_days: 7
+    statute_ref: "Karnataka Apartment Ownership Act 1972, maintenance of common services pending handover"
+    required_fields: [flat_number, layout_name, duration_days]
+    helpline: "Layout maintenance desk. 1915 applies only after handover."
+    ladder: *ladder_developer
+    aliases: ["green meadows", "green meadows layout"]
+
+  - service: water
+    segment: ward12-sunriseenclave
+    feeder_id: layout-internal-se
+    authority: "Sunrise Enclave developer (internal line, pre-handover)"
+    not_authority: [BWSSB, BBMP]
+    sla_days: 7
+    statute_ref: "Karnataka Apartment Ownership Act 1972, maintenance of common services pending handover"
+    required_fields: [flat_number, layout_name, duration_days]
+    helpline: "Layout maintenance desk. 1915 applies only after handover."
+    ladder: *ladder_developer
+    aliases: ["sunrise enclave", "sunrise apartments"]
+
+  - service: water
+    segment: ward12-brookefieldextn
+    feeder_id: layout-internal-bf
+    authority: "Brookefield Extension developer (internal line, pre-handover)"
+    not_authority: [BWSSB, BBMP]
+    sla_days: 7
+    statute_ref: "Karnataka Apartment Ownership Act 1972, maintenance of common services pending handover"
+    required_fields: [flat_number, layout_name, duration_days]
+    helpline: "Layout maintenance desk. 1915 applies only after handover."
+    ladder: *ladder_developer
+    aliases: ["brookefield extension", "brookefield extn", "brookefield layout"]
