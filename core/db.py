@@ -45,7 +45,13 @@ REQUIRED = (
 )
 
 # Present on memstore, still legitimately absent from a half-built store.py.
-OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case")
+# Present on memstore, still legitimately absent from a half-built store.py.
+# sign_filing/unsigned_filings/get_filing landed 11 Sep to close the hard-rule-4
+# gap: nothing in the repo could record a human approval, so every escalation
+# would have returned NEEDS_HUMAN forever. Kartik -- these need a DynamoDB
+# implementation; until then the seam raises by name rather than binding None.
+OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case",
+            "get_filing", "unsigned_filings", "sign_filing")
 
 
 def _unavailable(name: str):
@@ -104,6 +110,9 @@ get_claim = _bind("get_claim")
 open_cases = _bind("open_cases")
 revoke_consent = _bind("revoke_consent")
 filings_for_case = _bind("filings_for_case")
+get_filing = _bind("get_filing")
+unsigned_filings = _bind("unsigned_filings")
+sign_filing = _bind("sign_filing")
 
 reset = getattr(_impl, "reset", lambda: None)
 
@@ -116,6 +125,7 @@ __all__ = [
     "filings_for_case",
     "get_case",
     "get_claim",
+    "get_filing",
     "live_consents",
     "open_cases",
     "put_case",
@@ -125,5 +135,7 @@ __all__ = [
     "recurrence_count",
     "reset",
     "revoke_consent",
+    "sign_filing",
     "split_case",
+    "unsigned_filings",
 ]
