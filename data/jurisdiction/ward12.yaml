@@ -368,6 +368,22 @@ entries:
     ladder: *ladder_bwssb
     aliases: ["post office lane", "post office road"]
 
+  # core.fakes.the_outage() uses this segment as its decoy: same ward, DIFFERENT
+  # trunk main from the 4th/5th Cross claims, so it must not cluster with them.
+  # Curated here so the shared fixture still routes once ward12.sample.yaml is
+  # deleted.
+  - service: water
+    segment: ward12-9thmain
+    feeder_id: bwssb-tm-22
+    authority: BWSSB
+    not_authority: [BBMP]
+    sla_days: 7
+    statute_ref: "BWSSB Citizen Charter, restoration of interrupted supply"
+    required_fields: [rr_number, duration_days, affected_count]
+    helpline: "1915"
+    ladder: *ladder_bwssb
+    aliases: ["9th main", "9th main road", "ninth main"]
+
   - service: water
     segment: ward12-libraryroad
     feeder_id: bwssb-tm-22

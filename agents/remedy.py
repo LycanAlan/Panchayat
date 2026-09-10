@@ -54,6 +54,11 @@ def load_table(directory: pathlib.Path | None = None) -> dict[tuple[str, str], J
     table: dict[tuple[str, str], JurisdictionEntry] = {}
     aliases: dict[str, str] = {}
     for path in sorted((directory or JURISDICTION_DIR).glob("*.yaml")):
+        # *.sample.yaml is scaffolding for the other lanes, not truth. It
+        # carries duplicate segments and an out-of-scope garbage entry, so
+        # loading it would quietly put fixture data behind a real filing.
+        if path.name.endswith(".sample.yaml"):
+            continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         raws = doc if isinstance(doc, list) else doc.get("entries", [])
         for raw in raws:

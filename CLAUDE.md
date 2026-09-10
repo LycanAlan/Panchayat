@@ -148,7 +148,7 @@ Every cross-lane dependency already has a fake, shipped and tested:
 | storage | Kartik's `store.py` | `from core.db import ...` (memory backend by default) |
 | a `Claim`, `Case`, `HouseholdPosition` | whoever owns that agent | `core/fakes.py` |
 | the 12-household outage scenario | Pattern Watch | `fakes.the_outage()` |
-| jurisdiction entries | Alakshendra's `ward12.yaml` | `data/jurisdiction/ward12.sample.yaml` |
+| jurisdiction entries | nothing, it landed 10 Sep | `from agents.remedy import lookup, resolve` — 31 curated entries. The sample is dead and the loader ignores it. |
 | a compressed clock | nothing | the `clock` fixture in `tests/conftest.py` |
 
 ```bash

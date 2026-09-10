@@ -19,6 +19,23 @@ def test_every_entry_is_citable_and_has_topology():
         assert entry.authority not in entry.not_authority
 
 
+def test_fixture_data_never_reaches_the_real_table():
+    # ward12.sample.yaml exists so the other lanes are not blocked on this
+    # curation. It duplicates segments and carries a garbage entry that is out
+    # of scope, so if the loader picked it up a real filing could go out backed
+    # by scaffolding.
+    assert lookup(Service.GARBAGE, "ward12-4thcross") is None
+    assert lookup(Service.WATER, "ward12-4thcross").feeder_id == "bwssb-tm-14"
+
+
+def test_the_shared_decoy_segment_routes():
+    # core.fakes.the_outage() puts its decoy on ward12-9thmain. It has to
+    # resolve here or the fixture breaks the day the sample file is deleted.
+    entry = lookup(Service.WATER, "ward12-9thmain")
+    assert entry is not None
+    assert entry.feeder_id == "bwssb-tm-22"
+
+
 def test_table_actually_discriminates():
     # If every segment answered BWSSB, a stub would score 100% on the routing
     # eval and the number would mean nothing.
