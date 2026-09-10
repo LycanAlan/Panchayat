@@ -7,7 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **11 Sep, 02:40** by Kartik
+Last updated: **11 Sep, 04:15** by Kartik
 
 ---
 
@@ -147,10 +147,16 @@ Append here when something is settled, so nobody relitigates it at 2am.
   `python -m eval.tau_sweep`. TAU = 0.72 is not the right threshold for either
   scoring path: the renormalised one wants **0.78** (all three semantic models,
   zero missed clusters, under a 1% false-merge ceiling). Turning semantic on
-  costs 0.8% / 5.9% / 17.6% of same-fault pairs depending on how much a real
-  cosine separates the classes -- and **zero** pairs ever start clustering, so
-  the regression is one-way. Proposal, backed by Ali: `TAU_TOPOLOGICAL` and
-  `TAU_FULL`, swept separately, with the trace naming which one applied.
+  costs **0.7% / 8.4% / 22.0%** of same-fault pairs depending on how much a
+  real cosine separates the classes -- and **zero** pairs ever start
+  clustering, so the regression is one-way. Proposal, backed by Ali:
+  `TAU_TOPOLOGICAL` and `TAU_FULL`, swept separately, with the trace naming
+  which one applied.
+  **CORRECTED 04:15** -- the first numbers posted (0.8/5.9/17.6%) came off a
+  corpus whose street suffix was drawn at random rather than derived from the
+  number, so one street appeared under several spellings and pairs physically
+  on it scored 0 topology. The conclusion is unchanged and slightly stronger:
+  the cost in the harder regimes was UNDER-stated.
 - **11 Sep** — **Open, nobody's lane: segment normalisation stops at the
   scorer.** `topology_score` now normalises case and whitespace, but
   `claims_in_window` builds `GSI1PK` from the raw `claim.segment`, so
@@ -162,3 +168,24 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **11 Sep** — `scripts/create_table.py` exists. Idempotent, reads
   `PANCHAYAT_TABLE` and `PANCHAYAT_DDB_ENDPOINT`, carries the full key table in
   its docstring. Ali's lane; there because he asked for it in review D4.
+- **11 Sep** — **`feeder_id` is normalised now, like `segment`.** Both fold
+  through one `_norm()` in `core/scoring.py`. Compared byte-exact,
+  `BWSSB-TM-14` and `bwssb-tm-14` scored topology **0.0** -- two houses on one
+  trunk main renormalising to 0.385 and never clustering, through the field
+  that carries four times the weight of the one that was already fixed.
+- **11 Sep** — **A split child no longer files its own feeder index row.**
+  `recurrence_count` answers "how many prior failures on this trunk main", and
+  a split corrects how we grouped one rather than creating another. It was a
+  ratchet: merge/split/merge/split climbed 1 -> 2 -> 3 -> 4 for one incident.
+  The child now carries `split_from:<parent>` in `merged_from` (hard rule 6
+  provenance) and the parent keeps the row. **`core/memstore.py` counts case
+  records and needs the same exclusion to agree** -- shared file, raised not
+  edited.
+- **11 Sep** — **`revoke_consent` is conditional now.** `update_item` UPSERTS,
+  so with a live pointer and a missing consent row it CREATED a stub carrying
+  only `revoked_at`, returned True having marked nothing, and every later
+  `live_consents()` for that household died on `KeyError: 'grant_id'`. It
+  returns False instead. If you call it, check the return.
+- **11 Sep** — `eval.tau_sweep`'s `best()` returns **None** when no threshold
+  clears the false-merge ceiling, instead of falling back to one that violates
+  it and printing it under the ceiling's own heading.

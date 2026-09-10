@@ -9,6 +9,7 @@ Owner: Kartik
 from __future__ import annotations
 
 import random
+import re
 
 from core.scoring import TAU, W_RECENCY, W_SEMANTIC, W_TOPOLOGY
 from eval import tau_sweep
@@ -131,3 +132,71 @@ def test_every_semantic_regime_is_a_valid_cosine():
             for _ in range(50):
                 got = tau_sweep.modelled_cosine(truth, rng, regime)
                 assert 0.0 <= got <= 1.0, (regime, truth, got)
+
+
+def test_every_generated_segment_is_a_street_that_could_exist():
+    """The suffix used to be drawn independently of the number, so one physical
+    street was emitted under several impossible spellings -- ward12-10ndcross,
+    ward12-1thcross, ward12-9rdmain.
+
+    That is not cosmetic. topology_score compares normalised strings, so
+    'ward12-9thmain' and 'ward12-9rdmain' are different places, and pairs that
+    are physically on one street score 0.0 instead of 0.3. It thins out exactly
+    the shape the corpus docstring promises -- two unrelated faults on one
+    street -- which is the shape the false-merge column exists to price. A
+    corpus that under-represents it reports a flatteringly low false-merge rate.
+    """
+    def ordinal(n: int) -> str:
+        if 11 <= n % 100 <= 13:
+            return "th"
+        return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+    incidents = tau_sweep.build_corpus(40, seed=12)
+    segments = {c.segment for i in incidents for c in i.claims}
+
+    streets = set()
+    for seg in segments:
+        m = re.match(r"^(\w+)-(\d+)(st|nd|rd|th)(\w+)$", seg)
+        assert m, f"unparseable segment {seg!r}"
+        ward, num, suffix, kind = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+        assert suffix == ordinal(num), (
+            f"{seg!r} is not a street that could exist: {num} takes "
+            f"'{ordinal(num)}', not '{suffix}'")
+        streets.add((ward, num, kind))
+
+    # One spelling per street, so a street is one place.
+    assert len(segments) == len(streets), (
+        f"{len(segments)} spellings for {len(streets)} streets")
+
+
+def test_the_corpus_puts_unrelated_faults_on_a_shared_street():
+    """The docstring promises this shape and the false-merge column depends on
+    it: two different faults on one street is what a naive same-street-same-day
+    rule merges wrongly."""
+    incidents = tau_sweep.build_corpus(40, seed=12)
+    by_street: dict[str, set[int]] = {}
+    for inc in incidents:
+        for c in inc.claims:
+            by_street.setdefault(c.segment, set()).add(inc.incident_id)
+
+    shared = [s for s, ids in by_street.items() if len(ids) > 1]
+    assert shared, "no street carries two different incidents"
+
+
+def test_best_refuses_to_return_a_threshold_over_the_ceiling():
+    """`ok or rows` silently fell back to the unfiltered rows, so with no
+    threshold under the ceiling it returned one that violated it -- and main()
+    printed it under 'best under a 1% false-merge ceiling'.
+
+    A false merge sinks the valid individual complaints along with the bogus
+    one. A sweep that quietly relaxes that asymmetry reports the opposite of
+    what it claims."""
+    rows = [
+        tau_sweep.Row(tau=0.5, false_merge=0.40, missed=0.0, merged=9,
+                      should_merge=9),
+        tau_sweep.Row(tau=0.9, false_merge=0.20, missed=0.5, merged=4,
+                      should_merge=9),
+    ]
+    assert tau_sweep.best(rows, ceiling=0.01) is None
+    assert tau_sweep.best(rows, ceiling=0.50) is not None
+    assert tau_sweep.best(rows, ceiling=0.50).false_merge <= 0.50

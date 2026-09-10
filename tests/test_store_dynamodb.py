@@ -440,3 +440,90 @@ def test_open_cases_narrows_by_service_without_a_second_pass():
     assert len(water) == 1
     assert water[0].service is Service.WATER
     assert len(db.open_cases()) == 2
+
+
+# ------------------------------------------------------- reversible merges
+
+def test_splitting_a_case_does_not_invent_a_prior_failure():
+    """recurrence_count is what a single complaint can never show, and it is
+    the number the escalation argument rests on. Reversing a merge must not
+    move it.
+
+    Worse than a one-off: merge, split, merge, split is a RATCHET. Each cycle
+    left another child case with its own feeder row, so the count climbed
+    without bound while still describing one incident -- drifting in the exact
+    direction that manufactures a pattern out of a single complaint.
+    """
+    since = fakes.T0 - timedelta(days=1)
+    case = fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
+                        created_at=fakes.T0, household_ids=[], claim_ids=[],
+                        merged_from=[])
+    db.put_case(case)
+    db.add_household_to_case(case.case_id, "hh_a", "clm_a")
+    db.add_household_to_case(case.case_id, "hh_b", "clm_b")
+    assert db.recurrence_count(fakes.FEEDER, Service.WATER, since) == 1
+
+    for cycle in range(3):
+        db.split_case(case.case_id, ["hh_b"])
+        assert db.recurrence_count(fakes.FEEDER, Service.WATER, since) == 1, (
+            f"the split invented a prior failure on cycle {cycle}")
+        db.add_household_to_case(case.case_id, "hh_b", "clm_b")
+        assert db.recurrence_count(fakes.FEEDER, Service.WATER, since) == 1, (
+            f"the ratchet is back on cycle {cycle}")
+
+
+def test_a_split_child_records_where_it_came_from():
+    """Hard rule 6: merges are reversible and provenance lives in merged_from.
+    The child needs to say which case it left, both so the lineage is readable
+    and so the feeder index knows its incident is already counted."""
+    case = fakes.a_case(feeder_id=fakes.FEEDER, household_ids=[], claim_ids=[],
+                        merged_from=[])
+    db.put_case(case)
+    db.add_household_to_case(case.case_id, "hh_a", "clm_a")
+    db.add_household_to_case(case.case_id, "hh_b", "clm_b")
+
+    (child_id,) = db.split_case(case.case_id, ["hh_b"])
+    child = db.get_case(child_id)
+    assert child.household_ids == ["hh_b"]
+    assert child.claim_ids == ["clm_b"]
+    assert store._SPLIT_FROM + case.case_id in child.merged_from
+
+    # The parent still answers for the incident on that feeder.
+    assert db.recurrence_count(fakes.FEEDER, Service.WATER,
+                               fakes.T0 - timedelta(days=1)) == 1
+
+
+def test_a_genuinely_separate_case_on_the_feeder_still_counts():
+    """The exclusion must be narrow: only a case that SPLIT OFF another is
+    already counted. Two independent cases on one feeder are two prior
+    failures, which is the whole signal."""
+    since = fakes.T0 - timedelta(days=1)
+    for _ in range(2):
+        db.put_case(fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
+                                 created_at=fakes.T0))
+    assert db.recurrence_count(fakes.FEEDER, Service.WATER, since) == 2
+
+
+# --------------------------------------------------------------- consent
+
+def test_revoking_against_a_missing_row_does_not_forge_one():
+    """update_item UPSERTS. With the consent row gone but its pointer alive --
+    a partial reset, a manual delete -- the update CREATED an item carrying
+    only revoked_at, reported True having marked nothing, and then every later
+    live_consents() for that household hit KeyError: 'grant_id' on the stub.
+
+    One household's consent log permanently unreadable, from a call that said
+    it succeeded. On the log that has to hold up eleven weeks later.
+    """
+    store._t().put_item(Item={
+        "PK": "GRANT#cns_orphan", "SK": "META", "_type": "consent_pointer",
+        "household_id": "hh_orphan",
+        "consent_sk": "CONSENT#" + fakes.T0.isoformat() + "#cns_orphan",
+    })
+
+    assert db.revoke_consent("cns_orphan", fakes.T0) is False, (
+        "reported success having marked nothing")
+    assert db.live_consents("hh_orphan", fakes.T0) == []
+
+    rows = [r for r in _rows("HH#hh_orphan") if r["SK"].startswith("CONSENT#")]
+    assert rows == [], "revoke forged a consent row that was never granted"

@@ -83,9 +83,25 @@ class Incident:
     claims: list[Claim]
 
 
+def _ordinal(n: int) -> str:
+    """English ordinal suffix. DERIVED from the number, never drawn.
+
+    Drawn independently it produced ward12-10ndcross and ward12-1thcross, and
+    worse, it split ONE physical street across several spellings -- 47 strings
+    for 22 streets. Topology compares normalised strings, so those spellings
+    are different places: pairs genuinely on one street scored 0.0 instead of
+    0.3, and the corpus quietly under-represented the shape it exists to
+    price -- two unrelated faults on one street, which is what a naive
+    same-street-same-day rule merges wrongly.
+    """
+    if 11 <= n % 100 <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
 def _segment(rng: random.Random) -> str:
-    ordinal = rng.choice(("st", "nd", "rd", "th"))
-    return f"{WARD}-{rng.randint(1, 12)}{ordinal}{rng.choice(STREET_KINDS)}"
+    n = rng.randint(1, 12)
+    return f"{WARD}-{n}{_ordinal(n)}{rng.choice(STREET_KINDS)}"
 
 
 def build_corpus(n_incidents: int = 40, seed: int = 12) -> list[Incident]:
@@ -220,12 +236,24 @@ def sweep(scores: list[tuple[float, bool]], grid: list[float]) -> list[Row]:
     return rows
 
 
-def best(rows: list[Row], ceiling: float = 0.01) -> Row:
+def best(rows: list[Row], ceiling: float = 0.01) -> Row | None:
     """The lowest missed-cluster rate whose false-merge rate stays under the
-    ceiling. Asymmetric on purpose: a false merge sinks valid complaints along
-    with the bogus one, a missed cluster only costs the leverage."""
+    ceiling, or None when no threshold clears it.
+
+    Asymmetric on purpose: a false merge sinks the valid individual complaints
+    along with the bogus one, a missed cluster only costs the leverage.
+
+    NONE RATHER THAN A FALLBACK. This was `min(ok or rows, ...)`, which on a
+    corpus where nothing cleared the bar quietly returned a row that violated
+    it -- and main() printed that row under the heading "best under a 1%
+    false-merge ceiling". A sweep that relaxes its own constraint the moment
+    the constraint bites reports the opposite of what it claims, on the number
+    the whole merge policy rests on. Refusing to answer is the honest failure.
+    """
     ok = [r for r in rows if r.false_merge <= ceiling]
-    return min(ok or rows, key=lambda r: (r.missed, -r.tau))
+    if not ok:
+        return None
+    return min(ok, key=lambda r: (r.missed, -r.tau))
 
 
 def _table(title: str, rows: list[Row], mark: float | None = None) -> None:
@@ -279,10 +307,12 @@ def main() -> None:
 
     r_best, f_best = best(r_rows, args.ceiling), best(f_rows, args.ceiling)
     print(f"\nbest under a {100 * args.ceiling:.0f}% false-merge ceiling:")
-    print(f"  TAU_TOPOLOGICAL = {r_best.tau:.2f}   "
-          f"missed {100 * r_best.missed:.2f}%")
-    print(f"  TAU_FULL        = {f_best.tau:.2f}   "
-          f"missed {100 * f_best.missed:.2f}%")
+    for label, row in (("TAU_TOPOLOGICAL", r_best), ("TAU_FULL", f_best)):
+        if row is None:
+            print(f"  {label:<15} = NONE -- no threshold clears the ceiling")
+        else:
+            print(f"  {label:<15} = {row.tau:.2f}   "
+                  f"missed {100 * row.missed:.2f}%")
 
     lost = [1 for r, f, truth in transfer if truth and r >= TAU > f]
     gained = [1 for r, f, truth in transfer if truth and f >= TAU > r]

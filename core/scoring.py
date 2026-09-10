@@ -37,17 +37,23 @@ EMBED_DIMS = 1024
 _SEGMENT = re.compile(r"^(?P<ward>[^-]+)-(?P<n>\d+)(?:st|nd|rd|th)(?P<kind>[a-z]+)$")
 
 
-def _norm_segment(segment: str) -> str:
-    """Segments arrive out of intake free text, so casing and stray spaces are
-    the normal condition rather than the exception.
+def _norm(value: str) -> str:
+    """Fold a topology identifier to its comparable form.
 
-    Normalising inside _parse_segment only was not enough: topology_score
-    compared the RAW strings first, so two neighbours on one street whose
-    reports differed in capitalisation scored zero topology and never
-    corroborated -- the same never-clusters failure as the 0.65 ceiling,
-    arriving through the string instead of through the arithmetic.
+    Segments and feeder ids both arrive out of intake free text and out of
+    routing, so casing and stray spaces are the normal condition rather than
+    the exception. ONE helper for both on purpose: normalising the segment and
+    not the feeder id was the original bug, and it left the failure in the
+    field that carries four times the weight. Anything compared in
+    topology_score goes through here.
     """
-    return segment.strip().lower() if segment else ""
+    return value.strip().lower() if value else ""
+
+
+def _norm_segment(segment: str) -> str:
+    """Kept as a name because _parse_segment and the adjacency rule read as
+    segment-specific. Same fold."""
+    return _norm(segment)
 
 
 def _parse_segment(segment: str) -> tuple[str, int, str] | None:
@@ -82,7 +88,11 @@ def topology_score(a: Claim, b: Claim) -> float:
     Two houses 50m apart on different feeders are not the same fault.
     Two houses 400m apart on one trunk main are.
     """
-    if a.feeder_id and a.feeder_id == b.feeder_id:
+    # `feed_a and` matters for the same reason `seg_a and` does below: two
+    # claims that have not been routed yet both carry the dataclass default
+    # and must not corroborate on the strength of both being empty.
+    feed_a, feed_b = _norm(a.feeder_id), _norm(b.feeder_id)
+    if feed_a and feed_a == feed_b:
         return 1.0
     seg_a, seg_b = _norm_segment(a.segment), _norm_segment(b.segment)
     # `seg_a and` matters: two unrouted claims both carrying the dataclass
