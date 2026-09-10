@@ -91,16 +91,39 @@ def semantic_score(a: Claim, b: Claim) -> float:
     drags the weighted total down instead of contributing nothing, which is not
     what "these two reports disagree" should mean.
 
-    Returns 0.0 when either embedding is missing. Callers must NOT read that as
-    a real zero -- correlate() checks availability itself and renormalises.
+    Returns 0.0 when the term could not be computed at all. Callers must NOT
+    read that as a real zero -- correlate() goes through _cosine() and checks.
+    """
+    got = _cosine(a, b)
+    return 0.0 if got is None else got
+
+
+def _cosine(a: Claim, b: Claim) -> float | None:
+    """The semantic term, or None when it could not be computed.
+
+    None and 0.0 are different answers and the difference is load bearing.
+    "These two reports disagree" is a real zero that belongs in the weighted
+    sum; "there was nothing to compare" must drop out of it and renormalise,
+    or the total is capped at 0.65 and nothing ever clusters.
+
+    Missing is not the only way to have nothing to compare. A zero-magnitude
+    vector has no direction, so cosine is undefined rather than zero -- and
+    that is reachable: embed("") returns one, and a claim whose embedding
+    round-tripped through storage as an empty list arrives as [] rather than
+    None. Gating on `is not None` alone calls those cases available, skips the
+    renormalisation, caps the score under TAU and reports
+    semantic_available=True while doing it -- the original silent failure, now
+    wearing a label that says it did not happen.
     """
     if a.embedding is None or b.embedding is None:
-        return 0.0
+        return None
     va = np.asarray(a.embedding, dtype=np.float64)
     vb = np.asarray(b.embedding, dtype=np.float64)
+    if va.size == 0 or va.size != vb.size:
+        return None
     denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
     if denom == 0.0:
-        return 0.0
+        return None
     return max(0.0, min(1.0, float(np.dot(va, vb)) / denom))
 
 
@@ -135,10 +158,13 @@ def correlate(a: Claim, b: Claim) -> CorrelationScore:
 
     topo = topology_score(a, b)
     rec = recency_score(a, b)
-    available = a.embedding is not None and b.embedding is not None
+    # Ask whether the term produced a number, not whether a field was set --
+    # a present but zero-magnitude vector has no direction to compare.
+    computed = _cosine(a, b)
+    available = computed is not None
 
     if available:
-        sem = semantic_score(a, b)
+        sem = computed
         total = W_TOPOLOGY * topo + W_RECENCY * rec + W_SEMANTIC * sem
     else:
         sem = 0.0

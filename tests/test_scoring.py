@@ -10,6 +10,7 @@ Owner: Kartik
 from __future__ import annotations
 
 import math
+import pathlib
 import subprocess
 import sys
 from datetime import timedelta
@@ -234,10 +235,58 @@ def test_importing_scoring_loads_no_model_client():
     Runs in a subprocess because the dynamodb backend legitimately imports
     boto3 elsewhere in the same pytest process.
     """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
     probe = subprocess.run(
         [sys.executable, "-c",
          ("import core.scoring, sys;"
           " print('boto3' in sys.modules or 'botocore' in sys.modules)")],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, cwd=repo_root, check=False,
     )
+    # No check=True: on a non-zero exit the assertion message below is the
+    # useful output, and CalledProcessError would swallow it.
+    assert probe.returncode == 0, probe.stdout + probe.stderr
     assert probe.stdout.strip() == "False", probe.stdout + probe.stderr
+
+
+# ------------------------------------------- regressions from code review
+
+def test_a_zero_magnitude_embedding_renormalises_like_a_missing_one():
+    """A present vector is not the same as a usable one.
+
+    embed("") returns a zero vector, and an embedding that round-tripped
+    through storage as an empty list arrives as [] rather than None. Gating on
+    `is not None` calls both available, skips the renormalisation, caps the
+    total at 0.65 under TAU -- and stamps semantic_available=True, so the trace
+    reports semantic agreement that was never computed. That is the original
+    silent failure wearing a label saying it did not happen.
+    """
+    for bad in ([0.0, 0.0], []):
+        a = fakes.a_claim(created_at=fakes.T0, embedding=bad)
+        b = fakes.a_claim(created_at=fakes.T0 + timedelta(minutes=1),
+                          embedding=bad)
+        s = scoring.correlate(a, b)
+        assert s.semantic_available is False, bad
+        assert s.total > 0.65, f"{bad!r} capped at the zeroed ceiling: {s.total:.4f}"
+        assert s.above_threshold is True, bad
+
+
+def test_mismatched_embedding_widths_do_not_crash():
+    """Two vectors of different lengths cannot be compared. Renormalise rather
+    than let numpy raise inside the ambient pass."""
+    s = scoring.correlate(
+        fakes.a_claim(created_at=fakes.T0, embedding=[1.0, 0.0]),
+        fakes.a_claim(created_at=fakes.T0, embedding=[1.0, 0.0, 0.0]))
+    assert s.semantic_available is False
+    assert s.above_threshold is True
+
+
+def test_a_genuine_zero_cosine_still_counts_as_computed():
+    """The other half of the distinction: orthogonal vectors ARE a real zero,
+    and must stay in the weighted sum rather than renormalise out of it."""
+    s = scoring.correlate(
+        fakes.a_claim(created_at=fakes.T0, embedding=[1.0, 0.0]),
+        fakes.a_claim(created_at=fakes.T0, embedding=[0.0, 1.0]))
+    assert s.semantic_available is True
+    assert s.semantic == 0.0
+    assert math.isclose(s.total, W_TOPOLOGY + W_RECENCY)
+    assert s.above_threshold is False, "0.65 is genuinely below TAU here"

@@ -23,6 +23,7 @@ import base64
 import os
 import uuid
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 import boto3
@@ -91,10 +92,20 @@ def _clean(item: dict) -> dict:
     return {k: v for k, v in item.items() if v is not None}
 
 
+def _val(v: Any) -> str:
+    """Accept an Enum member or the bare string it wraps.
+
+    Service, CaseStatus and the rest are str Enums, so memstore's `==` and `in`
+    comparisons tolerate a plain string everywhere. A bare `.value` here raises
+    AttributeError on an object memstore handles fine, which is precisely the
+    divergence the seam exists to catch.
+    """
+    return v.value if isinstance(v, Enum) else str(v)
+
+
 def _svc(service: Any) -> str:
-    """Accept a Service or the bare string. Service is a str Enum, so memstore's
-    `==` comparison already tolerates both and this backend must too."""
-    return service.value if isinstance(service, Service) else str(service)
+    """The service as a bare string, for key building."""
+    return _val(service)
 
 
 def pack_embedding(vec: list[float] | None) -> str | None:
@@ -210,7 +221,7 @@ def _case_item(case: Case) -> dict:
     d.update(
         PK="CASE#" + case.case_id,
         SK="META",
-        GSI1PK="STATUS#" + case.status.value,
+        GSI1PK="STATUS#" + _val(case.status),
         GSI1SK="TS#" + case.created_at.isoformat(),
         _type="case",
     )
@@ -237,20 +248,48 @@ def _case_from(item: dict) -> Case:
     )
 
 
-def _feeder_index_item(case: Case) -> dict:
-    """Lets recurrence_count() be a Query instead of a Scan. See that function."""
+def _feeder_index_key(feeder_id: str, service, created_at: datetime,
+                      case_id: str) -> dict:
     return {
-        "PK": "FEEDER#" + case.feeder_id + "#SVC#" + case.service.value,
-        "SK": "TS#" + case.created_at.isoformat() + "#CASE#" + case.case_id,
-        "_type": "case_by_feeder",
-        "case_id": case.case_id,
+        "PK": "FEEDER#" + feeder_id + "#SVC#" + _svc(service),
+        "SK": "TS#" + created_at.isoformat() + "#CASE#" + case_id,
     }
 
 
+def _feeder_index_item(case: Case) -> dict:
+    """Lets recurrence_count() be a Query instead of a Scan. See that function."""
+    d = _feeder_index_key(case.feeder_id, case.service, case.created_at,
+                          case.case_id)
+    d.update(_type="case_by_feeder", case_id=case.case_id)
+    return d
+
+
 def put_case(case: Case) -> None:
+    """Writes the case and maintains its feeder index row.
+
+    The index key is derived from feeder_id, service and created_at, so it is
+    NOT stable across a case's life: a Case opened with the dataclass default
+    feeder_id="" and given a real feeder once routing runs moves to a different
+    key, and the row at the old one would otherwise survive forever. Nothing
+    reads those rows except recurrence_count, which counts them -- so a stale
+    row is a permanent +1 on the number the whole escalation argument rests on,
+    drifting in the direction that manufactures a pattern.
+
+    Hence the read before the write: one GetItem to find where this case's
+    index row used to live, and a delete if it has moved.
+    """
+    stored = _t().get_item(
+        Key={"PK": "CASE#" + case.case_id, "SK": "META"}).get("Item")
+    new_key = _feeder_index_key(case.feeder_id, case.service, case.created_at,
+                                case.case_id)
+    if stored:
+        old_key = _feeder_index_key(
+            stored.get("feeder_id", ""), stored.get("service", ""),
+            _dt(stored["created_at"]), case.case_id)
+        if old_key != new_key:
+            _t().delete_item(Key=old_key)
+
     _t().put_item(Item=_case_item(case))
-    # Deterministic key, so re-putting a case on a status change overwrites its
-    # index row rather than double-counting the case.
     _t().put_item(Item=_feeder_index_item(case))
 
 
@@ -268,22 +307,35 @@ def open_cases(service: Service | None = None) -> list[Case]:
             continue
         for item in _query_all(
             IndexName="GSI1",
-            KeyConditionExpression=Key("GSI1PK").eq("STATUS#" + status.value),
+            KeyConditionExpression=Key("GSI1PK").eq("STATUS#" + _val(status)),
         ):
             case = _case_from(item)
-            if want is None or case.service.value == want:
+            if want is None or _val(case.service) == want:
                 cases.append(case)
     return cases
 
 
-def _member_item(case_id: str, household_id: str, claim_id: str) -> dict:
+def _claims_of(case: Case, household_id: str) -> list[str]:
+    """That household's claims on this case, read back out of the provenance."""
+    return [t.split(":", 1)[1] for t in case.merged_from
+            if t.startswith(household_id + ":")]
+
+
+def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:
+    """One row per household per case -- the SK is HH#<hh>, as the schema says.
+
+    So it carries claim_idS, plural. One household can contribute two claims
+    (two member agents under one roof, which the_outage() builds on purpose),
+    and a singular claim_id on a key that cannot vary silently keeps only
+    whichever arrived last.
+    """
     return {
         "PK": "CASE#" + case_id,
         "SK": "HH#" + household_id,
         "_type": "case_member",
         "case_id": case_id,
         "household_id": household_id,
-        "claim_id": claim_id,
+        "claim_ids": list(claim_ids),
     }
 
 
@@ -302,7 +354,8 @@ def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> Non
         case.merged_from.append(token)
 
     put_case(case)
-    _t().put_item(Item=_member_item(case_id, household_id, claim_id))
+    _t().put_item(Item=_member_item(case_id, household_id,
+                                    _claims_of(case, household_id)))
 
 
 def split_case(case_id: str, household_ids: list[str]) -> list[str]:
@@ -319,8 +372,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     for hh in household_ids:
         if hh not in case.household_ids:
             continue
-        claim_ids = [t.split(":", 1)[1] for t in case.merged_from
-                     if t.startswith(hh + ":")]
+        claim_ids = _claims_of(case, hh)
         child = Case(
             case_id=new_id("case"), service=case.service, segment=case.segment,
             feeder_id=case.feeder_id, tail=case.tail, status=case.status,
@@ -329,8 +381,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             sla_deadline=case.sla_deadline, created_at=case.created_at,
         )
         put_case(child)
-        for cid in claim_ids:
-            _t().put_item(Item=_member_item(child.case_id, hh, cid))
+        _t().put_item(Item=_member_item(child.case_id, hh, claim_ids))
         new_ids.append(child.case_id)
 
         case.household_ids.remove(hh)
@@ -403,14 +454,26 @@ def append_consent(grant: ConsentGrant) -> None:
     d = to_dict(grant)
     sk = _consent_sk(grant)
     d.update(PK="HH#" + grant.household_id, SK=sk, _type="consent")
-    _t().put_item(Item=_clean(d))
-    _t().put_item(Item={
+    pointer = {
         "PK": "GRANT#" + grant.grant_id,
         "SK": "META",
         "_type": "consent_pointer",
         "household_id": grant.household_id,
         "consent_sk": sk,
-    })
+    }
+    # ONE transaction, not two put_items. Written separately, a throttle or an
+    # expired credential between them leaves a live consent row with no
+    # pointer, and revoke_consent then reports "unknown grant" and no-ops --
+    # a withdrawal silently not honoured, on the one log that has to hold up
+    # eleven weeks later. Either both rows land or neither does.
+    # The resource's own client, so boto3's document transform serialises
+    # these plain dicts for us -- hand it pre-typed AttributeValues and it
+    # encodes them a second time ("ValidationException: Invalid attribute
+    # value type").
+    _t().meta.client.transact_write_items(TransactItems=[
+        {"Put": {"TableName": TABLE, "Item": _clean(d)}},
+        {"Put": {"TableName": TABLE, "Item": pointer}},
+    ])
 
 
 def live_consents(household_id: str, now: datetime) -> list[ConsentGrant]:
@@ -543,6 +606,16 @@ def filings_for_case(case_id: str) -> list[Filing]:
 
 # ----------------------------------------------------------------- tests
 
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal")
+
+
+def _reset_is_allowed() -> bool:
+    """True only for a local endpoint, or an explicit opt-in."""
+    if os.environ.get("PANCHAYAT_ALLOW_DESTRUCTIVE_RESET", "").lower() == "yes":
+        return True
+    return bool(ENDPOINT) and any(h in ENDPOINT for h in _LOCAL_HOSTS)
+
+
 def reset() -> None:
     """Wipe the table. Call in a test fixture, NEVER in application code.
 
@@ -551,7 +624,22 @@ def reset() -> None:
     this backend the table accumulates rows across runs until
     test_recurrence_counts_only_the_same_feeder fails on a count that keeps
     climbing.
+
+    REFUSES to run against a non-local endpoint. tests/test_contract.py
+    advertises `PANCHAYAT_BACKEND=dynamodb pytest` as a supported command and
+    the autouse fixture calls this twice per test, so without this guard
+    anyone running the suite the documented way -- without also pointing
+    PANCHAYAT_DDB_ENDPOINT at DynamoDB Local -- silently empties the shared
+    team table. Set PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes if you genuinely
+    mean the real one.
     """
+    if not _reset_is_allowed():
+        raise RuntimeError(
+            "store.reset() would delete every row in table '" + TABLE
+            + "' at " + (ENDPOINT or "the real AWS endpoint")
+            + ". Point PANCHAYAT_DDB_ENDPOINT at DynamoDB Local, or set "
+            "PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes if you mean it."
+        )
     table = _t()
     start: dict | None = None
     while True:
