@@ -13,16 +13,24 @@ import pytest
 # Force the in-memory backend before anything imports core.db.
 os.environ.setdefault("PANCHAYAT_BACKEND", "memory")
 
-from core import fakes, memstore
+from core import db, fakes
 from core.clock import VirtualClock
 
 
 @pytest.fixture(autouse=True)
 def clean_store():
-    """Every test starts with an empty store and leaves it empty."""
-    memstore.reset()
+    """Every test starts with an empty store and leaves it empty.
+
+    Goes through the seam, not through memstore. Resetting memstore directly
+    wiped the in-process dict whatever PANCHAYAT_BACKEND said, so under the
+    dynamodb backend the real table kept every row from every previous test and
+    run -- and test_recurrence_counts_only_the_same_feeder asserts a count of
+    exactly 3, so it passed once and then failed forever on a number that only
+    climbs.
+    """
+    db.reset()
     yield
-    memstore.reset()
+    db.reset()
 
 
 @pytest.fixture
