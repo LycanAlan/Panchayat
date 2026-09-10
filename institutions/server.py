@@ -237,20 +237,19 @@ def build_agent_factory(profile: InstitutionProfile):
         "process."
     )
 
-    model_id = os.environ.get("MODEL_SMALL", "")
-
     def make_agent(context_id: str):
-        kwargs = {}
-        if model_id:
-            from strands.models import BedrockModel
-            kwargs["model"] = BedrockModel(model_id=model_id)
+        # "cheap", not "reason". A desk picking which of four tools to call is
+        # classification, not deliberation -- the judgement in this lane lives
+        # in the profile's calibrated rates, not in the model.
+        from core.models import get_model
+
         return Agent(
             name=profile.name,
             description=profile.name + " grievance desk",
             system_prompt=system_prompt,
             tools=[accept, reject, close, status],
             callback_handler=None,
-            **kwargs,
+            model=get_model("cheap"),
         )
 
     return make_agent
