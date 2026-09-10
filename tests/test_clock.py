@@ -62,9 +62,21 @@ def test_past_deadline_fires_immediately():
 
 
 def test_now_advances_monotonically():
+    # NOT a bare `time.sleep(0.01)` before comparing two `now()` reads with
+    # `b > a`. Windows' `time.monotonic()` has ~15.6ms resolution, so two
+    # reads 10ms apart routinely land in the SAME tick and the "advance"
+    # is exactly zero -- Ali measured this at 67/200 same-tick occurrences
+    # on main (`0befb9b`, tests/test_contract.py) and the mechanism is
+    # identical here: the assertion was really testing the platform's timer
+    # granularity, not VirtualClock.
+    #
+    # Sleep long enough (250ms) that even the coarsest monotonic() tick
+    # cannot hide the delta, and at scale=8_640_000 that is still a huge
+    # jump in virtual time -- so this also incidentally re-proves the clock
+    # is actually advancing, not stuck.
     c = VirtualClock(scale=8_640_000.0)
     a = c.now()
-    time.sleep(0.01)
+    time.sleep(0.25)
     b = c.now()
     assert b > a
 
