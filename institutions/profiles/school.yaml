@@ -1,0 +1,26 @@
+# School office -- counterparty for the mutual-aid tail.
+#
+# SCOPE HONESTY: the mutual-aid tail is designed and drawn, not built in the
+# five days. This profile exists so the fifth A2A server starts, serves an
+# agent card, and demonstrates that one implementation covers a cooperative
+# counterparty as well as an adversarial one. Do not present it as evidence.
+
+name: school
+port: 9003
+sla_days: 2
+accepts_services: [schooling]
+
+reject_malformed_rate: 0.05
+unreachable_rate: 0.02
+breach_rate: 0.10
+false_closure_rate: 0.02
+mean_response_hours: 6
+
+calibration_note: >
+  Not calibrated against civic-grievance evidence, because a school office is
+  not an adversarial counterparty and modelling it as one would be dishonest.
+  Rates are set to describe a cooperative body with no statutory clock and no
+  escalation ladder: it answers within a school day or it does not answer, and
+  there is nothing to climb to. The near-zero false_closure_rate is the point
+  of contrast -- false closure is a property of a body that is measured on
+  ticket counts, and this one is not.
