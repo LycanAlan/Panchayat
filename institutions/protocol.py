@@ -28,6 +28,7 @@ Lane: institutions
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -41,6 +42,17 @@ class Outcome(str, Enum):
     UNREACHABLE = "UNREACHABLE"  # portal down, nothing landed
     UNKNOWN = "UNKNOWN"          # no such reference
     NEEDS_HUMAN = "NEEDS_HUMAN"  # client-side only: there is no desk to file with
+
+
+# Whole words only. A bare substring match reads "CLOSED" inside "DISCLOSED",
+# or "OPEN" inside "REOPENED" -- and reopen-and-reclose is the documented BBMP
+# behaviour this project exists to catch, so it is not a hypothetical input.
+_OUTCOME_RE = re.compile(r"\b(" + "|".join(o.value for o in Outcome) + r")\b")
+
+# Every ref this codebase generates is NAME-000000 (Desk._next_ref). Searched
+# for independently of the outcome word's position, because a desk may lead
+# with its ticket number: "Ticket BWSSB-100001 is now CLOSED".
+_REF_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d{4,}\b")
 
 
 @dataclass(frozen=True)
@@ -57,14 +69,25 @@ class DeskReply:
 
     @property
     def should_pause_sla(self) -> bool:
-        """Never run a statutory clock against a filing that never landed."""
-        return self.outcome is Outcome.UNREACHABLE
+        """Never run a statutory clock against a filing that never landed.
+
+        True for REJECTED too, not just UNREACHABLE: a rejected filing does
+        not exist any more than an unreachable one does. Without this a
+        pretext rejection -- 12-15% of filings, by our own profiles -- stalls
+        the case with the clock still running and nobody told.
+        """
+        return self.outcome in (Outcome.UNREACHABLE, Outcome.REJECTED)
 
     @property
     def should_retry(self) -> bool:
-        """Downtime is worth another attempt. A rejection is not -- it needs a
-        human to supply what is missing."""
+        """Downtime is worth another attempt with the same body."""
         return self.outcome is Outcome.UNREACHABLE
+
+    @property
+    def needs_resubmission(self) -> bool:
+        """Nothing landed, and retrying the same body will not help either --
+        a human has to supply what is missing first."""
+        return self.outcome is Outcome.REJECTED
 
     @property
     def needs_human(self) -> bool:
@@ -121,15 +144,26 @@ class DeskReply:
         """Pull a reply out of an agent's prose.
 
         A2A peers are agents, so a desk may answer "I have registered this as
-        ACCEPTED BWSSB-100001: sla_days=7" rather than the bare line. Scan for
-        the first outcome keyword and parse from there.
+        ACCEPTED BWSSB-100001: sla_days=7" rather than the bare line, lead with
+        its ticket number before the outcome word, or spill onto a second line.
+        The outcome and the reference are found independently of each other's
+        position for exactly that reason.
         """
         haystack = text or ""
-        best: tuple[int, str] | None = None
-        for outcome in Outcome:
-            position = haystack.find(outcome.value)
-            if position != -1 and (best is None or position < best[0]):
-                best = (position, outcome.value)
-        if best is None:
+        match = _OUTCOME_RE.search(haystack)
+        if match is None:
             return cls(Outcome.UNKNOWN, detail=haystack.strip()[:200])
-        return cls.parse(haystack[best[0]:].splitlines()[0])
+        outcome = Outcome(match.group(1))
+
+        ref_match = _REF_RE.search(haystack)
+        ref = ref_match.group(0) if ref_match else ""
+
+        remainder = haystack[match.end():].strip()
+        if ref and remainder.startswith(ref):
+            remainder = remainder[len(ref):]
+        remainder = remainder.lstrip(":,.;! ").strip()
+        # Collapse newlines: a detail split across lines ("ACCEPTED ref\n
+        # sla_days=7") must not lose the second line the way splitlines()[0]
+        # used to.
+        detail = " ".join(remainder.split())[:300]
+        return cls(outcome, ref=ref, detail=detail)

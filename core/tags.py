@@ -47,7 +47,7 @@ def emit(tag: Tag, event: str, **fields: Any) -> None:
     for key, value in fields.items():
         if value is None:
             continue
-        text = str(value)
+        text = str(value).replace("\n", " ").replace("\r", " ")
         if " " in text or "=" in text:
             text = '"' + text.replace('"', "'") + '"'
         parts.append(key + "=" + text)

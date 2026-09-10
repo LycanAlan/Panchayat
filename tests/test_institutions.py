@@ -130,5 +130,45 @@ def test_every_desk_reply_round_trips_through_the_wire():
     assert DeskReply.parse(reply.render()) == reply
 
 
+def test_polling_a_ticket_does_not_change_a_later_tickets_fate():
+    # Regression for the review's C4. close() used to draw from the same
+    # random.Random stream that accept() draws from, so how many times a
+    # ticket got polled shifted every SUBSEQUENT accept() decision --
+    # reproduced: 8 accept() calls with no polling gave a different pattern
+    # than the same 8 with one status() call interleaved after each. A
+    # ticket's outcome must be a function of the ticket, not of the observer.
+    profile = _profile(reject_malformed_rate=0.4, false_closure_rate=0.5)
+
+    quiet = Desk(profile)
+    quiet_outcomes = [
+        quiet.accept(f"case_{i}", "water", "duration 3 days, affected 9",
+                     f"idem-q-{i}").outcome
+        for i in range(8)
+    ]
+
+    noisy = Desk(profile)  # same seed: profile.name seeds random.Random
+    noisy_outcomes = []
+    for i in range(8):
+        reply = noisy.accept(f"case_{i}", "water",
+                             "duration 3 days, affected 9", f"idem-n-{i}")
+        noisy_outcomes.append(reply.outcome)
+        if reply.outcome is Outcome.ACCEPTED:
+            noisy.close(reply.ref)          # the extra draw the old code made
+
+    assert noisy_outcomes == quiet_outcomes
+
+
+def test_a_tickets_false_closure_is_fixed_at_accept_not_at_close():
+    # The other half of C4: closing the same ticket by two different paths
+    # (an explicit close() call vs. status()'s auto-close) must agree, because
+    # both read a decision made once at accept() rather than rolling again.
+    desk = Desk(_profile(false_closure_rate=1.0))
+    ref = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-fc").ref
+    ticket = desk.tickets[ref]
+    assert ticket.will_false_close is True
+    desk.close(ref)
+    assert ticket.actually_resolved is False
+
+
 def test_profiles_directory_holds_exactly_the_five():
     assert sorted(p.stem for p in PROFILE_DIR.glob("*.yaml")) == sorted(NAMES)

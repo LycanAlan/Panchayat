@@ -20,59 +20,70 @@ from __future__ import annotations
 
 import pathlib
 import re
+from dataclasses import dataclass
 
 import yaml
 
 from core.tags import Tag, emit
 
 ROUTING_FILE = pathlib.Path(__file__).resolve().parent / "routing.yaml"
+PROFILE_DIR = pathlib.Path(__file__).resolve().parent / "profiles"
 
 
+@dataclass(frozen=True)
 class DeskTarget:
     """Where a tier gets filed, or why it cannot be."""
 
-    __slots__ = ("desk", "reason")
-
-    def __init__(self, desk: str = "", reason: str = "") -> None:
-        self.desk = desk
-        self.reason = reason
+    desk: str = ""
+    reason: str = ""
 
     @property
     def is_filable(self) -> bool:
         """False means a human has to act. It is never a silent stall."""
         return bool(self.desk)
 
-    def __repr__(self) -> str:
-        return "DeskTarget(desk=" + repr(self.desk) + ")"
-
-    def __eq__(self, other: object) -> bool:
-        return (isinstance(other, DeskTarget)
-                and other.desk == self.desk and other.reason == self.reason)
-
 
 class DeskRouter:
-    """First match wins, so the order in routing.yaml is part of the meaning."""
+    """First match wins, so the order in routing.yaml is part of the meaning.
 
-    def __init__(self, path: pathlib.Path | None = None) -> None:
+    Loads at construction, not on first use. `desk_for()` is documented and
+    tested as never raising, so a malformed routing.yaml or a typo'd `desk:`
+    value has to fail at import time -- a packaging mistake caught at process
+    startup, not mid-filing three days into a case.
+    """
+
+    def __init__(self, path: pathlib.Path | None = None,
+                 known_desks: frozenset[str] | None = None) -> None:
         self._path = path or ROUTING_FILE
-        self._routes: list[tuple[str, str, str]] | None = None
-
-    def _load(self) -> list[tuple[re.Pattern[str], str, str]]:
-        if self._routes is None:
-            doc = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
-            self._routes = [
+        known = known_desks
+        if known is None:
+            known = frozenset(p.stem for p in PROFILE_DIR.glob("*.yaml"))
+        doc = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
+        self._routes: list[tuple[re.Pattern[str], str, str]] = []
+        for r in doc.get("routes", []):
+            desk = r.get("desk", "")
+            if desk and desk not in known:
+                # Caught here rather than left to surface as a retry loop: a
+                # typo'd desk name would otherwise read as UNREACHABLE forever
+                # -- downtime that is actually a config error and can never
+                # resolve itself.
+                raise ValueError(
+                    "institutions/routing.yaml routes '" + r.get("match", "?")
+                    + "' to desk '" + desk + "', which has no profile in "
+                    + str(PROFILE_DIR) + ". Known desks: "
+                    + ", ".join(sorted(known)) + "."
+                )
+            self._routes.append((
                 # Whole words only. A bare substring match puts "RTI" inside
                 # "certification" and routes an ordinary ward filing to the
                 # tier-4 never-file rule.
-                (re.compile(r"\b" + re.escape(r["match"]) + r"\b", re.IGNORECASE),
-                 r.get("desk", ""), (r.get("reason") or "").strip())
-                for r in doc.get("routes", [])
-            ]
-        return self._routes
+                re.compile(r"\b" + re.escape(r["match"]) + r"\b", re.IGNORECASE),
+                desk, (r.get("reason") or "").strip(),
+            ))
 
     def target_for(self, authority: str) -> DeskTarget:
         flat = authority or ""
-        for pattern, desk, reason in self._load():
+        for pattern, desk, reason in self._routes:
             if pattern.search(flat):
                 emit(Tag.LADDER, "routed", authority=authority,
                      desk=desk or "(none)")

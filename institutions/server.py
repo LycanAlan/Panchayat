@@ -69,6 +69,7 @@ class Ticket:
     responds_at: object
     sla_deadline: object
     will_breach: bool
+    will_false_close: bool          # decided at accept(), not at close()
     status: str = "open"            # open | closed | rejected
     actually_resolved: bool = False
     reason: str = ""
@@ -136,6 +137,10 @@ class Desk:
 
         now = self._clock.now()
         will_breach = self._rng.random() < self.profile.breach_rate
+        # Decided here, once, rather than in close(). A ticket's fate must be a
+        # function of the ticket, not of how many times status() happened to
+        # poll it first -- see the regression test for why that matters.
+        will_false_close = self._rng.random() < self.profile.false_closure_rate
         ticket = Ticket(
             ref=self._next_ref(),
             case_id=case_id,
@@ -145,6 +150,7 @@ class Desk:
             responds_at=now + timedelta(hours=self.profile.mean_response_hours),
             sla_deadline=now + timedelta(days=self.profile.sla_days),
             will_breach=will_breach,
+            will_false_close=will_false_close,
         )
         self.tickets[ticket.ref] = ticket
         self._by_key[idempotency_key] = ticket.ref
@@ -164,17 +170,23 @@ class Desk:
         return DeskReply(Outcome.REJECTED, ref, reason)
 
     def close(self, ref: str) -> DeskReply:
-        """Close a ticket. Sometimes without the work having been done."""
+        """Close a ticket. Sometimes without the work having been done.
+
+        Draws no randomness: whether this closure is honest was decided once,
+        at accept() time. Deciding it here made a ticket's outcome depend on
+        how many times it had been polled before it closed, which silently
+        broke reproducibility for Kartik's rate sweep.
+        """
         ticket = self.tickets.get(ref)
         if ticket is None:
             return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         if ticket.status == "closed":
             return DeskReply(Outcome.CLOSED, ref, "already closed")
 
-        false_closure = self._rng.random() < self.profile.false_closure_rate
         ticket.status = "closed"
-        ticket.actually_resolved = not false_closure
-        ticket.reason = "resolved" if not false_closure else "resolved -- supply restored"
+        ticket.actually_resolved = not ticket.will_false_close
+        ticket.reason = ("resolved" if ticket.actually_resolved
+                         else "resolved -- supply restored")
         # On a false closure the desk states the work is done and it is not.
         # The Watchdog disputes this with live claims from other households,
         # which is ground truth a single citizen could never hold.

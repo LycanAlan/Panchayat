@@ -36,12 +36,14 @@ def test_a_reply_with_no_detail_is_still_a_reference():
 
 
 def test_unreachable_pauses_the_clock_and_asks_to_be_retried():
-    # The distinction the Watchdog turns on. Downtime is worth retrying and
-    # must not burn the statutory window; a rejection needs a human instead.
+    # The distinction the Watchdog turns on. Downtime is worth retrying with
+    # the same body; a rejection must also pause the clock -- nothing landed
+    # either way -- but needs a human to fix the body first, not a retry.
     down = DeskReply(Outcome.UNREACHABLE)
     refused = DeskReply(Outcome.REJECTED, detail="missing RR number")
     assert down.should_pause_sla and down.should_retry and not down.filed
-    assert not refused.should_pause_sla and not refused.should_retry
+    assert refused.should_pause_sla and not refused.should_retry
+    assert refused.needs_resubmission and not down.needs_resubmission
 
 
 def test_a_duplicate_counts_as_filed():
@@ -83,6 +85,36 @@ def test_needs_human_is_not_a_rejection():
     assert not blocked.should_retry
     assert not blocked.filed
     assert not DeskReply(Outcome.REJECTED, detail="missing RR").needs_human
+
+
+def test_closed_does_not_match_inside_disclosed():
+    # Regression. haystack.find("CLOSED") matched inside "DISCLOSED" and
+    # returned Outcome.CLOSED for a sentence that was not a reply at all.
+    assert DeskReply.find("The ticket was DISCLOSED to the AEE").outcome is Outcome.UNKNOWN
+
+
+def test_open_does_not_match_inside_reopened():
+    # Regression. "OPEN" matched inside "REOPENED" at index 2, then
+    # Outcome("OPENED") raised -- reopen-and-reclose is the documented BBMP
+    # behaviour this project exists to catch, not a hypothetical input.
+    reply = DeskReply.find("REOPENED BWSSB-100001: back in queue")
+    assert reply.outcome is Outcome.UNKNOWN
+
+
+def test_a_reference_before_the_keyword_is_not_discarded():
+    # Regression. find() used to slice from the keyword onward, so a desk
+    # leading with its ticket number lost the reference entirely.
+    reply = DeskReply.find("Ticket BWSSB-100001 is now CLOSED")
+    assert reply.outcome is Outcome.CLOSED
+    assert reply.ref == "BWSSB-100001"
+
+
+def test_detail_on_a_following_line_is_not_dropped():
+    # Regression. splitlines()[0] threw away everything after the first
+    # newline, so "ACCEPTED ref\nsla_days=7" lost sla_days entirely.
+    reply = DeskReply.find("ACCEPTED BWSSB-100001\nsla_days=7")
+    assert reply.ref == "BWSSB-100001"
+    assert "sla_days=7" in reply.detail
 
 
 def test_garbage_never_raises_on_the_filing_path():

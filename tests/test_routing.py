@@ -3,8 +3,10 @@
 Owner: Alakshendra
 """
 
+import pytest
+
 from agents.remedy import ladder_for, load_table
-from institutions.routing import DeskRouter, desk_for
+from institutions.routing import DeskRouter, DeskTarget, desk_for
 from institutions.server import PROFILE_DIR
 
 DESKS = {p.stem for p in PROFILE_DIR.glob("*.yaml")}
@@ -75,3 +77,35 @@ def test_first_match_wins_so_order_is_meaning(tmp_path):
     router = DeskRouter(tmp_path / "r.yaml")
     assert not router.target_for("a special case").is_filable
     assert router.target_for("an ordinary case").desk == "ward"
+
+
+def test_a_typo_in_routing_yaml_fails_at_load_not_as_an_infinite_retry(tmp_path):
+    # Regression. A desk name with no matching profile used to surface as
+    # UNREACHABLE + should_retry=True at request time -- the Watchdog would
+    # pause the clock and retry a desk that can never exist, forever. Caught
+    # here instead, at construction, so it is a startup error.
+    (tmp_path / "r.yaml").write_text(
+        "routes:\n"
+        "  - match: 'water board'\n"
+        "    desk: bwsbb\n",   # typo: not a real profile
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="bwsbb"):
+        DeskRouter(tmp_path / "r.yaml")
+
+
+def test_desk_for_never_raises_at_query_time():
+    # Module docstring and protocol.py both promise this. Loading moved to
+    # construction specifically so this holds even for a malformed file --
+    # the failure happens before _default exists, not on a call to it.
+    assert desk_for("literally anything, including empty") is not None
+    assert desk_for("") is not None
+
+
+def test_desk_target_is_hashable():
+    # Regression. Hand-rolled __eq__ without @dataclass(frozen=True) set
+    # __hash__ to None, so deduping targets across a ladder crashed.
+    a = DeskTarget(desk="ward")
+    b = DeskTarget(desk="ward")
+    assert hash(a) == hash(b)
+    assert {a, b} == {DeskTarget(desk="ward")}
