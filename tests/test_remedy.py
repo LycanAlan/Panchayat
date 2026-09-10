@@ -8,6 +8,7 @@ import pytest
 from agents.remedy import (
     EscalationLadder,
     JurisdictionTable,
+    compose_filing,
     ladder_for,
     load_table,
     lookup,
@@ -15,7 +16,8 @@ from agents.remedy import (
     resolve,
     segment_aliases,
 )
-from core.types import Claim, EscalationStep, Service, Tail
+from core.fakes import a_case
+from core.types import Claim, EscalationStep, JurisdictionEntry, Service, Tail
 
 
 def test_every_entry_is_citable_and_has_topology():
@@ -170,3 +172,128 @@ def test_an_entry_without_a_citation_is_refused(tmp_path):
     )
     with pytest.raises(ValueError, match="statute_ref"):
         load_table(tmp_path)
+
+
+# --------------------------------------------------------------- compose_filing
+
+def test_a_complete_filing_produces_a_body_and_no_missing_fields():
+    entry = lookup(Service.WATER, "ward12-4thcross")   # rr_number, duration_days, affected_count
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14")
+    body, missing = compose_filing(
+        case, entry, {"rr_number": "RR-4521", "duration_days": 3, "affected_count": 9},
+    )
+    assert missing == []
+    assert body
+    assert "RR-4521" in body
+    assert entry.statute_ref in body
+
+
+def test_a_missing_field_refuses_to_file_rather_than_guess():
+    # affected_count auto-fills from the case (here: 0, an empty household
+    # list) -- rr_number has no such source and must come from facts.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14")
+    body, missing = compose_filing(case, entry, {"duration_days": 3})
+    assert body == ""
+    assert missing == ["rr_number"]
+
+
+def test_affected_count_is_filled_from_the_case_when_not_given():
+    # The count already lives on the Case. Asking a household a question the
+    # system can already answer itself is exactly the friction this removes.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14",
+                  household_ids=["hh_1", "hh_2", "hh_3"])
+    body, missing = compose_filing(
+        case, entry, {"rr_number": "RR-4521", "duration_days": 3},
+    )
+    assert missing == []
+    assert "3" in body
+    assert "households affected: 3" in body.lower()
+
+
+def test_an_explicit_affected_count_overrides_the_cases_own():
+    # Anti-Abuse may have verified a different count than the raw household
+    # list -- e.g. two member agents in one household is one household.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14",
+                  household_ids=["hh_1", "hh_2", "hh_3"])
+    _body, missing = compose_filing(
+        case, entry,
+        {"rr_number": "RR-4521", "duration_days": 3, "affected_count": 2},
+    )
+    assert missing == []
+
+
+def test_zero_is_a_real_value_not_a_missing_one():
+    # affected_count=0 must not read the same as affected_count never having
+    # been supplied at all.
+    entry = JurisdictionEntry(
+        service=Service.WATER, segment="x", feeder_id="f-1", authority="X",
+        statute_ref="a citation",
+        required_fields=["affected_count"],
+        ladder=[EscalationStep(tier=1, authority="X", window_days=7)],
+    )
+    case = a_case(segment="x", feeder_id="f-1", household_ids=[])
+    body, missing = compose_filing(case, entry, {"affected_count": 0})
+    assert missing == []
+    assert "affected_count=0" in body
+
+
+def test_a_different_required_fields_shape_still_composes():
+    # The layout-developer entries need flat_number and layout_name, not an
+    # RR number at all -- the composer must not assume BWSSB's shape.
+    entry = lookup(Service.WATER, "ward12-greenmeadows")
+    case = a_case(segment="ward12-greenmeadows", feeder_id=entry.feeder_id)
+    body, missing = compose_filing(
+        case, entry,
+        {"flat_number": "G-204", "layout_name": "Green Meadows", "duration_days": 5},
+    )
+    assert missing == []
+    assert "G-204" in body and "Green Meadows" in body
+
+
+def test_an_escalation_step_is_cited_instead_of_the_original_statute():
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14")
+    step = next_step(entry, 1)   # tier 2
+    body, missing = compose_filing(
+        case, entry,
+        {"rr_number": "RR-4521", "duration_days": 10, "affected_count": 9},
+        step=step,
+    )
+    assert missing == []
+    assert "Tier 2" in body
+    assert step.authority not in body  # the authority is who we file WITH, not part of the body
+
+
+def test_no_required_fields_composes_without_a_particulars_line():
+    entry = JurisdictionEntry(
+        service=Service.WATER, segment="y", feeder_id="f-2", authority="Y",
+        statute_ref="a citation", required_fields=[],
+        ladder=[EscalationStep(tier=1, authority="Y", window_days=7)],
+    )
+    case = a_case(segment="y", feeder_id="f-2")
+    body, missing = compose_filing(case, entry, {})
+    assert missing == []
+    assert "Particulars" not in body
+
+
+def test_the_composed_body_satisfies_the_desks_own_completeness_check():
+    # The actual integration point: does what compose_filing produces survive
+    # contact with Desk.accept()'s malformed-filing check, not just look right
+    # to a human reading the trace.
+    from institutions.server import Desk, load_profile
+
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    case = a_case(segment="ward12-4thcross", feeder_id="bwssb-tm-14",
+                  household_ids=["hh_1", "hh_2"])
+    body, missing = compose_filing(
+        case, entry, {"rr_number": "RR-4521", "duration_days": 3},
+    )
+    assert missing == []
+
+    profile = load_profile("bwssb")
+    profile.reject_malformed_rate = 0.0   # isolate the keyword check from luck
+    reply = Desk(profile).accept(case.case_id, "water", body, "idem-compose-1")
+    assert reply.outcome.value == "ACCEPTED"

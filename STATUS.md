@@ -7,7 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **10 Sep, 21:42** by Alakshendra
+Last updated: **11 Sep, 02:30** by Alakshendra
 
 ---
 
@@ -18,6 +18,7 @@ Last updated: **10 Sep, 21:42** by Alakshendra
 | **Bedrock MODEL calls not authorised** (account flag, support case 178898467100367) | anything invoking a model | `core/models.py` seam: `PANCHAYAT_MODEL=anthropic` + an API key swaps provider in one env var. **AgentCore itself is LIVE** — the deploy target was never blocked. | Ali |
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
 | ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
+| `Watchdog.climb()`'s `submit` seam and `institutions.client`'s filer have different shapes | Raghav / Ali, at the moment `submit` gets wired to the real filer | Not started — flagged now so the fix is a two-line adapter, not a Day-4 debugging session. See note below. | Alakshendra + Raghav |
 
 **On that clock test** — Alakshendra's diagnosis was right and it is fixed.
 Worth knowing why it passed here and failed there: Windows' `monotonic()` has
@@ -28,6 +29,36 @@ second of REAL elapsed time, which is stable everywhere.
 
 **Good catch, and the right call to flag rather than edit.** That is exactly
 what STATUS.md is for.
+
+**On the `submit` seam** — checked `feat/household-time`'s `watchdog.py`
+against my just-reviewed `institutions/client.py` while looking for anything
+that might already be calling it (nothing does yet, so no live breakage). Two
+things, neither of them a criticism of either branch — both were built
+correctly against their own contract, they just haven't met yet:
+
+1. **Shape.** `Watchdog.climb()` takes `submit: Callable[[Filing], bool]` — one
+   `Filing` in, `True`/`False` out. `InstitutionClient.file_for_authority()`
+   takes five separate arguments (`authority, case_id, service, body,
+   idempotency_key, signed_by`) and returns a `DeskReply` — a richer type on
+   purpose (`.should_pause_sla`, `.needs_human`, `.needs_resubmission` are
+   distinct properties, not one boolean). Plugging one straight into the other
+   won't type-check, and a lambda that forces it to fit **loses the
+   distinction the whole review pass just built**: a `REJECTED` and an
+   `UNREACHABLE` would both collapse to `False`, and the Watchdog can no
+   longer tell "needs a human to fix something" from "just retry it."
+   Proposing a small adapter — `Filing -> DeskReply.should_pause_sla is False`
+   as the bool, with the full `DeskReply` still available to whoever wires it
+   for the richer branching. Whoever lands the wiring, ping the other first —
+   five-minute conversation, not a blocker.
+2. **`signed_by`.** `file()` now refuses anything with an empty `signed_by`
+   (hard rule 4, from Ali's review — see `docs/review/inst-ladder-filing.md`
+   B1). `climb()`'s `Filing(...)` for tiers 1-3 doesn't set one. Genuine
+   question, not a bug report: is that intentional (household signs once at
+   the initial filing, the ladder auto-continues on that authorization) or
+   should every escalation tier need its own fresh sign-off, same as tier 4's
+   RTI? Ali's review of this same branch raised the retry-count question on
+   `climb()`'s `submit` call right next to this, so worth answering both at
+   once.
 
 ---
 
@@ -49,9 +80,10 @@ what STATUS.md is for.
 | Alakshendra | `agents/remedy.py` | **DONE** | `lookup(service, segment, feeder_id)` and `resolve(claim) -> (tail, entry, citation)`. Returns `None` on a miss, never a guess. |
 | Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005. Now on `core.models.get_model("cheap")` — a desk picking a tool is classification, not deliberation. |
 | Alakshendra | escalation ladder API | **DONE** | **Raghav: `climb()` is unblocked.** `remedy.next_step(entry, tier)` -> the next `EscalationStep`, or `None` when exhausted. `institutions.routing.desk_for(step.authority)` -> which desk, or why there is none. |
-| Alakshendra | `institutions/client.py` | **DONE** | **Ali: filing is unblocked.** `build_filing_tool()` gives you a Strands `@tool` for a graph node. Works offline — no desk listening returns UNREACHABLE, never raises. |
+| Alakshendra | `institutions/client.py` | **DONE, reviewed** | **Ali: filing is unblocked.** `build_filing_tool()` gives you a Strands `@tool` for a graph node. Works offline — no desk listening returns UNREACHABLE, never raises. Two blockers from Ali's review (unsigned filings, household text in instruction position) fixed — see `docs/review/inst-ladder-filing.md`. **Not yet wired to `Watchdog.climb()`'s `submit` seam — see blocker row above.** |
 | Alakshendra | `institutions/protocol.py` | **DONE** | Shared wire grammar `OUTCOME [ref][: detail]`. Use `DeskReply.filed` / `.should_pause_sla` / `.needs_human` instead of string matching. |
 | Alakshendra | `core/tags.py` | **DONE, proposed** | Structured tags: `emit(Tag.LADDER, "climbed", case_id=...)`. **Ali — if the trace UI wants a different shape, say so and it moves.** |
+| Alakshendra | `agents/remedy.compose_filing()` | **DONE** | `(case, entry, facts, step=None) -> (body, missing_fields)`. Turns `required_fields` + what we know into filing text, or refuses with what is missing rather than filing something the desk will bounce. `affected_count` auto-fills from `case.corroboration`. Tested end to end against `Desk.accept()`'s own completeness check, not just against expectations. |
 | Raghav | `agents/intake.py` | not started | |
 | Raghav | `agents/household.py` | not started | |
 | Raghav | `agents/warden.py` | not started | |

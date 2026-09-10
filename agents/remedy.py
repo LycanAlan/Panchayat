@@ -24,9 +24,22 @@ import pathlib
 import yaml
 
 from core.tags import Tag, emit
-from core.types import Claim, EscalationStep, JurisdictionEntry, Service, Tail
+from core.types import Case, Claim, EscalationStep, JurisdictionEntry, Service, Tail
 
 JURISDICTION_DIR = pathlib.Path(__file__).resolve().parents[1] / "data" / "jurisdiction"
+
+# How a required_fields key reads in a sentence a human can check at a glance.
+# A field with no entry here still works -- it falls back to its own name with
+# underscores turned to spaces -- so a new field added to the table later does
+# not need a matching code change to be legible.
+FIELD_LABELS: dict[str, str] = {
+    "rr_number": "RR number",
+    "duration_days": "days without supply",
+    "affected_count": "households affected",
+    "ward_number": "ward number",
+    "flat_number": "flat number",
+    "layout_name": "layout name",
+}
 
 
 class EscalationLadder:
@@ -162,6 +175,79 @@ class JurisdictionTable:
         if entry is None:
             return (Tail.INSTITUTIONAL, None, "")
         return (Tail.INSTITUTIONAL, entry, entry.statute_ref)
+
+
+def _field_label(field: str) -> str:
+    return FIELD_LABELS.get(field, field.replace("_", " "))
+
+
+def _is_missing(value: object) -> bool:
+    """None or blank is missing. 0 is a real value -- affected_count=0 must
+    not be treated the same as affected_count never having been supplied."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+def compose_filing(case: Case, entry: JurisdictionEntry, facts: dict,
+                   step: EscalationStep | None = None) -> tuple[str, list[str]]:
+    """Turn required_fields plus what we actually know into filing text.
+
+    Returns (body, missing_fields). A non-empty missing_fields means do not
+    file -- surface it to a human instead, the same "say so, do not guess"
+    rule that governs lookup(). required_fields comes from the curated entry,
+    never invented: what evidence an office needs is as much a curated fact as
+    which office it is.
+
+    affected_count is filled in from case.corroboration when facts does not
+    already give one -- that count already lives on the Case, and asking a
+    household a question the system can already answer itself is exactly the
+    friction this function exists to remove. Every other field must come from
+    facts; nothing else here is safe to infer.
+
+    Pass `step` when composing an escalation rather than the first filing, so
+    the tier and its own citation are included. Without it the body cites
+    entry.statute_ref, the grounds for the first filing.
+    """
+    values = dict(facts)
+    if "affected_count" in entry.required_fields and "affected_count" not in values:
+        values["affected_count"] = case.corroboration
+
+    missing = [f for f in entry.required_fields
+              if f not in values or _is_missing(values[f])]
+    if missing:
+        emit(Tag.FILING, "incomplete", case_id=case.case_id,
+             segment=case.segment, missing=",".join(missing))
+        return "", missing
+
+    lines = [
+        case.service.value.capitalize() + " complaint, case " + case.case_id
+        + ", segment " + case.segment + ".",
+    ]
+    for field in entry.required_fields:
+        lines.append(_field_label(field).capitalize() + ": "
+                     + str(values[field]) + ".")
+    if step is not None:
+        lines.append("Tier " + str(step.tier) + ": "
+                     + (step.description or step.statute_ref) + ".")
+    else:
+        lines.append("Filed under " + entry.statute_ref + ".")
+    if entry.required_fields:
+        # A second, literal field=value line alongside the prose above. The
+        # prose is for a person reading the trace; this line is for whatever
+        # crude "does this look complete" check the receiving desk runs --
+        # keeping the raw field names present makes the body robust to that
+        # check regardless of how the human-readable label above phrases it.
+        lines.append("Particulars: " + ", ".join(
+            f + "=" + str(values[f]) for f in entry.required_fields
+        ) + ".")
+
+    body = " ".join(lines)
+    emit(Tag.FILING, "composed", case_id=case.case_id, segment=case.segment,
+         fields=len(entry.required_fields))
+    return body, []
 
 
 _default = JurisdictionTable()
