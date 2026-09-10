@@ -130,6 +130,31 @@ def test_every_desk_reply_round_trips_through_the_wire():
     assert DeskReply.parse(reply.render()) == reply
 
 
+def test_a_corrected_resubmission_after_a_rejection_actually_reaches_the_desk():
+    # The idempotency key is case|authority|tier, which a correction does not
+    # change. With the key still mapped after a rejection, the corrected
+    # filing came back DUPLICATE -- filed=True, clock running, and the desk
+    # never saw the correction. A real office issues a new number.
+    desk = Desk(_profile())
+    first = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-r")
+    desk.reject(first.ref, "RR number does not match the address")
+
+    again = desk.accept("case_1", "water",
+                        "duration 3 days, affected 9, RR corrected", "idem-r")
+    assert again.outcome is Outcome.ACCEPTED
+    assert again.ref != first.ref
+    assert desk.tickets[again.ref].body.endswith("RR corrected")
+
+
+def test_an_unrejected_retry_is_still_idempotent():
+    # Releasing the key on rejection must not weaken the ordinary retry path.
+    desk = Desk(_profile())
+    a = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-s")
+    b = desk.accept("case_1", "water", "duration 3 days, affected 9", "idem-s")
+    assert b.outcome is Outcome.DUPLICATE
+    assert b.ref == a.ref
+
+
 def test_polling_a_ticket_does_not_change_a_later_tickets_fate():
     # Regression for the review's C4. close() used to draw from the same
     # random.Random stream that accept() draws from, so how many times a

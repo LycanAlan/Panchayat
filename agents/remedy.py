@@ -249,7 +249,14 @@ def compose_filing(case: Case, entry: JurisdictionEntry, facts: dict,
         # and a receiving desk that screens on the word "affected" would
         # otherwise reject every filing of this shape forever -- with each
         # resubmission byte-identical to the last, so it can never clear.
-        lines.append("Households affected: " + str(case.corroboration) + ".")
+        #
+        # But an unknown count is written as unknown. The guard above refuses
+        # to invent this number when the authority requires it; inventing it
+        # here instead, in text going to an outside party, would be the same
+        # fabrication with a shorter path to it.
+        lines.append("Households affected: " + (
+            str(case.corroboration) if case.corroboration > 0
+            else "not yet established") + ".")
     if step is not None:
         # Both, never one or the other. `description or statute_ref` shipped
         # every escalation with no citation at all, because every curated step

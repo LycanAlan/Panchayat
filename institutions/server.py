@@ -173,6 +173,13 @@ class Desk:
             return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         ticket.status = "rejected"
         ticket.reason = reason
+        # Release the idempotency key. A rejection is an instruction to fix
+        # something and resubmit, and the corrected filing carries the same
+        # key (case|authority|tier, which a correction does not change). Left
+        # mapped, that resubmission came back DUPLICATE -- reading as filed,
+        # not pausing the clock, and never actually reaching this desk. A real
+        # office issues a new ticket number for a corrected complaint.
+        self._by_key = {k: v for k, v in self._by_key.items() if v != ref}
         emit(Tag.DESK, "rejected", desk=self.profile.name, ref=ref, reason=reason)
         return DeskReply(Outcome.REJECTED, ref, reason)
 

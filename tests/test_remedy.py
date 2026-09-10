@@ -314,6 +314,24 @@ def test_the_household_count_is_stated_even_when_not_required():
     assert "affected" in body.lower()
 
 
+def test_an_unknown_household_count_is_written_as_unknown():
+    # compose_filing refuses to invent affected_count when an authority
+    # requires it. Stating a bare "0" for an authority that does not require
+    # it is the same fabrication by a shorter route, and it goes out in text
+    # to an external party.
+    entry = lookup(Service.WATER, "ward12-greenmeadows")
+    case = a_case(segment="ward12-greenmeadows", feeder_id=entry.feeder_id,
+                  household_ids=[])
+    body, missing = compose_filing(
+        case, entry,
+        {"flat_number": "G-204", "layout_name": "Green Meadows", "duration_days": 5},
+    )
+    assert missing == []
+    assert "affected: 0" not in body
+    assert "not yet established" in body
+    assert "affected" in body.lower(), "the word still has to be present"
+
+
 def test_a_curated_label_is_not_mangled_by_capitalisation():
     # str.capitalize() lowercases the rest, turning "RR number" into
     # "Rr number" in text going to a public body.
