@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from core import fakes
 from agents.intake import IntakeAgent, parse, read_back
+from core import fakes
 
 
 def _member(**kw):

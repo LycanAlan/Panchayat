@@ -16,13 +16,12 @@ their exact original names and signatures and simply delegate to a default
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Callable, Optional
 
 from core import db
 from core.clock import Clock, get_clock
-from core.types import (Case, CaseStatus, EscalationStep, Filing,
-                        JurisdictionEntry)
+from core.types import Case, CaseStatus, EscalationStep, Filing, JurisdictionEntry
 
 ACTIONS = ("check_sla", "check_closure", "expire_draft")
 
@@ -45,8 +44,8 @@ class Watchdog:
     class must not simulate that assumption away either.
     """
 
-    def __init__(self, store=db, lookup: Optional[Callable] = None,
-                 submit: Optional[Callable[[Filing], bool]] = None):
+    def __init__(self, store=db, lookup: Callable | None = None,
+                 submit: Callable[[Filing], bool] | None = None):
         self.db = store
         self._lookup = lookup
         # The real A2A institutional handoff belongs to whoever owns
@@ -63,7 +62,7 @@ class Watchdog:
 
     # ---------------------------------------------------------- dispatch
 
-    def handle(self, case_id: str, action: str, clock: Optional[Clock] = None) -> None:
+    def handle(self, case_id: str, action: str, clock: Clock | None = None) -> None:
         """Entry point for BOTH RealClock and VirtualClock. One code path.
 
         Do not put `if demo_mode:` in here. If you need that, the clock is
@@ -95,7 +94,7 @@ class Watchdog:
 
     # --------------------------------------------------------- reconcile
 
-    def reconcile_closure(self, case_id: str, clock: Optional[Clock] = None) -> bool:
+    def reconcile_closure(self, case_id: str, clock: Clock | None = None) -> bool:
         """THE moment the project exists for.
 
         The institution says resolved. Live claims from other households say
@@ -149,13 +148,13 @@ class Watchdog:
             raise ValueError(f"no such case {case_id!r}")
 
         lookup = self._resolve_lookup()
-        entry: Optional[JurisdictionEntry] = lookup(case.service, case.segment, case.feeder_id)
+        entry: JurisdictionEntry | None = lookup(case.service, case.segment, case.feeder_id)
         if entry is None or not entry.ladder:
             _trace("STALLED", "watchdog", "no jurisdiction entry -- cannot climb")
             return case.escalation_tier
 
         next_tier = case.escalation_tier + 1
-        step: Optional[EscalationStep] = next(
+        step: EscalationStep | None = next(
             (s for s in entry.ladder if s.tier == next_tier), None)
         if step is None:
             _trace("STALLED", "watchdog", f"no tier {next_tier} defined -- top of the ladder")
@@ -269,7 +268,7 @@ class Watchdog:
 _default_watchdog = Watchdog()
 
 
-def watchdog(case_id: str, action: str, clock: Optional[Clock] = None) -> None:
+def watchdog(case_id: str, action: str, clock: Clock | None = None) -> None:
     """Entry point for BOTH RealClock and VirtualClock. One code path.
 
     `clock` is optional and defaults to get_clock() -- additive, so the
@@ -279,7 +278,7 @@ def watchdog(case_id: str, action: str, clock: Optional[Clock] = None) -> None:
     _default_watchdog.handle(case_id, action, clock=clock)
 
 
-def reconcile_closure(case_id: str, clock: Optional[Clock] = None) -> bool:
+def reconcile_closure(case_id: str, clock: Clock | None = None) -> bool:
     return _default_watchdog.reconcile_closure(case_id, clock=clock)
 
 

@@ -15,10 +15,15 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Optional
 
-from core.types import (Claim, ConsentGrant, ConsentScope, HouseholdPosition,
-                        Priority, Service)
+from core.types import (
+    Claim,
+    ConsentGrant,
+    ConsentScope,
+    HouseholdPosition,
+    Priority,
+    Service,
+)
 
 
 class LeakDetector:
@@ -77,7 +82,7 @@ class PrivacyWarden:
     process -- it holds no per-request state, only its list of leak
     detectors, so it is safe to share as the module default."""
 
-    def __init__(self, leak_detectors: Optional[list[LeakDetector]] = None):
+    def __init__(self, leak_detectors: list[LeakDetector] | None = None):
         self.leak_detectors = leak_detectors or [WeekdayAvoidanceLeakDetector()]
 
     def minimise(self, position: HouseholdPosition) -> Claim:
@@ -174,7 +179,7 @@ def consent_covers(grants: list[ConsentGrant], scope: ConsentScope,
     return _default_warden.consent_covers(grants, scope, service, now)
 
 
-def build_warden_agent(model: Optional[str] = None):
+def build_warden_agent(model: str | None = None):
     """Bridges the Warden into Ali's GraphBuilder as a node.
 
     minimise() and consent_covers() are deterministic Python -- no model

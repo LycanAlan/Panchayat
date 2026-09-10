@@ -12,9 +12,9 @@ from datetime import timedelta
 
 import pytest
 
+from agents.household import HouseholdCoordinator, build_swarm, deliberate
 from core import fakes
 from core.types import HouseholdPosition
-from agents.household import HouseholdCoordinator, build_swarm, deliberate
 
 
 def test_deliberate_surfaces_a_fact_the_reporter_never_mentioned():

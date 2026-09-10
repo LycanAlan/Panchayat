@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from core import fakes
-from core.types import (ConsentScope, Priority, Service, to_dict)
 from agents.warden import check_inference_leak, consent_covers, minimise
+from core import fakes
+from core.types import ConsentScope, Priority, Service, to_dict
 
 
 def test_minimise_drops_budget_and_health_fields_adversarially():
@@ -95,7 +95,7 @@ def test_consent_covers_rejects_expired_grant():
     expired = fakes.a_consent(scope=ConsentScope.FILE_INDIVIDUAL, service=Service.WATER,
                                granted_at=now - timedelta(days=10),
                                expires_at=now - timedelta(days=1))
-    covered, reason = consent_covers([expired], ConsentScope.FILE_INDIVIDUAL, Service.WATER, now)
+    covered, _reason = consent_covers([expired], ConsentScope.FILE_INDIVIDUAL, Service.WATER, now)
     assert covered is False
 
 

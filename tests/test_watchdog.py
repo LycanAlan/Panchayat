@@ -15,15 +15,19 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import pytest
 import yaml
 
-from core import db, fakes
-from core.types import (Case, CaseStatus, EscalationStep, Filing,
-                        JurisdictionEntry, Service)
 from agents.watchdog import ACTIONS, Watchdog
+from core import db, fakes
+from core.types import (
+    CaseStatus,
+    EscalationStep,
+    Filing,
+    JurisdictionEntry,
+    Service,
+)
 
 
 class RecordingClock:
@@ -75,7 +79,7 @@ def _load_sample_entry(segment: str) -> JurisdictionEntry:
     raise ValueError(f"no sample entry for segment {segment!r}")
 
 
-def _lookup_fixture(service, segment: str, feeder_id: str) -> Optional[JurisdictionEntry]:
+def _lookup_fixture(service, segment: str, feeder_id: str) -> JurisdictionEntry | None:
     try:
         return _load_sample_entry(segment)
     except ValueError:

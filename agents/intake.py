@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from core.types import MemberContext
 
@@ -36,7 +36,7 @@ class IntakeAgent:
     Bedrock authorization is still pending on the account).
     """
 
-    def __init__(self, model: Optional[Callable[[str], str]] = None):
+    def __init__(self, model: Callable[[str], str] | None = None):
         self._model = model
 
     def _call_model(self, prompt: str) -> str:
@@ -122,7 +122,7 @@ def read_back(needs: list[dict], language: str) -> str:
     return _default_intake.read_back(needs, language)
 
 
-def build_intake_agent(model: Optional[Callable[[str], str]] = None):
+def build_intake_agent(model: Callable[[str], str] | None = None):
     """Bridges intake into Ali's GraphBuilder as a node. See the same caveat
     in agents/warden.py's build_warden_agent: a plain callable, not a
     verified strands.Agent wrapper -- confirm the exact GraphBuilder node

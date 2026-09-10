@@ -15,7 +15,8 @@ verified reason the mesh uses A2A rather than a bigger swarm.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from core.types import HouseholdPosition, MemberContext, new_id
 
@@ -46,8 +47,10 @@ def build_swarm(members: list[MemberContext]):
 
     agents = [Agent(name=m.member_id) for m in members]
 
-    kwargs: dict[str, Any] = dict(entry_point=agents[0], max_handoffs=6,
-                                  execution_timeout=90.0, node_timeout=30.0)
+    kwargs: dict[str, Any] = {
+        "entry_point": agents[0], "max_handoffs": 6,
+        "execution_timeout": 90.0, "node_timeout": 30.0,
+    }
     if "max_iterations" in inspect.signature(Swarm.__init__).parameters:
         kwargs["max_iterations"] = 8
 
@@ -62,7 +65,7 @@ class HouseholdCoordinator:
     suite runs with no AWS credentials (D3).
     """
 
-    def __init__(self, reason: Optional[Callable[[list[MemberContext], dict], HouseholdPosition]] = None):
+    def __init__(self, reason: Callable[[list[MemberContext], dict], HouseholdPosition] | None = None):
         self._reason = reason
 
     def deliberate(self, members: list[MemberContext], need: dict) -> HouseholdPosition:
@@ -124,7 +127,7 @@ def deliberate(members: list[MemberContext], need: dict) -> HouseholdPosition:
     return _default_coordinator.deliberate(members, need)
 
 
-def build_household_agent(reason: Optional[Callable] = None):
+def build_household_agent(reason: Callable | None = None):
     """Bridges the household layer into Ali's GraphBuilder. Unlike intake and
     warden, this node IS a Swarm-shaped thing already (build_swarm() returns
     one, and a Swarm is documented as a valid GraphBuilder node) -- so for the

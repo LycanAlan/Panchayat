@@ -91,8 +91,8 @@ class RealClock:
     def cancel(self, handle: str) -> None:
         try:
             self._client().delete_schedule(Name=handle)
-        except Exception:
-            pass  # already fired and self-deleted
+        except Exception:  # noqa: BLE001, S110 -- already fired and self-deleted
+            pass
 
 
 class VirtualClock:
