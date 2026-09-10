@@ -28,8 +28,17 @@ ACTIONS = ("check_sla", "check_closure", "expire_draft")
 
 def _trace(status: str, agent: str, detail: str) -> str:
     """Ali's trace format: 'STATUS      agent      -> detail'. Printed and
-    returned so tests can assert on it without parsing stdout."""
-    line = f"{status:<11} {agent:<10} -> {detail}"
+    returned so tests can assert on it without parsing stdout.
+
+    Duplicated rather than imported: the canonical shape is
+    graph/trace.py::Transition.line() (both fields ljust(12), "-> " literal,
+    no citation/stubbed suffix here). Not imported because the Watchdog runs
+    on the temporal path (EventBridge -> Lambda), a deliberately separate
+    execution path from the request Graph -- pulling graph code into the
+    Lambda bundle would violate that separation. Keep this in lockstep with
+    Transition.line() by hand if that format ever changes.
+    """
+    line = status.ljust(12) + agent.ljust(12) + "-> " + detail
     print(line)
     return line
 
@@ -46,10 +55,32 @@ class Watchdog:
 
     def __init__(self, store=db, lookup: Callable | None = None,
                  submit: Callable[[Filing], bool] | None = None,
-                 closure_lookback_days: int = 7):
+                 closure_lookback_days: int = 7,
+                 submit_attempts: int = 2):
+        """`submit_attempts` (default 2) is the retry policy for the
+        institutional submit, decided out loud rather than left implicit:
+        two synchronous attempts, no backoff, stopping early on the first
+        success. Deliberate for now, because the real institution client
+        models portal downtime with a calibrated rate rather than transient
+        network flakiness -- a fixed small retry count is a reasonable
+        placeholder against that model.
+
+        KNOWN LIMITATION: this is not the final policy. Alakshendra's real
+        client (institutions/client.py, unmerged branch
+        alakshendra/ladder-and-filing-client) returns a rich `DeskReply`
+        whose `should_retry` is true ONLY for UNREACHABLE -- REJECTED must
+        never be retried with the same body at all, it needs a human to
+        supply missing particulars. So once that client is wired in, retry
+        behaviour must key off `should_retry`, not a fixed attempt count.
+        See the long comment at the submit call site in climb() for the
+        full integration gap.
+        """
         self.db = store
         self._lookup = lookup
         self.closure_lookback_days = closure_lookback_days
+        # A value below 1 makes no sense (there would be no attempt at all
+        # to submit), so it is floored to 1.
+        self.submit_attempts = max(1, submit_attempts)
         # The real A2A institutional handoff belongs to whoever owns
         # institutions/ + the graph's file node, not this lane. Defaulting
         # to "always reachable" keeps climb() usable before that exists;
@@ -121,7 +152,7 @@ class Watchdog:
         nothing, ever.
 
         Instead this looks back `closure_lookback_days` (default 7, matching
-        the statutory `sla_days: 7` in data/jurisdiction/ward12.sample.yaml --
+        the statutory `sla_days: 7` in data/jurisdiction/ward12.yaml --
         a claim older than the institution's own SLA window isn't evidence
         about *this* closure) and counts claims filed inside that window as
         live contradicting evidence.
@@ -190,9 +221,11 @@ class Watchdog:
             _trace("DRAFTED", "watchdog",
                    f"RTI drafted for {step.authority} -- awaiting signature")
         else:
-            # institution unreachable -> pause the SLA clock, retry twice,
-            # then surface. "Surface" is Ali's digest agent's job -- this
-            # only logs and stops.
+            # institution unreachable -> pause the SLA clock, retry up to
+            # self.submit_attempts times (two, synchronously, no backoff, by
+            # default -- see the constructor docstring for why), then
+            # surface. "Surface" is Ali's digest agent's job -- this only
+            # logs and stops.
             #
             # KNOWN GAP, confirmed against Alakshendra's institutions/client.py
             # (branch alakshendra/ladder-and-filing-client, not yet merged):
@@ -219,7 +252,11 @@ class Watchdog:
             # distinct bug once real replies flow through here. Both items are
             # tracked in STATUS.md; do not resolve either unilaterally in this
             # file -- the seam shape affects Ali's graph wiring too.
-            reachable = self._submit(filing) or self._submit(filing)
+            reachable = False
+            for _ in range(self.submit_attempts):
+                if self._submit(filing):
+                    reachable = True
+                    break
             if not reachable:
                 case.sla_paused = True
                 self.db.put_case(case)
