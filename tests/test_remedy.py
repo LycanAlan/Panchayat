@@ -5,8 +5,17 @@ Owner: Alakshendra
 
 import pytest
 
-from agents.remedy import load_table, lookup, resolve, segment_aliases
-from core.types import Claim, Service, Tail
+from agents.remedy import (
+    EscalationLadder,
+    JurisdictionTable,
+    ladder_for,
+    load_table,
+    lookup,
+    next_step,
+    resolve,
+    segment_aliases,
+)
+from core.types import Claim, EscalationStep, Service, Tail
 
 
 def test_every_entry_is_citable_and_has_topology():
@@ -85,6 +94,70 @@ def test_aliases_resolve_to_real_segments():
     table = load_table()
     for alias, segment in segment_aliases().items():
         assert (Service.WATER.value, segment) in table, alias
+
+
+def test_tier_zero_climbs_to_the_first_filing():
+    # A fresh Case has escalation_tier=0, meaning nothing has been filed yet.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    step = next_step(entry, 0)
+    assert step.tier == 1
+    assert "BWSSB" in step.authority
+
+
+def test_the_ladder_climbs_to_a_different_authority_each_tier():
+    # The point of climbing. Refiling with the same office is not an escalation.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    authorities = [next_step(entry, t).authority for t in range(4)]
+    assert len(set(authorities)) == 4
+
+
+def test_every_tier_carries_a_window_and_a_citation():
+    for entry in load_table().values():
+        for step in ladder_for(entry):
+            assert step.window_days > 0, entry.segment
+            assert step.statute_ref, entry.segment + " tier " + str(step.tier)
+
+
+def test_an_exhausted_ladder_returns_none_rather_than_clamping():
+    # Running off the end is a real state the Watchdog handles, not an error.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    ladder = ladder_for(entry)
+    assert next_step(entry, ladder.final_tier) is None
+    assert ladder.is_exhausted(ladder.final_tier)
+    assert not ladder.is_exhausted(0)
+
+
+def test_the_ladder_sorts_tiers_it_was_given_out_of_order():
+    ladder = EscalationLadder([
+        EscalationStep(tier=3, authority="third", window_days=15),
+        EscalationStep(tier=1, authority="first", window_days=7),
+    ])
+    assert ladder.next_step(0).authority == "first"
+    assert ladder.next_step(1).authority == "third"
+    assert ladder.final_tier == 3
+    assert len(ladder) == 2
+
+
+def test_two_tables_do_not_share_a_cache(tmp_path):
+    # The reason this is a class rather than module globals: a test can hold a
+    # second table without resetting the first.
+    (tmp_path / "other.yaml").write_text(
+        "- service: water\n"
+        "  segment: ward99-elsewhere\n"
+        "  feeder_id: x-1\n"
+        "  authority: SomeoneElse\n"
+        "  statute_ref: 'a citation'\n"
+        "  ladder:\n"
+        "    - tier: 1\n"
+        "      authority: 'Someone Else, first tier'\n"
+        "      window_days: 7\n"
+        "      statute_ref: 'a citation'\n",
+        encoding="utf-8",
+    )
+    other = JurisdictionTable(tmp_path)
+    assert other.lookup(Service.WATER, "ward99-elsewhere") is not None
+    assert other.lookup(Service.WATER, "ward12-4thcross") is None
+    assert lookup(Service.WATER, "ward12-4thcross") is not None
 
 
 def test_an_entry_without_a_citation_is_refused(tmp_path):

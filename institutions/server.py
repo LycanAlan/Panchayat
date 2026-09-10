@@ -28,11 +28,11 @@ from datetime import timedelta
 import yaml
 
 from core.clock import get_clock
+from core.tags import Tag, emit
 from core.types import InstitutionProfile
+from institutions.protocol import DeskReply, Outcome
 
 PROFILE_DIR = pathlib.Path(__file__).resolve().parent / "profiles"
-
-UNREACHABLE = "UNREACHABLE"
 
 
 def load_profile(name: str) -> InstitutionProfile:
@@ -94,32 +94,45 @@ class Desk:
         self._n += 1
         return self.profile.name.upper() + "-" + str(100000 + self._n)
 
-    def accept(self, case_id: str, service: str, body: str, idempotency_key: str) -> str:
-        """File a grievance. Returns a ticket reference, a refusal, or UNREACHABLE."""
+    def accept(self, case_id: str, service: str, body: str,
+               idempotency_key: str) -> DeskReply:
+        """Register a grievance, refuse it, or be unreachable."""
         # Idempotency is checked before any random draw. A retrying Watchdog
         # must get the stored answer, not a second roll of the dice and a
         # duplicate grievance that reads as spam.
         if idempotency_key in self._by_key:
             existing = self.tickets[self._by_key[idempotency_key]]
-            return "DUPLICATE " + existing.ref + " status=" + existing.status
+            emit(Tag.DESK, "duplicate", desk=self.profile.name,
+                 case_id=case_id, ref=existing.ref)
+            return DeskReply(Outcome.DUPLICATE, existing.ref,
+                             "status=" + existing.status)
 
         if self._rng.random() < self.profile.unreachable_rate:
             # Stand-in for portal downtime. The higher-fidelity version is to
             # kill this process; the caller must pause the SLA clock either way
             # rather than run it against a filing that never landed.
-            return UNREACHABLE + ": portal not responding"
+            emit(Tag.DESK, "unreachable", desk=self.profile.name, case_id=case_id)
+            return DeskReply(Outcome.UNREACHABLE, detail="portal not responding")
 
         if self.profile.accepts_services and service not in self.profile.accepts_services:
-            return "REJECTED: " + service + " is not handled by this office"
+            emit(Tag.DESK, "wrong_office", desk=self.profile.name, service=service)
+            return DeskReply(Outcome.REJECTED,
+                             detail=service + " is not handled by this office")
 
         missing = [f for f in ("duration", "affected") if f not in body.lower()]
         if missing and self._rng.random() < self.profile.reject_malformed_rate:
-            return "REJECTED: incomplete particulars, resubmit with " + ", ".join(missing)
+            emit(Tag.DESK, "rejected", desk=self.profile.name, case_id=case_id,
+                 reason="incomplete")
+            return DeskReply(Outcome.REJECTED, detail="incomplete particulars,"
+                             " resubmit with " + ", ".join(missing))
         if self._rng.random() < self.profile.reject_malformed_rate:
             # Refused on a pretext. This happens to well-formed filings too, and
             # a system that only handles honest rejections does not survive a
             # real counterparty.
-            return "REJECTED: reference number does not match our records"
+            emit(Tag.DESK, "rejected", desk=self.profile.name, case_id=case_id,
+                 reason="pretext")
+            return DeskReply(Outcome.REJECTED,
+                             detail="reference number does not match our records")
 
         now = self._clock.now()
         will_breach = self._rng.random() < self.profile.breach_rate
@@ -135,24 +148,28 @@ class Desk:
         )
         self.tickets[ticket.ref] = ticket
         self._by_key[idempotency_key] = ticket.ref
-        return "ACCEPTED " + ticket.ref + " sla_days=" + str(self.profile.sla_days)
+        emit(Tag.DESK, "accepted", desk=self.profile.name, case_id=case_id,
+             ref=ticket.ref, will_breach=will_breach)
+        return DeskReply(Outcome.ACCEPTED, ticket.ref,
+                         "sla_days=" + str(self.profile.sla_days))
 
-    def reject(self, ref: str, reason: str) -> str:
+    def reject(self, ref: str, reason: str) -> DeskReply:
         """Explicit refusal with a legible reason. The trace UI shows this string."""
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "REJECTED: no such reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         ticket.status = "rejected"
         ticket.reason = reason
-        return "REJECTED " + ref + ": " + reason
+        emit(Tag.DESK, "rejected", desk=self.profile.name, ref=ref, reason=reason)
+        return DeskReply(Outcome.REJECTED, ref, reason)
 
-    def close(self, ref: str) -> str:
+    def close(self, ref: str) -> DeskReply:
         """Close a ticket. Sometimes without the work having been done."""
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "REJECTED: no such reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         if ticket.status == "closed":
-            return "CLOSED " + ref + ": already closed"
+            return DeskReply(Outcome.CLOSED, ref, "already closed")
 
         false_closure = self._rng.random() < self.profile.false_closure_rate
         ticket.status = "closed"
@@ -161,18 +178,22 @@ class Desk:
         # On a false closure the desk states the work is done and it is not.
         # The Watchdog disputes this with live claims from other households,
         # which is ground truth a single citizen could never hold.
-        return "CLOSED " + ref + ": " + ticket.reason
+        emit(Tag.DESK, "closed", desk=self.profile.name, ref=ref,
+             actually_resolved=ticket.actually_resolved)
+        return DeskReply(Outcome.CLOSED, ref, ticket.reason)
 
-    def status(self, ref: str) -> str:
+    def status(self, ref: str) -> DeskReply:
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "UNKNOWN reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         now = self._clock.now()
         if ticket.status == "open" and not ticket.will_breach and now >= ticket.responds_at:
             return self.close(ticket.ref)
         if ticket.status == "open" and now >= ticket.sla_deadline:
-            return "OPEN " + ref + ": past the " + str(self.profile.sla_days) + "-day window"
-        return ticket.status.upper() + " " + ref + ": " + (ticket.reason or "in queue")
+            return DeskReply(Outcome.OPEN, ref, "past the "
+                             + str(self.profile.sla_days) + "-day window")
+        return DeskReply(Outcome(ticket.status.upper()), ref,
+                         ticket.reason or "in queue")
 
 
 def build_agent_factory(profile: InstitutionProfile):
@@ -181,25 +202,27 @@ def build_agent_factory(profile: InstitutionProfile):
 
     desk = Desk(profile)  # one desk per process, shared across A2A contexts
 
+    # The tools are the wire boundary, so they render the reply to text. Every
+    # one returns the same grammar: OUTCOME [ref][: detail].
     @tool
     def accept(case_id: str, service: str, body: str, idempotency_key: str) -> str:
         """Register an incoming grievance and issue a ticket reference."""
-        return desk.accept(case_id, service, body, idempotency_key)
+        return desk.accept(case_id, service, body, idempotency_key).render()
 
     @tool
     def reject(ref: str, reason: str) -> str:
         """Refuse a filing, stating a reason the citizen can act on."""
-        return desk.reject(ref, reason)
+        return desk.reject(ref, reason).render()
 
     @tool
     def close(ref: str) -> str:
         """Mark a ticket closed."""
-        return desk.close(ref)
+        return desk.close(ref).render()
 
     @tool
     def status(ref: str) -> str:
         """Report the current state of a ticket."""
-        return desk.status(ref)
+        return desk.status(ref).render()
 
     system_prompt = (
         "You are the " + profile.name + " grievance desk. You handle: "
