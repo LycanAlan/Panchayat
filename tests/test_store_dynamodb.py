@@ -301,3 +301,107 @@ def test_no_application_path_scans():
     scans = [i + 1 for i, ln in enumerate(lines) if ".scan(" in ln]
     assert len(scans) == 1, f"scans at lines {scans}"
     assert scans[0] > lines.index("def reset() -> None:")
+
+
+# ------------------------------------------------------ concurrent writers
+
+def test_adding_a_household_does_not_clobber_a_concurrent_breach(monkeypatch):
+    """CLAUDE.md names three independent writers on one Case: the request
+    Graph, the ambient Streams Lambda and the temporal Watchdog.
+
+    Ambient reads a case at FILED. The Watchdog breaches it. Ambient then
+    writes its membership from the read it already has -- and if that write is
+    a whole-item put, the breach is gone with nothing logged. The clock the
+    entire escalation ladder hangs off, silently rewound.
+
+    Cannot reproduce on memstore: memstore mutates one shared object, so there
+    is only ever one copy to lose.
+    """
+    case = fakes.a_case(status=CaseStatus.FILED, household_ids=[],
+                        claim_ids=[], merged_from=[])
+    db.put_case(case)
+    ambients_read = db.get_case(case.case_id)      # ambient reads at FILED
+
+    breached = db.get_case(case.case_id)           # the Watchdog, concurrently
+    breached.status = CaseStatus.BREACHED
+    breached.sla_deadline = fakes.T0 + timedelta(days=14)
+    breached.escalation_tier = 2
+    db.put_case(breached)
+
+    # Ambient proceeds from the snapshot it took before the breach landed.
+    monkeypatch.setattr(store, "get_case", lambda _cid: ambients_read)
+    db.add_household_to_case(case.case_id, "hh_late", "clm_late")
+
+    back = db.get_case(case.case_id)
+    assert back.status is CaseStatus.BREACHED, "the breach was overwritten"
+    assert back.sla_deadline == breached.sla_deadline
+    assert back.escalation_tier == 2
+    # And the membership it was actually there to add still landed.
+    assert "hh_late" in back.household_ids
+    assert "clm_late" in back.claim_ids
+
+
+def test_two_households_joining_at_once_both_land():
+    """The other half: writing only the fields you own is not enough on its
+    own, because two ambient passes own the SAME field. A lost append here is
+    a household that reported and does not appear on the filing."""
+    case = fakes.a_case(household_ids=[], claim_ids=[], merged_from=[])
+    db.put_case(case)
+
+    for i in range(6):
+        db.add_household_to_case(case.case_id, f"hh_{i}", f"clm_{i}")
+
+    back = db.get_case(case.case_id)
+    assert len(back.household_ids) == 6
+    assert len(back.claim_ids) == 6
+    assert len(back.merged_from) == 6
+
+
+def test_a_stale_membership_write_is_retried_not_lost():
+    """Optimistic concurrency, exercised: the first attempt is written against
+    a snapshot that is already out of date, so its condition must fail and the
+    retry must re-read and win."""
+    case = fakes.a_case(household_ids=[], claim_ids=[], merged_from=[])
+    db.put_case(case)
+    db.add_household_to_case(case.case_id, "hh_first", "clm_first")
+
+    stale = db.get_case(case.case_id)
+    stale.household_ids = []          # a snapshot from before hh_first landed
+    stale.claim_ids = []
+    stale.merged_from = []
+
+    reads = [stale]
+    real_get = store.get_case
+
+    def one_stale_read(cid):
+        return reads.pop() if reads else real_get(cid)
+
+    store.get_case = one_stale_read
+    try:
+        db.add_household_to_case(case.case_id, "hh_second", "clm_second")
+    finally:
+        store.get_case = real_get
+
+    back = db.get_case(case.case_id)
+    assert sorted(back.household_ids) == ["hh_first", "hh_second"], (
+        "the stale write won and dropped a household")
+
+
+def test_the_member_row_and_the_case_cannot_drift_apart():
+    """They are written in ONE transaction. Two separate writes let a throttle
+    between them leave a case that lists a household and a member row that does
+    not exist, and nothing reconciles the two afterwards."""
+    case = fakes.a_case(household_ids=[], claim_ids=[], merged_from=[])
+    db.put_case(case)
+    db.add_household_to_case(case.case_id, "hh_x", "clm_x")
+
+    back = db.get_case(case.case_id)
+    members = [r for r in _rows("CASE#" + case.case_id)
+               if r["SK"].startswith("HH#")]
+    assert [m["household_id"] for m in members] == back.household_ids
+    assert members[0]["claim_ids"] == ["clm_x"]
+
+
+def test_adding_a_household_to_a_missing_case_raises(monkeypatch):
+    with pytest.raises(KeyError):
+        db.add_household_to_case("case_never_existed", "hh", "clm")

@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import os
 import uuid
+from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -379,23 +380,99 @@ def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:
     }
 
 
+# The three attributes membership writers own. Everything else on a Case --
+# status, sla_deadline, escalation_tier, authority -- belongs to the request
+# Graph or the Watchdog, and a membership write must not carry any of it.
+_MEMBERSHIP = ("household_ids", "claim_ids", "merged_from")
+
+_MEMBERSHIP_ATTEMPTS = 4
+
+
+def _membership_update(case_id: str, before: Case, after: Case) -> dict:
+    """A TransactWriteItems Update that SETs only the membership attributes.
+
+    Conditional on the case still holding what `before` saw. Narrow writes
+    alone are not enough here, because two ambient passes own the SAME field --
+    a lost append is a household that reported and does not appear on the
+    filing. The condition turns that into a retry.
+    """
+    values = {":new_" + k: getattr(after, k) for k in _MEMBERSHIP}
+    values.update({":old_" + k: getattr(before, k) for k in _MEMBERSHIP})
+    return {"Update": {
+        "TableName": TABLE,
+        "Key": {"PK": "CASE#" + case_id, "SK": "META"},
+        "UpdateExpression": "SET " + ", ".join(
+            k + " = :new_" + k for k in _MEMBERSHIP),
+        "ConditionExpression": " AND ".join(
+            ["attribute_exists(SK)"]
+            + [k + " = :old_" + k for k in _MEMBERSHIP]),
+        "ExpressionAttributeValues": values,
+    }}
+
+
+def _condition_failed(exc: ClientError) -> bool:
+    """TransactWriteItems reports a failed condition as a cancelled
+    transaction, not as ConditionalCheckFailedException."""
+    err = exc.response["Error"]["Code"]
+    if err == "ConditionalCheckFailedException":
+        return True
+    if err != "TransactionCanceledException":
+        return False
+    return any(r.get("Code") == "ConditionalCheckFailed"
+               for r in exc.response.get("CancellationReasons", []))
+
+
 def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> None:
-    """Must record provenance in case.merged_from so a split can undo it."""
-    case = get_case(case_id)
-    if case is None:
-        raise KeyError(case_id)
+    """Must record provenance in case.merged_from so a split can undo it.
 
-    if household_id not in case.household_ids:
-        case.household_ids.append(household_id)
-    if claim_id not in case.claim_ids:
-        case.claim_ids.append(claim_id)
-    token = household_id + ":" + claim_id
-    if token not in case.merged_from:
-        case.merged_from.append(token)
+    NOT a whole-item put. CLAUDE.md names three independent writers on one
+    Case: the request Graph, the ambient Streams Lambda and the temporal
+    Watchdog. This one runs in the ambient Lambda, which reads a case at
+    status=FILED while the Watchdog may concurrently be writing BREACHED with a
+    new sla_deadline -- and a put of the whole item would take the breach back
+    out with nothing logged, silently rewinding the clock the entire escalation
+    ladder hangs off.
 
-    put_case(case)
-    _t().put_item(Item=_member_item(case_id, household_id,
-                                    _claims_of(case, household_id)))
+    So it writes the three attributes it owns and nothing else, conditional on
+    those three being unchanged since the read, and retries when they are not.
+    The case row and the member row go in ONE transaction, so the two cannot
+    drift apart -- written separately, a throttle between them leaves a case
+    listing a household whose member row does not exist and nothing reconciles
+    the two afterwards.
+    """
+    for attempt in range(_MEMBERSHIP_ATTEMPTS):
+        before = get_case(case_id)
+        if before is None:
+            raise KeyError(case_id)
+
+        after = replace(
+            before,
+            household_ids=list(before.household_ids),
+            claim_ids=list(before.claim_ids),
+            merged_from=list(before.merged_from),
+        )
+        if household_id not in after.household_ids:
+            after.household_ids.append(household_id)
+        if claim_id not in after.claim_ids:
+            after.claim_ids.append(claim_id)
+        token = household_id + ":" + claim_id
+        if token not in after.merged_from:
+            after.merged_from.append(token)
+
+        try:
+            _t().meta.client.transact_write_items(TransactItems=[
+                _membership_update(case_id, before, after),
+                {"Put": {"TableName": TABLE, "Item": _member_item(
+                    case_id, household_id, _claims_of(after, household_id))}},
+            ])
+            return
+        except ClientError as exc:
+            if not _condition_failed(exc):
+                raise
+            if attempt == _MEMBERSHIP_ATTEMPTS - 1:
+                raise
+
+    raise RuntimeError("unreachable")
 
 
 def split_case(case_id: str, household_ids: list[str]) -> list[str]:
@@ -403,36 +480,66 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
 
     A false merge is worse than no merge: a bogus collective filing gets
     dismissed and takes the valid individual complaints with it.
-    """
-    case = get_case(case_id)
-    if case is None:
-        raise KeyError(case_id)
 
+    Each household leaves in ONE transaction -- the child case, the child's
+    feeder index row, the child's member row, the parent's narrowed membership
+    update and the parent's now-stale member row all land together or not at
+    all. A split that half-committed would leave a household on two cases at
+    once, which is the shape that produces a duplicate filing.
+
+    The parent update is the same narrow, conditional write as
+    add_household_to_case, and for the same reason: split runs while the
+    Watchdog may be moving the parent's deadline.
+    """
     new_ids: list[str] = []
     for hh in household_ids:
-        if hh not in case.household_ids:
-            continue
-        claim_ids = _claims_of(case, hh)
-        child = Case(
-            case_id=new_id("case"), service=case.service, segment=case.segment,
-            feeder_id=case.feeder_id, tail=case.tail, status=case.status,
-            claim_ids=list(claim_ids), household_ids=[hh],
-            authority=case.authority, escalation_tier=case.escalation_tier,
-            sla_deadline=case.sla_deadline, created_at=case.created_at,
-        )
-        put_case(child)
-        _t().put_item(Item=_member_item(child.case_id, hh, claim_ids))
-        new_ids.append(child.case_id)
+        for attempt in range(_MEMBERSHIP_ATTEMPTS):
+            before = get_case(case_id)
+            if before is None:
+                raise KeyError(case_id)
+            if hh not in before.household_ids:
+                break
 
-        case.household_ids.remove(hh)
-        for cid in claim_ids:
-            if cid in case.claim_ids:
-                case.claim_ids.remove(cid)
-        case.merged_from = [t for t in case.merged_from
-                            if not t.startswith(hh + ":")]
-        _t().delete_item(Key={"PK": "CASE#" + case_id, "SK": "HH#" + hh})
+            claim_ids = _claims_of(before, hh)
+            child = Case(
+                case_id=new_id("case"), service=before.service,
+                segment=before.segment, feeder_id=before.feeder_id,
+                tail=before.tail, status=before.status,
+                claim_ids=list(claim_ids), household_ids=[hh],
+                authority=before.authority,
+                escalation_tier=before.escalation_tier,
+                sla_deadline=before.sla_deadline, created_at=before.created_at,
+            )
+            after = replace(
+                before,
+                household_ids=[h for h in before.household_ids if h != hh],
+                claim_ids=[c for c in before.claim_ids if c not in claim_ids],
+                merged_from=[t for t in before.merged_from
+                             if not t.startswith(hh + ":")],
+            )
 
-    put_case(case)
+            items = [
+                {"Put": {"TableName": TABLE, "Item": _case_item(child)}},
+                {"Put": {"TableName": TABLE, "Item": _member_item(
+                    child.case_id, hh, claim_ids)}},
+                _membership_update(case_id, before, after),
+                {"Delete": {"TableName": TABLE, "Key": {
+                    "PK": "CASE#" + case_id, "SK": "HH#" + hh}}},
+            ]
+            child_row = _feeder_index_item(child)
+            if child_row is not None:
+                items.append({"Put": {"TableName": TABLE, "Item": child_row}})
+
+            try:
+                _t().meta.client.transact_write_items(TransactItems=items)
+                new_ids.append(child.case_id)
+                break
+            except ClientError as exc:
+                if not _condition_failed(exc):
+                    raise
+                if attempt == _MEMBERSHIP_ATTEMPTS - 1:
+                    raise
+
     return new_ids
 
 
