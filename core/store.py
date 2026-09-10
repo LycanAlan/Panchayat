@@ -339,21 +339,51 @@ def get_case(case_id: str) -> Case | None:
     return _case_from(item) if item else None
 
 
+#: Terminal. A case in one of these is not open and nothing is chasing it.
+_DONE = frozenset((CaseStatus.RESOLVED, CaseStatus.WITHDRAWN,
+                   CaseStatus.DORMANT))
+
+
 def open_cases(service: Service | None = None) -> list[Case]:
-    done = {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}
-    want = _svc(service) if service is not None else None
+    """Every case still in flight, oldest first.
+
+    ONE QUERY PER NON-TERMINAL STATUS, which is what the declared Case GSI1
+    supports: it is keyed on STATUS#<s>, so "not resolved, not withdrawn, not
+    dormant" is a fan-out and not a range. Changing that needs a different
+    index and therefore Ali, so it is raised rather than worked around here --
+    a Scan would answer it in one call and read every claim, filing and consent
+    row in the table to do it.
+
+    The service narrowing is a FilterExpression rather than a Python `if`. Same
+    rows read either way -- service is not in the index key, so it cannot be a
+    key condition -- but the discarded ones no longer cross the wire.
+
+    SORTED BY created_at, and that is a behaviour change worth naming. This used
+    to return cases grouped by status, in the order the statuses happen to be
+    declared in the enum, while memstore returns insertion order. Any caller
+    writing `open_cases()[0]` got a different case from each backend, which is
+    the divergence class the seam exists to catch and one no test would have
+    caught because both answers are "a case". Oldest first is a defensible
+    order for a queue of things being chased. memstore needs the same sort to
+    agree in the general case -- raised, since it is shared.
+    """
+    kwargs: dict[str, Any] = {}
+    if service is not None:
+        kwargs = {
+            "FilterExpression": "service = :svc",
+            "ExpressionAttributeValues": {":svc": _svc(service)},
+        }
+
     cases: list[Case] = []
     for status in CaseStatus:
-        if status in done:
+        if status in _DONE:
             continue
-        for item in _query_all(
+        cases.extend(_case_from(i) for i in _query_all(
             IndexName="GSI1",
             KeyConditionExpression=Key("GSI1PK").eq("STATUS#" + _val(status)),
-        ):
-            case = _case_from(item)
-            if want is None or _val(case.service) == want:
-                cases.append(case)
-    return cases
+            **kwargs,
+        ))
+    return sorted(cases, key=lambda c: (c.created_at, c.case_id))
 
 
 def _claims_of(case: Case, household_id: str) -> list[str]:

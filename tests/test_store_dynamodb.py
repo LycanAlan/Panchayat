@@ -29,7 +29,7 @@ from datetime import timedelta
 import pytest
 
 from core import db, fakes
-from core.types import Case, CaseStatus, ConsentGrant, ConsentScope, Service
+from core.types import CaseStatus, ConsentGrant, ConsentScope, Service
 
 pytestmark = pytest.mark.skipif(
     db.backend_name() != "dynamodb",
@@ -405,3 +405,38 @@ def test_the_member_row_and_the_case_cannot_drift_apart():
 def test_adding_a_household_to_a_missing_case_raises(monkeypatch):
     with pytest.raises(KeyError):
         db.add_household_to_case("case_never_existed", "hh", "clm")
+
+
+def test_open_cases_returns_a_deterministic_order():
+    """It used to return cases grouped by status, in whatever order the enum
+    happens to declare them, while memstore returns insertion order. Any caller
+    writing open_cases()[0] got a different case from each backend, and no test
+    would have caught it because both answers are "a case"."""
+    early = fakes.a_case(status=CaseStatus.BREACHED,
+                         created_at=fakes.T0 - timedelta(days=2))
+    late = fakes.a_case(status=CaseStatus.OPEN, created_at=fakes.T0)
+    db.put_case(late)
+    db.put_case(early)
+
+    got = db.open_cases()
+    assert [c.case_id for c in got] == [early.case_id, late.case_id]
+    assert db.open_cases() == got, "unstable between calls"
+
+
+def test_open_cases_excludes_the_terminal_statuses():
+    for status in (CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT):
+        db.put_case(fakes.a_case(status=status))
+    live = fakes.a_case(status=CaseStatus.FILED)
+    db.put_case(live)
+
+    assert [c.case_id for c in db.open_cases()] == [live.case_id]
+
+
+def test_open_cases_narrows_by_service_without_a_second_pass():
+    db.put_case(fakes.a_case(service=Service.WATER, status=CaseStatus.FILED))
+    db.put_case(fakes.a_case(service=Service.GARBAGE, status=CaseStatus.FILED))
+
+    water = db.open_cases(Service.WATER)
+    assert len(water) == 1
+    assert water[0].service is Service.WATER
+    assert len(db.open_cases()) == 2
