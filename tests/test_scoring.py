@@ -63,7 +63,7 @@ def test_recency_decays_and_is_symmetric():
     assert scoring.recency_score(a, fakes.a_claim(created_at=fakes.T0)) == 1.0
 
     later = fakes.a_claim(
-        created_at=fakes.T0 + timedelta(hours=scoring.RECENCY_HALFLIFE_HOURS))
+        created_at=fakes.T0 + timedelta(hours=scoring.RECENCY_DECAY_HOURS))
     assert math.isclose(scoring.recency_score(a, later), math.exp(-1.0))
     # Order must not matter -- the pair is unordered.
     assert scoring.recency_score(a, later) == scoring.recency_score(later, a)
@@ -79,28 +79,25 @@ def test_semantic_clamps_instead_of_going_negative():
     weighted total down rather than contributing nothing."""
     opposed = (fakes.a_claim(embedding=[1.0, 0.0]),
                fakes.a_claim(embedding=[-1.0, 0.0]))
-    assert scoring.semantic_score(*opposed) == 0.0
+    assert scoring.cosine(*opposed) == 0.0
 
     identical = (fakes.a_claim(embedding=[0.6, 0.8]),
                  fakes.a_claim(embedding=[0.6, 0.8]))
-    assert math.isclose(scoring.semantic_score(*identical), 1.0)
+    assert math.isclose(scoring.cosine(*identical), 1.0)
 
     # Scale-free: magnitude must not move the score.
     scaled = (fakes.a_claim(embedding=[1.0, 2.0]),
               fakes.a_claim(embedding=[10.0, 20.0]))
-    assert math.isclose(scoring.semantic_score(*scaled), 1.0)
+    assert math.isclose(scoring.cosine(*scaled), 1.0)
 
-    assert scoring.semantic_score(
+
+def test_a_zero_vector_is_uncomputable_rather_than_a_divide_by_zero():
+    """No direction, so no cosine. None is the honest answer and it routes the
+    pair to the renormalised path; 0.0 would put a fabricated disagreement in
+    the weighted sum and cap the total at 0.65."""
+    assert scoring.cosine(
         fakes.a_claim(embedding=[0.0, 0.0]),
-        fakes.a_claim(embedding=[1.0, 1.0])) == 0.0, "zero vector, no divide by zero"
-
-
-def test_semantic_returns_zero_when_an_embedding_is_missing():
-    """A bare 0.0, which callers must NOT read as a real score -- correlate()
-    checks availability itself. This is exactly the value that becomes a trap
-    if anyone folds it into the weighted sum."""
-    assert scoring.semantic_score(
-        fakes.a_claim(embedding=None), fakes.a_claim(embedding=[1.0, 0.0])) == 0.0
+        fakes.a_claim(embedding=[1.0, 1.0])) is None
 
 
 # -------------------------------------------------------------- the gate
@@ -290,3 +287,113 @@ def test_a_genuine_zero_cosine_still_counts_as_computed():
     assert s.semantic == 0.0
     assert math.isclose(s.total, W_TOPOLOGY + W_RECENCY)
     assert s.above_threshold is False, "0.65 is genuinely below TAU here"
+
+
+def test_a_non_finite_embedding_is_unavailable_not_perfect_agreement():
+    """`min(1.0, nan)` returns 1.0 in Python, so clamping turns an uncomputable
+    cosine into FABRICATED PERFECT AGREEMENT, flagged as computed.
+
+    That is strictly worse than the 0.65 ceiling this module exists to remove.
+    The ceiling was silent and made us cluster too little; this makes us cluster
+    wrongly and reports that it is sure. It is reachable end to end, because
+    float16 overflows to inf above 65504 -- see the storage round-trip test in
+    tests/test_store_pure.py.
+    """
+    nan, inf = float("nan"), float("inf")
+    for bad in ([nan, nan], [nan, 1.0], [inf, 1.0], [1.0, -inf], [inf, inf]):
+        s = scoring.correlate(
+            fakes.a_claim(created_at=fakes.T0, embedding=bad),
+            fakes.a_claim(created_at=fakes.T0, embedding=[1.0, 1.0]))
+        assert s.semantic_available is False, bad
+        assert s.semantic == 0.0, bad
+        # And it must degrade to the renormalised path, not to a wrong 1.0.
+        assert math.isclose(s.total, 1.0, abs_tol=0.01), bad
+
+
+def test_a_finite_vector_whose_norm_overflows_is_also_unavailable():
+    """Guarding only the inputs is not enough: 1e200 is a finite float64 whose
+    square is not, so the norm overflows to inf inside the arithmetic and
+    inf/inf is nan again."""
+    huge = [1e200, 1e200]
+    s = scoring.correlate(
+        fakes.a_claim(created_at=fakes.T0, embedding=huge),
+        fakes.a_claim(created_at=fakes.T0, embedding=huge))
+    assert s.semantic_available is False
+    assert s.semantic == 0.0
+
+
+# ------------------------------------------------------ segment normalisation
+
+def test_segment_comparison_ignores_case_and_surrounding_space():
+    """Segments arrive from intake text, so casing and stray spaces are the
+    normal condition, not the exception.
+
+    Compared byte-exact, two neighbours on one street whose reports differ only
+    in capitalisation score ZERO topology and never corroborate -- the same
+    never-clusters failure as the 0.65 ceiling, arriving through the string.
+    """
+    a = fakes.a_claim(segment="ward12-4thcross", feeder_id="f1")
+    for variant in ("Ward12-4thCross", " ward12-4thcross ", "WARD12-4THCROSS"):
+        b = fakes.a_claim(segment=variant, feeder_id="f2", household_id="hh2")
+        assert scoring.topology_score(a, b) == 0.3, variant
+
+    # Adjacency normalises through the same path.
+    assert scoring.topology_score(
+        a, fakes.a_claim(segment=" Ward12-5thCross ", feeder_id="f2")) == 0.15
+    # And a genuinely different street still scores zero.
+    assert scoring.topology_score(
+        a, fakes.a_claim(segment="Ward12-9thMain", feeder_id="f2")) == 0.0
+
+
+def test_a_blank_segment_is_not_the_same_place_as_another_blank_segment():
+    """Two unrouted claims both carrying the dataclass default must not
+    corroborate each other on the strength of both being empty."""
+    a = fakes.a_claim(segment="", feeder_id="")
+    b = fakes.a_claim(segment="   ", feeder_id="", household_id="hh2")
+    assert scoring.topology_score(a, b) == 0.0
+
+
+# ------------------------------------------------------------- the constant
+
+def test_the_recency_constant_is_a_decay_time_not_a_half_life():
+    """`exp(-d/H)` halves at `H*ln2`, not at `H`.
+
+    Named HALFLIFE the misnomer was load bearing: someone asked to "make the
+    half-life 24h" sets 24.0, gets 16.6h, and moves every score feeding the TAU
+    sweep. The name now says what the arithmetic does.
+    """
+    assert not hasattr(scoring, "RECENCY_HALFLIFE_HOURS"), (
+        "the misnomer is back; exp(-d/H) does not halve at H")
+    a = fakes.a_claim(created_at=fakes.T0)
+    at_constant = fakes.a_claim(
+        created_at=fakes.T0 + timedelta(hours=scoring.RECENCY_DECAY_HOURS))
+    assert math.isclose(scoring.recency_score(a, at_constant), math.exp(-1.0))
+
+    true_half_life = scoring.RECENCY_DECAY_HOURS * math.log(2)
+    halved = fakes.a_claim(created_at=fakes.T0 + timedelta(hours=true_half_life))
+    assert math.isclose(scoring.recency_score(a, halved), 0.5)
+
+
+# ---------------------------------------------------- the public semantic API
+
+def test_the_public_semantic_term_can_say_it_did_not_compute():
+    """`semantic_score` collapsed uncomputable to a bare 0.0 with a docstring
+    telling callers not to use it, while correlate() bypassed it. The next
+    person writing agents/pattern_watch.py reaches for the public name and
+    reintroduces the 0.65 ceiling. The public name now returns None."""
+    assert not hasattr(scoring, "semantic_score"), "the 0.65 trap is back"
+
+    assert scoring.cosine(fakes.a_claim(embedding=None),
+                          fakes.a_claim(embedding=[1.0, 0.0])) is None
+    assert scoring.cosine(fakes.a_claim(embedding=[0.0, 0.0]),
+                          fakes.a_claim(embedding=[1.0, 1.0])) is None
+    assert scoring.cosine(fakes.a_claim(embedding=[float("nan")]),
+                          fakes.a_claim(embedding=[1.0])) is None
+    # A real zero is still a number.
+    assert scoring.cosine(fakes.a_claim(embedding=[1.0, 0.0]),
+                          fakes.a_claim(embedding=[0.0, 1.0])) == 0.0
+    # And the clamp still keeps a negative cosine out of the weighted sum.
+    assert scoring.cosine(fakes.a_claim(embedding=[1.0, 0.0]),
+                          fakes.a_claim(embedding=[-1.0, 0.0])) == 0.0
+    assert math.isclose(scoring.cosine(fakes.a_claim(embedding=[1.0, 2.0]),
+                                       fakes.a_claim(embedding=[10.0, 20.0])), 1.0)

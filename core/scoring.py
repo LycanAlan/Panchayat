@@ -24,7 +24,10 @@ from core.types import Claim, CorrelationScore
 W_TOPOLOGY = 0.40
 W_RECENCY = 0.25
 W_SEMANTIC = 0.35
-RECENCY_HALFLIFE_HOURS = 48.0
+# NOT a half-life: exp(-d/H) halves at H*ln2 = 33.3h, not at 48h. Named
+# HALFLIFE the misnomer was load bearing -- someone asked for a 24h
+# half-life sets 24.0, gets 16.6h, and moves every score under the sweep.
+RECENCY_DECAY_HOURS = 48.0
 TAU = 0.72  # swept by eval/tau_sweep.py -- do not hardcode a defended number
 
 MODEL_EMBED = os.environ.get("MODEL_EMBED", "amazon.titan-embed-text-v2:0")
@@ -34,8 +37,21 @@ EMBED_DIMS = 1024
 _SEGMENT = re.compile(r"^(?P<ward>[^-]+)-(?P<n>\d+)(?:st|nd|rd|th)(?P<kind>[a-z]+)$")
 
 
+def _norm_segment(segment: str) -> str:
+    """Segments arrive out of intake free text, so casing and stray spaces are
+    the normal condition rather than the exception.
+
+    Normalising inside _parse_segment only was not enough: topology_score
+    compared the RAW strings first, so two neighbours on one street whose
+    reports differed in capitalisation scored zero topology and never
+    corroborated -- the same never-clusters failure as the 0.65 ceiling,
+    arriving through the string instead of through the arithmetic.
+    """
+    return segment.strip().lower() if segment else ""
+
+
 def _parse_segment(segment: str) -> tuple[str, int, str] | None:
-    m = _SEGMENT.match(segment.strip().lower()) if segment else None
+    m = _SEGMENT.match(_norm_segment(segment)) if segment else None
     if not m:
         return None
     return m.group("ward"), int(m.group("n")), m.group("kind")
@@ -68,52 +84,61 @@ def topology_score(a: Claim, b: Claim) -> float:
     """
     if a.feeder_id and a.feeder_id == b.feeder_id:
         return 1.0
-    if a.segment and a.segment == b.segment:
+    seg_a, seg_b = _norm_segment(a.segment), _norm_segment(b.segment)
+    # `seg_a and` matters: two unrouted claims both carrying the dataclass
+    # default must not corroborate on the strength of both being empty.
+    if seg_a and seg_a == seg_b:
         return 0.3
-    if _adjacent(a.segment, b.segment):
+    if _adjacent(seg_a, seg_b):
         return 0.15
     return 0.0
 
 
 def recency_score(a: Claim, b: Claim) -> float:
-    """exp(-delta_hours / RECENCY_HALFLIFE_HOURS)."""
+    """exp(-delta_hours / RECENCY_DECAY_HOURS)."""
     delta_hours = abs((a.created_at - b.created_at).total_seconds()) / 3600.0
-    return math.exp(-delta_hours / RECENCY_HALFLIFE_HOURS)
+    return math.exp(-delta_hours / RECENCY_DECAY_HOURS)
 
 
-def semantic_score(a: Claim, b: Claim) -> float:
-    """Cosine over Titan embeddings. Brute force NumPy -- do NOT provision OpenSearch.
+def cosine(a: Claim, b: Claim) -> float | None:
+    """The semantic term, or None when it could not be computed.
 
-    A few hundred claims per ward is a dot product, not an index. OpenSearch,
-    faiss and pgvector are all documented rejected alternatives.
+    Brute force NumPy -- do NOT provision OpenSearch. A few hundred claims per
+    ward is a dot product, not an index. OpenSearch, faiss and pgvector are all
+    documented rejected alternatives.
+
+    THIS IS THE PUBLIC NAME ON PURPOSE. It used to be `_cosine`, wrapped by a
+    public `semantic_score` that collapsed None to a bare 0.0 with a docstring
+    telling callers not to use it. correlate() already bypassed the wrapper, so
+    the only thing it could still do was hand the next person to write
+    agents/pattern_watch.py a public function that reintroduces the 0.65
+    ceiling. None and 0.0 are different answers and the difference is load
+    bearing: "these two reports disagree" is a real zero that belongs in the
+    weighted sum; "there was nothing to compare" must drop out of it and
+    renormalise. Returning None makes folding it in blind a TypeError at the
+    call rather than a cap under TAU that nothing logs.
 
     Clamped to [0, 1]: raw cosine runs to -1, and a negative component silently
     drags the weighted total down instead of contributing nothing, which is not
     what "these two reports disagree" should mean.
 
-    Returns 0.0 when the term could not be computed at all. Callers must NOT
-    read that as a real zero -- correlate() goes through _cosine() and checks.
-    """
-    got = _cosine(a, b)
-    return 0.0 if got is None else got
+    FOUR ways to have nothing to compare, all of them reachable:
 
+    * absent -- no embedding was ever computed. The common case today.
+    * empty or mismatched width -- a vector that round-tripped through storage
+      as [] arrives as [] rather than None.
+    * zero magnitude -- no direction, so cosine is undefined rather than zero.
+      embed("") returns one of these.
+    * NOT FINITE -- and this one was the dangerous one. The clamp is
+      `min(1.0, x)`, and `min(1.0, nan)` returns 1.0 in Python, so an
+      uncomputable cosine came back as PERFECT AGREEMENT flagged as computed.
+      Strictly worse than the ceiling this module exists to remove: that
+      failure was silent and clustered too little, this one clusters wrongly
+      and says it is sure. Reachable through our own storage path, because
+      pack_embedding's float16 overflows to inf above 65504 and inf/inf is nan.
 
-def _cosine(a: Claim, b: Claim) -> float | None:
-    """The semantic term, or None when it could not be computed.
-
-    None and 0.0 are different answers and the difference is load bearing.
-    "These two reports disagree" is a real zero that belongs in the weighted
-    sum; "there was nothing to compare" must drop out of it and renormalise,
-    or the total is capped at 0.65 and nothing ever clusters.
-
-    Missing is not the only way to have nothing to compare. A zero-magnitude
-    vector has no direction, so cosine is undefined rather than zero -- and
-    that is reachable: embed("") returns one, and a claim whose embedding
-    round-tripped through storage as an empty list arrives as [] rather than
-    None. Gating on `is not None` alone calls those cases available, skips the
-    renormalisation, caps the score under TAU and reports
-    semantic_available=True while doing it -- the original silent failure, now
-    wearing a label that says it did not happen.
+    All four take the same exit, because correlate() has exactly one honest
+    thing to do with any of them.
     """
     if a.embedding is None or b.embedding is None:
         return None
@@ -121,10 +146,19 @@ def _cosine(a: Claim, b: Claim) -> float | None:
     vb = np.asarray(b.embedding, dtype=np.float64)
     if va.size == 0 or va.size != vb.size:
         return None
-    denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
-    if denom == 0.0:
+    if not (np.isfinite(va).all() and np.isfinite(vb).all()):
         return None
-    return max(0.0, min(1.0, float(np.dot(va, vb)) / denom))
+    # Checking the inputs is not sufficient. 1e200 is a finite float64 whose
+    # square is not, so the norm overflows to inf inside the arithmetic and
+    # inf/inf is nan again -- guard the result too, and do it BEFORE the clamp.
+    with np.errstate(over="ignore", invalid="ignore"):
+        denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
+        if denom == 0.0 or not math.isfinite(denom):
+            return None
+        raw = float(np.dot(va, vb)) / denom
+    if not math.isfinite(raw):
+        return None
+    return max(0.0, min(1.0, raw))
 
 
 def correlate(a: Claim, b: Claim) -> CorrelationScore:
@@ -160,7 +194,7 @@ def correlate(a: Claim, b: Claim) -> CorrelationScore:
     rec = recency_score(a, b)
     # Ask whether the term produced a number, not whether a field was set --
     # a present but zero-magnitude vector has no direction to compare.
-    computed = _cosine(a, b)
+    computed = cosine(a, b)
     available = computed is not None
 
     if available:
@@ -178,6 +212,30 @@ def correlate(a: Claim, b: Claim) -> CorrelationScore:
     )
 
 
+_client = None   # built on first embed(), never at import. See embed().
+
+
+def _bedrock():
+    """The Bedrock client, built once per process on first use.
+
+    Lazy rather than module-level so this file stays importable, and testable,
+    with no credentials and no network -- test_importing_scoring_loads_no_model
+    _client pins that in a subprocess.
+
+    Cached rather than per-call because Pattern Watch calls embed() once per
+    stream record, and boto3 session construction plus credential resolution is
+    100-300ms -- an order of magnitude more than the invoke it is wrapping.
+    """
+    global _client
+    if _client is None:
+        import boto3
+        _client = boto3.client(
+            "bedrock-runtime",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+    return _client
+
+
 def embed(text: str) -> list[float]:
     """Bedrock Titan embeddings. Store as base64 float16 on the claim item.
 
@@ -186,9 +244,6 @@ def embed(text: str) -> list[float]:
     retry, and a failure degrades to the renormalised score instead of losing
     the claim.
 
-    The client is imported and built inside the function on purpose: this module
-    must stay importable, and testable, with no model client and no credentials.
-
     UNVERIFIED. Our account's Bedrock data plane returns
     "ValidationException: Operation not allowed" on every invoke, so this path
     has never executed. The request shape follows the Titan v2 API; treat the
@@ -196,13 +251,7 @@ def embed(text: str) -> list[float]:
     """
     import json
 
-    import boto3
-
-    client = boto3.client(
-        "bedrock-runtime",
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-    )
-    resp = client.invoke_model(
+    resp = _bedrock().invoke_model(
         modelId=MODEL_EMBED,
         body=json.dumps({
             "inputText": text,
