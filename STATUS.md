@@ -7,7 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **10 Sep, 21:45** by Kartik
+Last updated: **11 Sep, 02:40** by Kartik
 
 ---
 
@@ -30,8 +30,11 @@ Last updated: **10 Sep, 21:45** by Kartik
 | **shared** | `core/db.py` | **DONE** | The seam. Import from here. |
 | **shared** | `core/fakes.py` | **DONE** | `the_outage()` has 12 claims + a decoy |
 | **shared** | `tests/` | **DONE** | 7 contract tests, no AWS needed |
-| Kartik | `core/store.py` | **DONE** | DynamoDB, all 17 fns. On `feat/mesh-day1` (PR #1). Verified on DynamoDB Local, **not yet the real table**. |
-| Kartik | `core/scoring.py` | **DONE** | `correlate()` renormalises when semantic is absent. `embed()` written but never executed. |
+| Kartik | `core/store.py` | **DONE, REVIEWED** | DynamoDB, 17 fns. All 5 review findings fixed. Membership writes are narrow + conditional + transactional, so ambient can no longer clobber the Watchdog's breach. Verified on DynamoDB Local, **not yet the real table**. |
+| Kartik | `core/scoring.py` | **DONE, REVIEWED** | `correlate()` renormalises when semantic is absent. `semantic_score()` is **gone** -- use `cosine()`, which returns `None`. `embed()` written but never executed. |
+| Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes. Numbers under D3 below. |
+| Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
+| Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
 | Kartik | `agents/pattern_watch.py` | not started | |
 | Kartik | `agents/anti_abuse.py` | not started | |
 | Alakshendra | `data/jurisdiction/ward12.yaml` | not started | **sample with 4 entries exists** |
@@ -53,7 +56,7 @@ Last updated: **10 Sep, 21:45** by Kartik
 | Who | Gate | Result |
 |---|---|---|
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | — |
-| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, with a caveat.** 34/34 on both backends, twice in a row. Ran against **DynamoDB Local**, not our table -- no AWS credentials on this machine. Re-run needed when they land. |
+| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** Now **95 passed** on dynamodb, **72 passed / 23 skipped** on memory. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
 | Ali | one claim in, one filing out, **on deployed infra** | — |
 
@@ -75,10 +78,11 @@ Append here when something is settled, so nobody relitigates it at 2am.
   `PANCHAYAT_BACKEND=dynamodb pytest` without a local endpoint was silently
   emptying the shared table. Set `PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes` only
   if you mean it.
-- **10 Sep** — Two index row types added that the schema table does not list:
-  `FEEDER#<feeder>#SVC#<svc>` for `recurrence_count`, and a `GRANT#<grant_id>`
-  pointer for `revoke_consent`. Neither query is answerable without a Scan
-  otherwise. No new GSI. **Raised for review in PR #1, not settled.**
+- **11 Sep** — **SETTLED (Ali, review D2).** The two extra index row types are
+  approved: `FEEDER#<f>#SVC#<svc>` for `recurrence_count` and `GRANT#<id>`
+  for `revoke_consent`, plus uniquifiers on the consent and disclosure sort
+  keys. Neither adds a GSI, neither changes a declared entity key. Now written
+  into the schema table in `docs/team/KARTIK.md`.
 - **10 Sep** — `requirements.txt` needs **Python >= 3.12**: `numpy>=2.5.3`
   refuses to install on 3.11. If your venv is 3.11 you are blocked.
 - **10 Sep** — Open bug, nobody's lane yet: `split_case` rebuilds a child's
@@ -92,3 +96,46 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **10 Sep** — `ruff check .` is not clean repo-wide: 70 errors, 57 outside the
   mesh lane (`core/types.py` 18, `scripts/scaffold_stubs.py` 16,
   `core/clock.py` 9, `core/fakes.py` 8, `core/memstore.py` 4).
+- **11 Sep** — **`scoring.semantic_score()` is deleted.** It collapsed
+  "could not compute" to a bare `0.0`, which folded into the weighted sum caps
+  every score at 0.65 and puts it under TAU forever. Use **`cosine(a, b)`**,
+  which returns `None` when the term is unavailable. If you want the answer
+  `correlate()` uses, call `correlate()`.
+- **11 Sep** — **`RECENCY_HALFLIFE_HOURS` is now `RECENCY_DECAY_HOURS`.**
+  `exp(-d/H)` halves at `H*ln2 = 33.3h`, not at 48h. Same arithmetic, honest
+  name. Asked for "a 24h half-life" you would have set 24.0 and got 16.6h.
+- **11 Sep** — **A NaN cosine used to read as PERFECT agreement.**
+  `min(1.0, nan)` is `1.0` in Python, and `pack_embedding` overflows to `inf`
+  above 65504, so a vector that could not survive storage came back out as
+  semantic agreement flagged as computed. Fixed in `cosine()`. If you are
+  writing anything that scores vectors, guard `np.isfinite` on the **result**
+  as well as the inputs -- 1e200 is finite and its square is not.
+- **11 Sep** — **Case writes are no longer whole-item puts.**
+  `add_household_to_case` and `split_case` write only `household_ids`,
+  `claim_ids` and `merged_from`, conditionally, with a retry, in one
+  transaction with the member row. If you write a Case from the ambient or
+  temporal path, **do not** read-modify-write the whole item: the Watchdog owns
+  `status` and `sla_deadline` and a full put takes its breach back out with
+  nothing logged.
+- **11 Sep** — `open_cases()` now returns **oldest first** on dynamodb.
+  memstore still returns insertion order; it needs the same sort to agree.
+  Ali's call, `core/memstore.py` is shared.
+- **11 Sep** — **D3 has numbers, and it needs a group call.**
+  `python -m eval.tau_sweep`. TAU = 0.72 is not the right threshold for either
+  scoring path: the renormalised one wants **0.78** (all three semantic models,
+  zero missed clusters, under a 1% false-merge ceiling). Turning semantic on
+  costs 0.8% / 5.9% / 17.6% of same-fault pairs depending on how much a real
+  cosine separates the classes -- and **zero** pairs ever start clustering, so
+  the regression is one-way. Proposal, backed by Ali: `TAU_TOPOLOGICAL` and
+  `TAU_FULL`, swept separately, with the trace naming which one applied.
+- **11 Sep** — **Open, nobody's lane: segment normalisation stops at the
+  scorer.** `topology_score` now normalises case and whitespace, but
+  `claims_in_window` builds `GSI1PK` from the raw `claim.segment`, so
+  `Ward12-4thCross` and `ward12-4thcross` land in different partitions and
+  Pattern Watch never retrieves the pair to score at all. Same bug one layer
+  down. Needs normalising **on the way in** (intake or the Warden, before a
+  `Claim` is emitted), or agreed as a rule both backends apply at the key --
+  fixing it in `store.py` alone breaks backend parity.
+- **11 Sep** — `scripts/create_table.py` exists. Idempotent, reads
+  `PANCHAYAT_TABLE` and `PANCHAYAT_DDB_ENDPOINT`, carries the full key table in
+  its docstring. Ali's lane; there because he asked for it in review D4.
