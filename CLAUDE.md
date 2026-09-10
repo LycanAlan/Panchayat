@@ -134,6 +134,58 @@ Your brief is in `docs/team/<YOURNAME>.md`. Read it and this file, then start.
 boundaries are also the merge boundaries. If you need something from another
 lane, use the agreed signature in the stub and let them fill it in.
 
+## Nobody waits for anybody
+
+Four people, five days, and real dependencies between the lanes. The rule that
+stops that turning into idle time:
+
+**You depend on a contract, never on a person's implementation.**
+
+Every cross-lane dependency already has a fake, shipped and tested:
+
+| You need | Don't wait for | Use |
+|---|---|---|
+| storage | Kartik's `store.py` | `from core.db import ...` (memory backend by default) |
+| a `Claim`, `Case`, `HouseholdPosition` | whoever owns that agent | `core/fakes.py` |
+| the 12-household outage scenario | Pattern Watch | `fakes.the_outage()` |
+| jurisdiction entries | Alakshendra's `ward12.yaml` | `data/jurisdiction/ward12.sample.yaml` |
+| a compressed clock | nothing | the `clock` fixture in `tests/conftest.py` |
+
+```bash
+pytest                                 # memory backend, no AWS, 0.03s
+PANCHAYAT_BACKEND=dynamodb pytest      # the real table, same tests
+```
+
+**The same tests run against both backends.** If a test passes on memory and
+fails on DynamoDB, the DynamoDB one is wrong, and we find that out on our own
+bench rather than during integration on Thursday.
+
+The whole system runs offline with `PANCHAYAT_BACKEND=memory`, which matters
+more than we planned: Bedrock authorization is still pending on our account.
+
+**If you find yourself blocked on another lane, that is a bug in the fakes.**
+Say so in the group and we add one. Do not sit waiting, and do not reach into
+someone else's file.
+
+## Coordination
+
+**Two syncs a day, fifteen minutes each. No standups.**
+
+- **Morning:** what is your gate today. One falsifiable thing, not a plan.
+- **Evening:** did the gate pass. **Report the result, not the vibe.** "Routing
+  came in at 62%" is useful on Tuesday and catastrophic on Thursday.
+
+**Blocked for thirty minutes? Post it.** An hour lost to being stuck privately
+costs more than any interruption.
+
+**`STATUS.md` is the shared brain.** Update your row when something lands.
+Your teammates' Claude sessions cannot see yours, so that file is how their
+Claude learns that `store.py` is real and what shape it took. Ten seconds,
+and it prevents someone rebuilding what already exists.
+
+**Merge to `main` daily.** A branch that lives three days is a merge conflict
+with legs. Ali merges same day.
+
 ## Definition of done for any module
 
 - The stub's `NotImplementedError` is gone

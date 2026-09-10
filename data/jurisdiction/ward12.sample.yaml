@@ -1,0 +1,95 @@
+# SAMPLE jurisdiction data -- three entries so Kartik and Raghav are not blocked
+# waiting for Alakshendra's real ~30.
+#
+# Alakshendra: this is NOT your file. Build ward12.yaml properly. This exists
+# only so the other lanes have something to load on Day 1, and it gets deleted
+# once yours lands.
+#
+# Everyone else: treat this as a fixture, not as truth. The authorities and
+# statute references below are real, but the coverage is three streets.
+#
+# The field people forget is feeder_id. Kartik's topology scoring is useless
+# without it: two houses fifty metres apart on different feeders are not the
+# same fault, two houses four hundred metres apart on one trunk main are.
+
+- service: water
+  segment: ward12-4thcross
+  feeder_id: bwssb-tm-14
+  authority: BWSSB
+  not_authority: [BBMP]          # the common wrong answer, and how complaints die
+  sla_days: 7
+  statute_ref: "BWSSB Citizen Charter, water supply interruption restoration"
+  required_fields: [rr_number, duration_days, affected_count]
+  helpline: "1915"
+  ladder:
+    - tier: 1
+      authority: "BWSSB Section Officer"
+      window_days: 7
+      statute_ref: "BWSSB Citizen Charter"
+      description: "Initial filing against the responsible section"
+    - tier: 2
+      authority: "Assistant Executive Engineer, BWSSB"
+      window_days: 7
+      statute_ref: "Karnataka Sakala Services Act 2011"
+      description: "Named officer. Sakala provides Rs 20/day compensation up to Rs 500, recovered from the responsible officer"
+    - tier: 3
+      authority: "Public grievance portal"
+      window_days: 15
+      statute_ref: "Karnataka Sakala Services Act 2011, appeal to Competent Officer quoting the GSC number"
+      description: "Statutory appeal"
+    - tier: 4
+      authority: "RTI (drafted only)"
+      window_days: 30
+      statute_ref: "Right to Information Act 2005"
+      description: "DRAFTED ONLY. Needs a citizen name, address and Rs 10 fee. The system supplies none of the three."
+
+- service: water
+  segment: ward12-5thcross
+  feeder_id: bwssb-tm-14          # SAME feeder as 4th Cross -- these should cluster
+  authority: BWSSB
+  not_authority: [BBMP]
+  sla_days: 7
+  statute_ref: "BWSSB Citizen Charter, water supply interruption restoration"
+  required_fields: [rr_number, duration_days, affected_count]
+  helpline: "1915"
+  ladder:
+    - tier: 1
+      authority: "BWSSB Section Officer"
+      window_days: 7
+      statute_ref: "BWSSB Citizen Charter"
+    - tier: 2
+      authority: "Assistant Executive Engineer, BWSSB"
+      window_days: 7
+      statute_ref: "Karnataka Sakala Services Act 2011"
+
+- service: water
+  segment: ward12-9thmain
+  feeder_id: bwssb-tm-22          # DIFFERENT feeder -- must NOT cluster with the above
+  authority: BWSSB
+  not_authority: [BBMP]
+  sla_days: 7
+  statute_ref: "BWSSB Citizen Charter, water supply interruption restoration"
+  required_fields: [rr_number, duration_days, affected_count]
+  helpline: "1915"
+  ladder:
+    - tier: 1
+      authority: "BWSSB Section Officer"
+      window_days: 7
+      statute_ref: "BWSSB Citizen Charter"
+
+# Deliberately included: garbage routes to BBMP, not BWSSB. Gives the Remedy
+# Agent a case where the obvious answer is the wrong one.
+- service: garbage
+  segment: ward12-4thcross
+  feeder_id: bbmp-route-07
+  authority: BBMP
+  not_authority: [BWSSB]
+  sla_days: 3
+  statute_ref: "BBMP Solid Waste Management, daily collection commitment"
+  required_fields: [ward_number, days_missed]
+  helpline: "1533"
+  ladder:
+    - tier: 1
+      authority: "BBMP Ward Health Inspector"
+      window_days: 3
+      statute_ref: "BBMP SWM byelaws"
