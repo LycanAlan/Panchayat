@@ -7,8 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **11 Sep, 02:30** by Alakshendra
-Last updated: **12 Sep, 07:10** by Kartik
+Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
 
 ---
 
@@ -77,14 +76,14 @@ correctly against their own contract, they just haven't met yet:
 | **shared** | `tests/` | **DONE** | **320 passing / 35 skipped** on memory, **355 passing, zero failures** on dynamodb — the first fully green cross-backend run. No AWS needed. |
 | Kartik | `core/store.py` | **DONE, REVIEWED** | DynamoDB, 17 fns. All 5 review findings fixed. Membership writes are narrow + conditional + transactional, so ambient can no longer clobber the Watchdog's breach. Verified on DynamoDB Local, **not yet the real table**. |
 | Kartik | `core/scoring.py` | **DONE, REVIEWED** | `correlate()` renormalises when semantic is absent. `semantic_score()` is **gone** -- use `cosine()`, which returns `None`. `embed()` written but never executed. |
-| Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes. Numbers under D3 below. |
+| Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes off the shared corpus (it used to carry a duplicate generator that picked reporters directly). **TAU_TOPOLOGICAL = 0.82**, see issue #20. |
 | Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
 | Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
 | Kartik | `agents/pattern_watch.py` | **DONE** | Ambient path. `on_new_claim` → `adjudicate` → `anti_abuse.verify` → `apply_upgrade`. Below TAU it returns `None` having invoked **no model**. `apply_upgrade` does **not** write `escalation_tier` — see the blocker. |
 | Kartik | `agents/anti_abuse.py` | **DONE** | **Five** checks now — service, consent, register, feeder, dedup — each with a reason the trace UI can render. `rejection_reasons` keys ONLY on rejected claims; checks that could not run ride the trace as `checks_not_run=`. |
 | Kartik | `core/store.py` filings | **DONE** | `get_filing`, `unsigned_filings`, `sign_filing` now exist on the dynamodb backend too. **Ali: the Digest Agent works on the real table now** — it raised NotImplementedError there before. |
-| Kartik | `data/corpus/generator.py` | not started | Day 2 carry-over. |
-| Kartik | `eval/density_curve.py` | not started | Day 4. The number. |
+| Kartik | `data/corpus/generator.py` | **DONE** | Failure model first: feeder fails → who notices → who bothers to **report**. **31% of affected households report**, the rest stay silent — that gap is the project's premise, not detail. `generate(n_households, days, seed)`, or `generate_corpus()` for ground truth (`fault.affected` vs `fault.claims`). Pass `geography=` to model the real curated ward. |
+| Kartik | `eval/density_curve.py` | **DONE, and it found something** | `python -m eval.density_curve`. Drives corpus → Pattern Watch → Anti-Abuse → `remedy.compose_filing` → Alakshendra's Desk → `reconcile_closure`. **The curve cannot climb at tier 1 and never could** — no desk rate is a function of household count. See issue #11. Prints TWO tables because "flat" and "undrawable" look identical. |
 | Alakshendra | `data/jurisdiction/ward12.yaml` | **DONE** | 31 entries. Water only. 24 BWSSB, 3 BBMP borewell, 3 builder line. **Sample can now be deleted** — see decisions log. |
 | Alakshendra | `agents/remedy.py` | **DONE** | `lookup(service, segment, feeder_id)` and `resolve(claim) -> (tail, entry, citation)`. Returns `None` on a miss, never a guess. |
 | Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005. Now on `core.models.get_model("cheap")` — a desk picking a tool is classification, not deliberation. |
@@ -117,7 +116,7 @@ correctly against their own contract, they just haven't met yet:
 | Who | Gate | Result |
 |---|---|---|
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
-| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** After merging main: **137 passed** on dynamodb, **114 passed / 23 skipped** on memory, zero failures either way. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
+| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** **392 passed** on dynamodb, **355 passed / 37 skipped** on memory, zero failures either way. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | **PASSED.** Whole lane green, no AWS creds. 1 honest skip (`strands` not installed locally). |
 | Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
@@ -309,3 +308,30 @@ file separately — hard rule 5's duplicate, with provenance `split_case` cannot
 reconcile. For now claims already live on another case are **skipped** and the
 skip is traced. The real answer is either a case merge (withdraw the others with
 provenance) or the spine reusing a case per feeder+service. **Ali + Raghav.**
+
+---
+
+## Mesh lane: everything it cannot close alone is now an issue, #9-#21
+
+Raised 12 Sep with a reproduction on each, rather than left as prose nobody has
+to action. **Three are P0**, and all three sit between Raghav and Alakshendra:
+
+- **#9 nothing can resolve a case.** `CaseStatus.RESOLVED` appears once in the
+  repo, in its own enum definition. This is what blocks the density curve.
+- **#10 `reconcile_closure` disputes every closure.** It counts the claims that
+  OPENED the case as evidence against its closure, and with `sla_days: 7` and a
+  36h mean response every realistic closure falls inside that window.
+- **#11 the institution model is indifferent to corroboration.** Every desk
+  rate is a constant; none is a function of household count. So the curve
+  cannot climb at tier 1 — and the curated ladder says tier 2 is where
+  *"corroborated household count matters here"*.
+
+**#11 is the one that changes what gets said on Thursday.** "The curve is flat"
+is the wrong summary. The honest one is that it was measured at first filing,
+where it is flat and always would be, and the tier where it should climb is not
+wired. That is a defensible thing to say; "the thesis is unsupported" is not
+what the data shows.
+
+The mesh lane's own Day 1-4 work is complete and the definition of done in
+`docs/team/KARTIK.md` passes in full. What is left in this lane is waiting on
+those three.
