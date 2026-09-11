@@ -118,10 +118,15 @@ def test_the_sweep_prices_pairs_the_corpus_actually_produced():
     """The label is the generator's own fault_id -- the world's fact -- not
     anything derived from a score. A sweep that labelled pairs by scoring them
     would be grading its own homework."""
-    corpus = generate_corpus(n_households=150, days=14, seed=2)
+    corpus = generate_corpus(n_households=600, days=30, seed=2)
     faults = [f for f in corpus.faults if f.claims]
-    pairs = tau_sweep.labelled_pairs(faults)
 
+    # Stated rather than assumed. A corpus with one reported fault produces
+    # only same-fault pairs, and the sweep's false-merge column would have
+    # nothing to price -- which is a useless test rather than a passing one.
+    assert len(faults) > 1, "need at least two reported faults to have a mix"
+
+    pairs = tau_sweep.labelled_pairs(faults)
     by_claim = {c.claim_id: f.fault_id for f in faults for c in f.claims}
     for a, b, truth in pairs:
         assert truth == (by_claim[a.claim_id] == by_claim[b.claim_id])

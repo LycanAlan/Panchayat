@@ -272,3 +272,62 @@ def test_every_segment_is_a_street_that_could_exist():
         m = re.match(r"^(\w+)-(\d+)(st|nd|rd|th)(\w+)$", household.segment)
         assert m, f"unparseable segment {household.segment!r}"
         assert m.group(3) == ordinal(int(m.group(2))), household.segment
+
+
+# ------------------------------ the density curve's required x-axis
+
+def test_the_corpus_can_reach_every_point_the_density_curve_needs():
+    """THE brief says density_curve runs at N = 1, 5, 10, 20, so every one of
+    those has to be producible. Fixing the "no single-household fault" gap by
+    adding scope got N=1 and I stopped checking there -- the top of the range
+    was still unreachable, because the ward's feeder count was capped by an
+    implicit formula and 400 households over 16 feeders is 25 houses per main.
+    At a 31% reporting rate that tops out around 12 reporters.
+
+    Both ends of the axis, pinned, so neither can quietly disappear again.
+    """
+    corpus = generator.generate_corpus(n_households=900, days=45, seed=7,
+                                       households_per_feeder=60)
+    sizes = sorted(len(f.claims) for f in corpus.faults)
+
+    for n in (1, 5, 10, 20):
+        assert any(len(f.claims) >= n for f in corpus.faults), (
+            f"no fault reached N={n} reporters; sizes were {sizes}")
+
+    assert any(len(f.claims) == 1 for f in corpus.faults), "N=1 exactly"
+    assert any(len(f.claims) == 0 for f in corpus.faults), "the dark figure"
+
+
+def test_feeder_density_is_a_knob_rather_than_a_formula():
+    """How many households a trunk main serves is the single thing that
+    decides how big a fault can get, so the density curve has to be able to
+    set it rather than infer it from ward size."""
+    sparse = generator.generate_corpus(n_households=600, days=30, seed=3,
+                                       households_per_feeder=15)
+    dense = generator.generate_corpus(n_households=600, days=30, seed=3,
+                                      households_per_feeder=100)
+
+    def per_feeder(c):
+        counts = {}
+        for h in c.households:
+            counts[h.feeder_id] = counts.get(h.feeder_id, 0) + 1
+        return sum(counts.values()) / len(counts)
+
+    assert per_feeder(sparse) < per_feeder(dense)
+    assert max(len(f.claims) for f in dense.faults) > \
+        max(len(f.claims) for f in sparse.faults), (
+        "denser mains did not produce bigger faults")
+
+
+def test_the_reporting_rate_holds_as_the_ward_gets_denser():
+    """Density changes how many people a fault hits, not how likely any one of
+    them is to complain. If the rate moved with density the curve would be
+    measuring the generator rather than the system."""
+    for per_feeder in (15, 40, 100):
+        corpus = generator.generate_corpus(n_households=600, days=30, seed=5,
+                                           households_per_feeder=per_feeder)
+        affected = sum(len(f.affected) for f in corpus.faults)
+        reported = sum(len(f.claims) for f in corpus.faults)
+        rate = reported / affected
+        assert 0.20 <= rate <= 0.45, (
+            f"{per_feeder} per feeder reported at {rate:.0%}")

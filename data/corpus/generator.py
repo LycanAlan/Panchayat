@@ -163,7 +163,19 @@ def _street(rng: random.Random) -> str:
     return f"{WARD}-{n}{_ordinal(n)}{rng.choice(STREET_KINDS)}"
 
 
-def _build_ward(n_households: int, rng: random.Random) -> list[Household]:
+#: How many households one trunk main serves, by default. This single number
+#: decides how big a fault can possibly get, which makes it the density curve's
+#: real control: 25 per main at a ~31% reporting rate tops out near 12
+#: reporters, and the brief requires the curve to reach N=20.
+#:
+#: It used to be an implicit formula (`n_households // 12 + 2`, capped at the
+#: number of feeders), so the only way to get a bigger fault was to grow the
+#: ward and hope. A caller that needs N=20 should say so directly.
+HOUSEHOLDS_PER_FEEDER = 25
+
+
+def _build_ward(n_households: int, per_feeder: int,
+                rng: random.Random) -> list[Household]:
     """Lay out the ward before anything fails.
 
     A feeder serves several streets and a street is served by one feeder --
@@ -171,7 +183,7 @@ def _build_ward(n_households: int, rng: random.Random) -> list[Household]:
     rather than a contrived one. The mapping is fixed here, once, so a fault
     later has a genuine set of victims rather than a sampled one.
     """
-    n_feeders = max(2, min(len(FEEDERS), n_households // 12 + 2))
+    n_feeders = max(2, min(len(FEEDERS), n_households // max(1, per_feeder)))
     feeders = list(FEEDERS[:n_feeders])
 
     # Each feeder serves one to three streets.
@@ -223,15 +235,22 @@ def _reports(household: Household, fault: Fault, rng: random.Random) -> bool:
 
 def generate_corpus(n_households: int = 300, days: int = 30, seed: int = 0,
                     severity: float | None = None,
-                    faults_per_feeder_week: float = 0.5) -> Corpus:
+                    faults_per_feeder_week: float = 0.5,
+                    households_per_feeder: int = HOUSEHOLDS_PER_FEEDER
+                    ) -> Corpus:
     """A ward, a stretch of time, and everything that broke in it.
 
     `severity` pins every fault to one value instead of drawing it, which is
     what `eval/density_curve.py` means by "a fixed institution profile": vary
     one thing at a time or the curve is measuring two things at once.
+
+    `households_per_feeder` is how big a fault can get. A main serving 25
+    houses cannot produce twenty reporters at any plausible reporting rate, so
+    a caller that needs the N=20 point has to widen the main rather than the
+    ward. Exposed for that reason rather than left as a formula to be inferred.
     """
     rng = random.Random(seed)
-    households = _build_ward(n_households, rng)
+    households = _build_ward(n_households, households_per_feeder, rng)
     by_feeder: dict[str, list[Household]] = {}
     for household in households:
         by_feeder.setdefault(household.feeder_id, []).append(household)
