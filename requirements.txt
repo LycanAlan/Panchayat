@@ -20,4 +20,9 @@ python-dotenv>=1.2.3
 
 # Dev
 pytest>=9.1.1
-ruff>=0.16.6
+# Pinned with ==, not >=. ruff's DEFAULT RULE SET changes between
+# releases, so an unbounded lower bound means "ruff check . is clean"
+# resolves to a different question on every laptop -- four people each
+# reported clean and the merged tree had 42 errors. See ruff.toml.
+# Bumping this is a group call, same bar as the rest of this file.
+ruff==0.16.6
