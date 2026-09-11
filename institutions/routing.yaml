@@ -1,0 +1,50 @@
+# Which A2A desk answers for which authority.
+#
+# The ladder in data/jurisdiction/ward12.yaml names authorities the way a
+# citizen charter names them -- "BWSSB Assistant Executive Engineer, service
+# station". The mesh addresses desks by name and port. This file is the join,
+# and it is curated for the same reason the jurisdiction table is: guessing
+# which office answers is the failure this project exists to fix.
+#
+# FIRST MATCH WINS, so order is deliberate. The entries with no desk come first,
+# because "no desk" is a decision rather than a gap and must not be shadowed by
+# a broader rule below it.
+#
+# desk: ""  means there is no A2A peer to file with. The reason is not
+# decoration -- the Watchdog surfaces it to a human instead of silently
+# stalling, and the Digest turns it into the one question it is allowed to ask.
+#
+# Owner: Alakshendra
+
+routes:
+
+  - match: "RTI"
+    desk: ""
+    reason: >
+      Drafted only, never filed by the system. An RTI needs a citizen's name,
+      address and a Rs 10 fee, and we supply none of the three. This is a
+      guardrail, not a missing integration.
+
+  - match: "Residents' welfare association"
+    desk: ""
+    reason: >
+      The RWA is a neighbour, not an institution. Aggregation points outward
+      only -- we never assemble pressure against a person or a household.
+
+  - match: "Layout developer"
+    desk: ""
+    reason: >
+      Contractual, not statutory. There is no grievance portal and no clock the
+      state will enforce, so this tier is a conversation the household has to
+      have.
+
+  - match: "BWSSB"
+    desk: bwssb
+
+  - match: "Sakala Competent Officer"
+    desk: ward
+    # The statutory appeal is filed through the ULB's grievance counter, which
+    # in this simulation is the ward desk.
+
+  - match: "BBMP"
+    desk: ward
