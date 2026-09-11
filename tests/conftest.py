@@ -45,6 +45,12 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     if os.environ.get("PANCHAYAT_BACKEND", "memory").lower() != "dynamodb":
         return
+
+    # Both checks run for every dynamodb run. Isolation needs two things --
+    # somewhere disposable to point at, AND a backend that can actually empty
+    # it -- and a run missing either one is not proving parity.
+    _require_a_working_reset()
+
     endpoint = os.environ.get("PANCHAYAT_DDB_ENDPOINT", "")
     if _endpoint_is_local(endpoint):
         return
@@ -58,6 +64,26 @@ def pytest_configure(config: pytest.Config) -> None:
         "    python scripts/create_table.py\n"
         "  (currently PANCHAYAT_DDB_ENDPOINT=" + (endpoint or "<unset>") + ")"
     )
+
+
+def _require_a_working_reset() -> None:
+    """A backend that cannot clean cannot be tested for parity.
+
+    `db.reset` used to fall back to `lambda: None`, so a backend without a
+    reset made the fixture a no-op and the run accumulated rows silently. One
+    error here beats two hundred, and beats a green run that is lying.
+    """
+    from core import db
+
+    try:
+        db.reset()
+    except NotImplementedError as exc:
+        raise pytest.UsageError(
+            "PANCHAYAT_BACKEND=dynamodb cannot isolate tests: " + str(exc)
+            + " Without it every test shares the previous test's rows, so "
+            "the suite passes on run 1 and fails on run 2 with the count "
+            "climbing."
+        ) from exc
 
 
 @pytest.fixture(autouse=True)

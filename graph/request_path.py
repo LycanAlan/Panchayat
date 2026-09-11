@@ -45,7 +45,7 @@ from core.types import (
     new_id,
 )
 from graph.nodes import FunctionNode
-from graph.trace import CaseTrace
+from graph.trace import CaseTrace, use_trace
 
 # ---------------------------------------------------------------- context
 
@@ -109,10 +109,15 @@ def _intake(ctx: RequestContext) -> str:
     )
     ctx.members = [member]
 
+    # The stub emits the SAME keys the real parse() does. The frozen signature
+    # only promised `list[dict]`, so no key schema was ever agreed, and the two
+    # drifted: the stub said "summary" while intake emits "description", which
+    # meant household.deliberate() -- which reads "description" -- saw nothing.
     needs, stub = run_or_stub(
         lambda: intake.parse(text, member),
-        lambda: [{"service": ctx.payload.get("service", "water"),
-                  "summary": text or "no piped supply"}],
+        lambda: [{"description": text or "no piped supply",
+                  "member_id": member.member_id,
+                  "raw_text": text}],
     )
     ctx.payload["needs"] = needs
 
@@ -125,11 +130,26 @@ def _intake(ctx: RequestContext) -> str:
     # silently -- an unrecorded need is indistinguishable from one we never
     # heard, which is the failure this whole project is about.
     if len(needs) > 1:
-        carried = [str(n.get("summary", n)) for n in needs[1:]]
+        carried = [_need_excerpt(n) for n in needs[1:]]
         ctx.trace.record("QUEUED", "intake",
                          str(len(carried)) + " further need(s) not handled by "
                          "this case", excluded=carried)
     return "intake: " + str(len(needs)) + " need(s)"
+
+
+def _need_excerpt(need: dict) -> str:
+    """One human-readable line for a need, and NEVER the raw dict.
+
+    `n.get("summary", n)` fell through to the whole dict when the key was
+    absent, so the trace printed a Python repr with `member_id` inside it --
+    onto the demo surface, which is the one place raw identifiers must not
+    appear.
+    """
+    for key in ("description", "summary", "raw_text"):
+        value = need.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "(need recorded with no description)"
 
 
 def _household(ctx: RequestContext) -> str:
@@ -172,6 +192,7 @@ def _warden(ctx: RequestContext) -> str:
         lambda: warden.minimise(ctx.position),
         lambda: _claim_stub(ctx),
     )
+    _apply_request_context(ctx, claim)
     ctx.claim = claim
     db.put_claim(claim)
 
@@ -187,6 +208,19 @@ def _warden(ctx: RequestContext) -> str:
 
 
 def _claim_stub(ctx: RequestContext) -> Claim:
+    """Stand-in until the Warden lands. Two things it must NOT inherit from
+    `fakes.a_claim()`:
+
+    `consent_scopes` -- the fixture grants FILE_INDIVIDUAL, and nobody asked
+    this household anything. Inheriting it made the UNCONSENTED guard below
+    unreachable, so the trace quietly implied a grant that was never given.
+
+    `description` -- the fixture's canned prose would go straight into a
+    filing body addressed to a public body. An obviously-marked placeholder is
+    honest; someone else's example sentence is not. It is deliberately NOT
+    built from `position.needs` either: that is inside the membrane and hard
+    rule 2 says only the Warden reads it.
+    """
     pos = ctx.position
     return fakes.a_claim(
         household_id=pos.household_id,
@@ -197,7 +231,31 @@ def _claim_stub(ctx: RequestContext) -> Claim:
         priority=Priority.HIGH if pos.deadline_reason else Priority.ROUTINE,
         reason_withheld=bool(pos.deadline_reason),
         has_budget_ceiling=pos.budget_ceiling_inr is not None,
+        consent_scopes=[],
+        description="[warden stub] household reported a "
+                    + str(ctx.payload.get("service", "water")) + " problem",
     )
+
+
+def _apply_request_context(ctx: RequestContext, claim: Claim) -> None:
+    """Fill the routing fields the Warden has no way to know.
+
+    `HouseholdPosition` is frozen and carries no segment, feeder or service, so
+    `minimise()` correctly emits a Claim without them -- its docstring says so
+    and says the graph populates them. Nothing did, which left every real claim
+    routing on `segment=""` and the default service, so `remedy.resolve()`
+    returned UNROUTED for everything regardless of what was reported.
+
+    Only fills what is EMPTY. If the Warden ever does know one of these, its
+    answer wins -- the membrane's owner is not overridden by its caller.
+    """
+    if not claim.segment:
+        claim.segment = ctx.payload.get("segment", "")
+    if not claim.feeder_id:
+        claim.feeder_id = ctx.payload.get("feeder_id", "")
+    requested = ctx.payload.get("service")
+    if requested and claim.service != Service(requested):
+        claim.service = Service(requested)
 
 
 def _remedy(ctx: RequestContext) -> str:
@@ -235,15 +293,25 @@ def _file(ctx: RequestContext) -> str:
     case, existing = _open_or_load_case(ctx, entry)
     ctx.case = case
 
+    # The TIER's authority, not the umbrella body. Two reasons, and the second
+    # is the dangerous one:
+    #   - tier 1 of ward12-4thcross is "BWSSB Assistant Engineer, sub-division
+    #     office", not "BWSSB". Addressing a named officer is most of what
+    #     makes a filing land.
+    #   - Filing.compute_key() hashes case_id|authority|tier. If the Watchdog
+    #     computes the key from the ladder step and this computes it from the
+    #     umbrella body, the two keys differ, put_filing_once cannot see the
+    #     duplicate, and hard rule 5 is broken across the two writers.
+    authority = _authority_for(entry, case.escalation_tier)
     filing = Filing(case_id=case.case_id, tier=case.escalation_tier,
-                    authority=entry.authority, body=ctx.claim.description)
+                    authority=authority, body=ctx.claim.description)
     written, stored = db.put_filing_once(filing)
     ctx.filing = stored
 
     step = _tier_step(entry, case.escalation_tier)
     ctx.trace.record(
         "DRAFTED" if written else "DUPLICATE", "file",
-        entry.authority + ", tier " + str(case.escalation_tier)
+        authority + ", tier " + str(case.escalation_tier)
         + (", awaiting a human signature" if written
            else ", identical filing already exists"),
         citation=step.statute_ref if step else entry.statute_ref)
@@ -251,10 +319,13 @@ def _file(ctx: RequestContext) -> str:
     # The consent gate is real and not yet enforceable: warden.consent_covers
     # is still a stub. Record the gap rather than let the trace imply a grant
     # that was never given -- the trace is the honest surface or it is nothing.
+    # `stubbed=False` deliberately: this is a real gap, not an unfinished
+    # module. Marking it stubbed put "warden" in stubbed_agents permanently,
+    # so the integration dashboard would report that lane as unlanded forever
+    # after it ships.
     if not ctx.claim.consent_scopes:
-        ctx.trace.record("UNCONSENTED", "warden",
-                         "draft holds: no recorded consent grant on this claim",
-                         stubbed=True)
+        ctx.trace.record("UNCONSENTED", "file",
+                         "draft holds: no recorded consent grant on this claim")
 
     if existing:
         ctx.trace.record("REJOINED", "file",
@@ -278,12 +349,31 @@ def _open_or_load_case(ctx: RequestContext, entry: JurisdictionEntry):
     correctly suppressed as a duplicate. That breaks hard rule 5 (idempotent
     institutional actions), hard rule 6 (merges reversible, provenance kept)
     and resets the clock the Watchdog is tracking.
+
+    KNOWN RACE, not closed here: this is still check-then-act. Two concurrent
+    invocations carrying the same case_id can both see no case and both create
+    one, and the second put_case wins. Closing it needs a conditional write on
+    `Case` -- the same version guard Kartik's put_case and the Watchdog's
+    escalation_tier both need, and inventing a third mechanism unilaterally is
+    how we end up with three. Raised for the group; do not paper over it here.
     """
     existing = db.get_case(ctx.case_id)
     if existing is not None:
         if ctx.claim.claim_id not in existing.claim_ids:
-            db.add_household_to_case(existing.case_id, ctx.claim.household_id,
-                                     ctx.claim.claim_id)
+            if ctx.claim.household_id in existing.household_ids:
+                # The same household reporting again. Record the claim, but do
+                # NOT write a merged_from token: provenance marks households
+                # that were MERGED IN, and tokenising the founding household
+                # would let split_case split the reporter off its own case --
+                # leaving a parent with no households and a child with the
+                # claim. Hard rule 6 is about undoing merges, not undoing the
+                # original report.
+                existing.claim_ids.append(ctx.claim.claim_id)
+                db.put_case(existing)
+            else:
+                db.add_household_to_case(existing.case_id,
+                                         ctx.claim.household_id,
+                                         ctx.claim.claim_id)
             existing = db.get_case(ctx.case_id)
         return existing, True
 
@@ -314,10 +404,24 @@ def _open_or_load_case(ctx: RequestContext, entry: JurisdictionEntry):
 
 
 def _tier_step(entry: JurisdictionEntry, tier: int):
+    """The step for THIS tier, or None.
+
+    Deliberately no fallback to `ladder[0]`: a case past the end of the ladder
+    would then be filed under tier 1's statute and tier 1's window. A
+    confidently wrong citation is worse than an absent one -- hard rule 3
+    exists because a wrong authority reproduces the failure we claim to fix.
+    """
     for step in entry.ladder:
         if step.tier == tier:
             return step
-    return entry.ladder[0] if entry.ladder else None
+    return None
+
+
+def _authority_for(entry: JurisdictionEntry, tier: int) -> str:
+    """The named officer for this tier, falling back to the umbrella body only
+    when the ladder genuinely has no step for it."""
+    step = _tier_step(entry, tier)
+    return step.authority if step is not None and step.authority else entry.authority
 
 
 def _window_days(entry: JurisdictionEntry, tier: int) -> int:
@@ -399,7 +503,12 @@ def run_request_path(payload: dict) -> dict:
         payload=dict(payload), case_id=case_id,
         trace=CaseTrace(case_id, get_clock()),
     )
-    result = build_graph()(payload.get("text", ""), invocation_state={"ctx": ctx})
+    # Bind the trace for this request so any lane reached from here --
+    # including code that was never handed the CaseTrace object -- records
+    # into this case's story rather than printing into the void.
+    with use_trace(ctx.trace):
+        result = build_graph()(payload.get("text", ""),
+                               invocation_state={"ctx": ctx})
 
     usage = getattr(result, "accumulated_usage", None)
     return {

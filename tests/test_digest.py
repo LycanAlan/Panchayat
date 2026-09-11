@@ -152,3 +152,44 @@ def _clock():
     from core.clock import VirtualClock
 
     return VirtualClock(scale=86400.0, epoch=fakes.T0)
+
+
+def test_the_queue_never_tells_the_named_person_there_is_nothing_to_do():
+    """The queue exists to ask someone. compose() used to gate the ask on
+    status == DRAFTED, so an ESCALATING case with an unsigned filing under it
+    told the recipient "No action needed from you."
+    """
+    case = fakes.a_case(status=CaseStatus.ESCALATING, authority="AEE, BWSSB",
+                        household_ids=["hh_a"], escalation_tier=2)
+    db.put_case(case)
+    filing = fakes.a_filing(case_id=case.case_id, tier=2, authority="AEE, BWSSB")
+    filing.signed_by = None
+    db.put_filing_once(filing)
+
+    message = digest.signature_requests(case, "en")[0]["message"]
+    assert "No action needed" not in message
+    assert "YES" in message
+
+    # And the same through compose(), which the digest itself uses.
+    assert "YES" in digest.compose(case, "hh_a", "en")
+
+
+def test_a_case_with_nothing_pending_is_not_asked_for_a_signature():
+    case = fakes.a_case(status=CaseStatus.TRACKING, household_ids=["hh_a"])
+    db.put_case(case)
+    assert digest.signature_requests(case, "en") == []
+    assert "No action needed" in digest.compose(case, "hh_a", "en")
+
+
+def test_the_digest_degrades_when_the_backend_cannot_answer(monkeypatch):
+    """core/db.py binds a RAISING stub for optional names, never None -- the
+    old `getattr(..., None)` guard could not fire, so a thin backend took the
+    whole digest down instead of just costing it a careful recipient pick."""
+    def unavailable(*_a, **_kw):
+        raise NotImplementedError("core.db.get_claim not implemented by this backend")
+
+    monkeypatch.setattr(db, "get_claim", unavailable)
+    case = fakes.a_case(household_ids=["hh_a", "hh_b"],
+                        claim_ids=["clm_1", "clm_2"])
+    db.put_case(case)
+    assert digest.choose_recipient(case) in {"hh_a", "hh_b"}

@@ -85,8 +85,16 @@ def create_table() -> bool:
     """
     ddb = _client()
 
-    existing = ddb.list_tables().get("TableNames", [])
-    if TABLE_NAME in existing:
+    # describe_table, not list_tables: the latter returns at most 100 names
+    # per page and was unpaginated here, so on an account with more than 100
+    # tables the check false-negatives and the script dies on
+    # ResourceInUseException -- an "idempotent" script that is only idempotent
+    # on small accounts.
+    try:
+        ddb.describe_table(TableName=TABLE_NAME)
+    except ddb.exceptions.ResourceNotFoundException:
+        pass
+    else:
         print("Table '" + TABLE_NAME + "' already exists at "
               + (ENDPOINT or "region " + REGION) + " -- nothing to do.")
         return False

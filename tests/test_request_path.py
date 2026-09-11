@@ -5,6 +5,8 @@ the other, every node wired. An integration deferred to Thursday eats Thursday.
 """
 from __future__ import annotations
 
+import copy
+
 from core import db
 from core.types import CaseStatus, Tail
 from graph.request_path import build_graph, run_request_path
@@ -189,7 +191,18 @@ def test_a_missing_ladder_still_gets_a_statutory_clock(monkeypatch):
     from agents import remedy
     from graph import request_path
 
-    _, entry, _citation = remedy.resolve(_a_claim_for(REPORT))
+    # DEEP COPY. agents.remedy caches parsed entries in a module-level table
+    # and lookup() hands out the cached object itself, so `entry.ladder = []`
+    # on the real one silently empties the ladder for every later caller in
+    # the process -- monkeypatch cannot undo a plain attribute assignment on a
+    # shared object. Found by Raghav in a merged-tree run: 7 of his Watchdog
+    # tests failed after this file ran and passed in isolation.
+    #
+    # Copying is the test behaving itself. The deeper defect -- a shared cache
+    # returning mutable references to curated domain objects -- is raised for
+    # Alakshendra in agents/remedy.py, not worked around here.
+    _, shared, _citation = remedy.resolve(_a_claim_for(REPORT))
+    entry = copy.deepcopy(shared)
     entry.ladder = []
     monkeypatch.setitem(
         request_path.NODES, "remedy",
@@ -212,3 +225,57 @@ def _trace():
     from graph.trace import CaseTrace
 
     return CaseTrace("c", VirtualClock(scale=86400.0, epoch=fakes.T0))
+
+
+def test_the_trace_is_bound_for_the_whole_request():
+    """A lane reached from the spine that was never handed the CaseTrace must
+    still record into this case's story. That is the whole reason the other
+    two trace formats grew."""
+    from graph import trace as trace_mod
+
+    seen = {}
+
+    def nosy(ctx):
+        seen["bound"] = trace_mod.current_trace()
+        trace_mod.record("PROBE", "somelane", "recorded without being handed a trace")
+        return "remedy: probed"
+
+    original = request_path_nodes()["remedy"]
+    try:
+        request_path_nodes()["remedy"] = lambda ctx: (nosy(ctx), original(ctx))[1]
+        out = run_request_path(REPORT)
+    finally:
+        request_path_nodes()["remedy"] = original
+
+    assert seen["bound"] is not None, "nothing was bound for the request"
+    statuses = [t["status"] for t in out["trace"]["transitions"]]
+    assert "PROBE" in statuses, "an unthreaded record() missed this case's trace"
+
+
+def test_the_trace_does_not_leak_past_the_request():
+    """A trace still bound after the request would collect the next case's
+    transitions."""
+    from graph import trace as trace_mod
+
+    assert trace_mod.current_trace() is None
+    run_request_path(REPORT)
+    assert trace_mod.current_trace() is None
+
+
+def test_recording_with_nothing_bound_still_uses_one_format(capsys):
+    """A Watchdog wake has no request context. It must still emit the shape the
+    Day 4 trace UI parses, or the UI parses three things."""
+    from graph import trace as trace_mod
+
+    t = trace_mod.record("ESCALATED", "watchdog", "tier 2 -> AEE, BWSSB",
+                         citation="Karnataka Sakala Services Act 2011")
+    printed = capsys.readouterr().out
+    assert t.status == "ESCALATED"
+    assert "ESCALATED" in printed and "watchdog" in printed
+    assert "[Karnataka Sakala Services Act 2011]" in printed
+
+
+def request_path_nodes():
+    from graph import request_path
+
+    return request_path.NODES

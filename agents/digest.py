@@ -100,12 +100,23 @@ def choose_recipient(case: Case) -> str:
 
 
 def _households_carrying_a_withheld_reason(case: Case) -> set[str]:
-    get_claim = getattr(db, "get_claim", None)
-    if get_claim is None:
-        return set()
-    withheld = set()
+    """Degrades to "nobody is flagged" when the backend cannot answer.
+
+    `getattr(db, "get_claim", None)` was wrong: core/db.py binds a stub that
+    RAISES for every optional name it cannot satisfy, precisely so a missing
+    function fails where you called it instead of returning None four layers
+    down. So the guard never fired, and on a backend without get_claim the
+    whole digest raised instead of just picking a recipient less carefully.
+
+    Catching NotImplementedError and nothing else, same rule as run_or_stub:
+    a real bug must still surface.
+    """
+    withheld: set[str] = set()
     for claim_id in case.claim_ids:
-        claim: Claim | None = get_claim(claim_id)
+        try:
+            claim: Claim | None = db.get_claim(claim_id)
+        except NotImplementedError:
+            return set()
         if claim is not None and claim.reason_withheld:
             withheld.add(claim.household_id)
     return withheld
@@ -121,16 +132,43 @@ def compose(case: Case, household_id: str, language: str) -> str:
     lang = language if language in _ASK else "en"
     recipient = choose_recipient(case)
 
-    if household_id == recipient and case.status == CaseStatus.DRAFTED:
-        return _ASK[lang].format(
-            service=case.service.value,
-            authority=case.authority or "the responsible body",
-        )
+    if household_id == recipient and _has_something_to_approve(case):
+        return ask_text(case, lang)
     return _STATUS[lang].format(
         service=case.service.value,
         segment=case.segment,
         status=case.status.value,
     )
+
+
+def ask_text(case: Case, language: str = "en") -> str:
+    """The question itself, with no status gate on it.
+
+    Split out because `compose()` used to gate the ask on
+    `status == DRAFTED`, and the signature queue composed through it -- so an
+    ESCALATING case with an unsigned tier-2 filing told the named person
+    "No action needed from you." A queue whose entire purpose is to ask
+    someone must never be able to say that.
+    """
+    lang = language if language in _ASK else "en"
+    return _ASK[lang].format(
+        service=case.service.value,
+        authority=case.authority or "the responsible body",
+    )
+
+
+def _has_something_to_approve(case: Case) -> bool:
+    """A draft awaiting signature, whatever tier the case has reached.
+
+    Status alone is the wrong question: a case escalates to ESCALATING and
+    still has an unsigned filing sitting under it.
+    """
+    if case.status == CaseStatus.DRAFTED:
+        return True
+    try:
+        return bool(db.unsigned_filings(case.case_id))
+    except NotImplementedError:
+        return False
 
 
 # ------------------------------------------------------- the capture step
@@ -152,7 +190,7 @@ def signature_requests(case: Case, language: str = "en") -> list[dict]:
             "tier": f.tier,
             "authority": f.authority,
             "ask": recipient,
-            "message": compose(case, recipient, language),
+            "message": ask_text(case, language),
         }
         for f in pending
     ]
