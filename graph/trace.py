@@ -15,6 +15,8 @@ Owner: Ali (platform).
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -96,3 +98,73 @@ class CaseTrace:
 
     def __str__(self) -> str:
         return self.render()
+
+
+# ------------------------------------------------- the trace in flight
+#
+# WHY THIS EXISTS (11 Sep): three trace formats had grown in parallel -- this
+# module's Transition, core/tags.py's key=value emit(), and a hand-rolled
+# print() in the Watchdog that copied this shape without using this class.
+#
+# That was structural, not careless. A CaseTrace is an object you have to
+# thread through, and the temporal path (an EventBridge wake) and the
+# institutions path are never handed one, so they printed instead. Telling
+# people to "use CaseTrace" without giving them a way to reach one just moves
+# the problem.
+#
+# So: bind the trace for the work in flight and let any lane record into it
+# without threading anything or importing this class.
+#
+# A ContextVar, NOT a module global. Two households reporting at once are two
+# threads (AgentCore runs sync entrypoints on a thread pool) and a plain global
+# would cross their stories -- the same bug that already bit the shared Graph
+# instance once this week.
+
+_CURRENT: ContextVar[CaseTrace | None] = ContextVar(
+    "panchayat_current_trace", default=None)
+
+
+def current_trace() -> CaseTrace | None:
+    """The trace collecting this unit of work, or None if nothing is bound."""
+    return _CURRENT.get()
+
+
+@contextmanager
+def use_trace(trace: CaseTrace):
+    """Bind `trace` for the duration of this block.
+
+    Always resets on the way out, including on an exception: a trace that
+    leaks past its request would collect another case's transitions.
+    """
+    token = _CURRENT.set(trace)
+    try:
+        yield trace
+    finally:
+        _CURRENT.reset(token)
+
+
+def record(status: str, agent: str, detail: str,
+           citation: str | None = None, stubbed: bool = False,
+           excluded: list[str] | None = None) -> Transition:
+    """Record into the trace in flight. Safe to call from anywhere.
+
+    With a trace bound this appends to it and stays silent -- the trace is
+    rendered once, at the end.
+
+    With nothing bound (a Watchdog wake, an institution desk) it still returns
+    a Transition in the SAME shape and prints it, because nobody else is going
+    to render it. One format either way, which is the point: the Day 4 trace UI
+    parses one thing.
+    """
+    trace = _CURRENT.get()
+    if trace is not None:
+        return trace.record(status, agent, detail, citation=citation,
+                            stubbed=stubbed, excluded=excluded)
+
+    from core.clock import get_clock
+
+    t = Transition(status=status, agent=agent, detail=detail,
+                   at=get_clock().now(), citation=citation, stubbed=stubbed,
+                   excluded=list(excluded or []))
+    print(t.line())
+    return t

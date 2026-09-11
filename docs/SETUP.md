@@ -90,7 +90,7 @@ The stream is what triggers Pattern Watch. Kartik needs it on from the start.
 
 | Tool | Version | Check |
 |---|---|---|
-| Python | 3.10+ (we have 3.12) | `python --version` |
+| Python | **3.12+, not 3.10 or 3.11** | `python --version` |
 | Git | any recent | `git --version` |
 | AWS CLI v2 | latest | `aws --version` |
 | Node | 18+ (Ali only, for the trace UI) | `node --version` |

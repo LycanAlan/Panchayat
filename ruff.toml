@@ -1,0 +1,68 @@
+# Panchayat lint gate.
+#
+# This file exists so that "ruff check . is clean" -- which is in the
+# definition of done for every module -- means the SAME thing on four
+# laptops. It did not before: requirements.txt asked for `ruff>=0.16.6`,
+# an unbounded lower bound on a linter whose DEFAULT RULE SET CHANGES
+# BETWEEN RELEASES. Four people each ran a different ruff, each honestly
+# reported clean, and the merged tree had 42 errors. The version is now
+# pinned with `==` in requirements.txt; raise a bump in the group.
+#
+# The selection below is deliberately about BUGS, not formatting. Rules
+# that would have forced a retro-fix across four people's files on day 3
+# were left out on purpose -- the notes say which and why.
+
+line-length = 120       # we actually write to ~79 (p99 = 86). This is a
+                        # ceiling for genuinely unreadable lines, not a
+                        # style target: 0 violations today, so it costs
+                        # nobody a reformat and still catches a monster.
+target-version = "py311"
+
+[lint]
+select = [
+    "F",    # pyflakes -- undefined names, unused imports. Real bugs.
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # import sorting, so merges stop conflicting on import blocks
+    "B",    # bugbear -- mutable default args, loop-variable capture
+    "BLE",  # blind except. CLAUDE.md calls a swallowed exception one of
+            # the bugs that actually sinks us; this is the check for it.
+    "DTZ",  # see below -- this is hard rule 1, enforced by the linter
+]
+
+ignore = [
+    # ---------------------------------------------------------- DTZ001
+    # DTZ is here for ONE reason: hard rule 1 says nothing calls
+    # datetime.utcnow(), and until now that was a convention people had
+    # to remember. With DTZ selected it is a gate:
+    #
+    #   datetime.utcnow()             -> DTZ003, FAILS
+    #   datetime.now()                -> DTZ005, FAILS
+    #   datetime.now(timezone.utc)    -> passes  (RealClock's real line)
+    #   datetime(2026, 9, 7, 21, 40)  -> DTZ001, IGNORED, see below
+    #
+    # DTZ001 flags constructing a naive datetime. That is our documented
+    # convention (naive UTC everywhere, core/fakes.py T0), not a defect,
+    # so it is ignored -- and ONLY it. The two rules that enforce the
+    # hard rule stay on.
+    "DTZ001",
+]
+
+# Rules deliberately NOT selected, so nobody re-adds them without knowing
+# what it costs:
+#   UP   -- 17 hits, all Optional[X] -> X | None inside core/types.py,
+#           which hard rule 10 FREEZES. A lint config that silently
+#           rewrites a frozen file is the config breaking a hard rule.
+#   C4   -- 22 hits, all dict(...) -> {...}. scaffold_stubs.py is a
+#           run-once day-1 generator and the kwargs form reads better
+#           there. No bug, no benefit.
+#   SIM  -- one hit, contextlib.suppress in another lane's file. Style.
+#   E501 at 88 -- 85 hits across all four lanes. See line-length above.
+
+[lint.per-file-ignores]
+# core/types.py is FROZEN (hard rule 10: raise changes in the group
+# before editing). Its import block is one `ruff check --fix` away from
+# sorted, and that fix is a real diff in the file four people code
+# against. Taking it needs the group, not a lint config -- so it is
+# ignored here, visibly, until someone opens that file on purpose.
+"core/types.py" = ["I001"]

@@ -17,9 +17,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from core.types import (Case, CaseStatus, Claim, ConsentGrant, ConsentScope,
-                        Filing, HouseholdPosition, MemberContext, Priority,
-                        Service, Tail, new_id)
+from core.types import (
+    Case,
+    CaseStatus,
+    Claim,
+    ConsentGrant,
+    ConsentScope,
+    Filing,
+    HouseholdPosition,
+    MemberContext,
+    Priority,
+    Service,
+    Tail,
+    new_id,
+)
 
 SEGMENT = "ward12-4thcross"
 FEEDER = "bwssb-tm-14"

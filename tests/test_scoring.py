@@ -397,3 +397,34 @@ def test_the_public_semantic_term_can_say_it_did_not_compute():
                           fakes.a_claim(embedding=[-1.0, 0.0])) == 0.0
     assert math.isclose(scoring.cosine(fakes.a_claim(embedding=[1.0, 2.0]),
                                        fakes.a_claim(embedding=[10.0, 20.0])), 1.0)
+
+
+def test_feeder_comparison_ignores_case_and_surrounding_space():
+    """The same fix as the segment one, on the field that carries four times
+    the weight.
+
+    feeder_id is the strongest signal in the table -- a match is worth 1.0 on
+    its own -- and it arrives from routing and from intake text, so casing is
+    as normal here as it is in a segment. Compared byte-exact, two houses on
+    one trunk main score topology 0.0 and renormalise to 0.385, well under
+    TAU: the identical never-clusters failure, through the field that matters
+    most. Normalising the weaker signal and not this one was the bug.
+    """
+    a = fakes.a_claim(feeder_id="bwssb-tm-14", segment="ward12-4thcross")
+    for variant in ("BWSSB-TM-14", " bwssb-tm-14 ", "Bwssb-Tm-14"):
+        b = fakes.a_claim(feeder_id=variant, segment="ward12-9thmain",
+                          household_id="hh2")
+        assert scoring.topology_score(a, b) == 1.0, variant
+
+    # A genuinely different trunk main still scores zero.
+    assert scoring.topology_score(
+        a, fakes.a_claim(feeder_id="bwssb-tm-22",
+                         segment="ward12-9thmain")) == 0.0
+
+
+def test_two_unrouted_claims_do_not_share_a_blank_feeder():
+    """Same trap as the blank segment: the dataclass default must not read as
+    agreement between two claims that have not been routed yet."""
+    a = fakes.a_claim(feeder_id="", segment="")
+    b = fakes.a_claim(feeder_id="   ", segment="", household_id="hh2")
+    assert scoring.topology_score(a, b) == 0.0

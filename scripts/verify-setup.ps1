@@ -37,8 +37,14 @@ Write-Host "  ---------------------"
 Write-Host ""
 
 # --- toolchain ---
+# 3.12+, not 3.10 or 3.11: numpy>=2.5.3 in requirements.txt needs 3.12+, and
+# this check used to accept both -- Kartik hit "pip install -r requirements.txt"
+# hard-failing on a 3.11 default interpreter with this script reporting PASS
+# five lines above it. This still checks whatever "python" resolves to on
+# PATH, same as before -- see docs/SETUP.md's PATH-shadowing note (MSYS2,
+# Anaconda) if that is not the interpreter you expect.
 $py = (& python --version 2>&1) -join ""
-Check "python 3.10+" ($py -match "3\.(1[0-9]|[2-9][0-9])") $py "install Python 3.12"
+Check "python 3.12+" ($py -match "3\.(1[2-9]|[2-9][0-9])") $py "install Python 3.12 -- 3.10 and 3.11 will not satisfy requirements.txt"
 
 $awsv = (& aws --version 2>&1) -join ""
 Check "aws cli v2" ($awsv -match "aws-cli/2") $awsv "winget install -e --id Amazon.AWSCLI, then reopen the terminal"

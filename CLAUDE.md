@@ -301,4 +301,10 @@ those are the bugs that actually sink us.
 - The stub's `NotImplementedError` is gone
 - It takes time from `Clock`, not the system clock
 - It has one pytest in `tests/` that runs without AWS credentials
-- `ruff check .` is clean
+- `ruff check .` is clean -- against `ruff.toml`, with `ruff==0.16.6` from
+  `requirements.txt`. Both are pinned deliberately: ruff's default rule set
+  changes between releases, so before this existed the four of us each ran a
+  different ruff, each honestly reported clean, and the merged tree had 42
+  errors. The selection is about bugs, not formatting, and `DTZ` is in it so
+  that **hard rule 1 is now enforced by the linter** rather than remembered.
+  Bumping either is a group call.

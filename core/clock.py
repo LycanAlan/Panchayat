@@ -30,6 +30,15 @@ WATCHDOG_LAMBDA_ARN = os.environ.get("WATCHDOG_LAMBDA_ARN", "")
 SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN", "")
 
 
+def _utcnow() -> datetime:
+    """Naive UTC, always. core/types.py's defaults (Claim.created_at,
+    ConsentGrant.granted_at, ...) are naive, and ConsentGrant.is_live() -- which
+    the Warden calls -- compares against them directly. An aware datetime here
+    raises TypeError the first time it meets one of those. This is also the
+    Python 3.13-safe replacement for the deprecated datetime.utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class Clock(Protocol):
     """Everything that needs time takes one of these. Nothing calls datetime.utcnow()."""
 
@@ -54,11 +63,7 @@ class RealClock:
         self._scheduler = scheduler_client
 
     def now(self) -> datetime:
-        # utcnow() is deprecated and slated for removal. This returns the same
-        # naive-UTC value, which is what the rest of the codebase compares
-        # against -- going timezone-aware here would break every comparison
-        # with a naive datetime, so that is a change to make deliberately.
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        return _utcnow()
 
     def _client(self):
         if self._scheduler is None:
@@ -86,8 +91,8 @@ class RealClock:
     def cancel(self, handle: str) -> None:
         try:
             self._client().delete_schedule(Name=handle)
-        except Exception:
-            pass  # already fired and self-deleted
+        except Exception:  # noqa: BLE001, S110 -- already fired and self-deleted
+            pass
 
 
 class VirtualClock:
@@ -100,7 +105,7 @@ class VirtualClock:
     def __init__(self, scale: float = 86400.0, epoch: datetime | None = None,
                  on_fire: Callable[[str, str], None] | None = None):
         self.scale = scale
-        self.epoch = epoch or datetime.now(timezone.utc).replace(tzinfo=None)
+        self.epoch = epoch or _utcnow()
         self._t0 = time.monotonic()
         self._handles: dict[str, asyncio.TimerHandle] = {}
         self._n = 0
@@ -123,7 +128,10 @@ class VirtualClock:
         real_delay = max(0.0, virtual_delay / self.scale)
         self._n += 1
         handle = "vclock-" + str(self._n)
-        loop = asyncio.get_event_loop()
+        # get_running_loop(), not get_event_loop(): the latter is deprecated
+        # with no running loop on 3.13, and call_later only ever fires while a
+        # loop is actually running. Callers schedule() from inside one.
+        loop = asyncio.get_running_loop()
         self._handles[handle] = loop.call_later(
             real_delay, lambda: self._fire(case_id, action)
         )

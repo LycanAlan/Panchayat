@@ -187,8 +187,12 @@ def evaluate(complaints=COMPLAINTS, extract=keyword_extract) -> dict:
     return {
         "total": total,
         "correct": resolved_hit + declined_hit,
-        "accuracy": (resolved_hit + declined_hit) / total,
-        "correct_body_rate": resolved_hit / resolved_total,
+        # `complaints` is a caller-supplied parameter, so a corpus that is
+        # empty or entirely unroutable is reachable. A gate that dies with
+        # ZeroDivisionError instead of reporting a number is a gate nobody
+        # can read the result of.
+        "accuracy": (resolved_hit + declined_hit) / total if total else 0.0,
+        "correct_body_rate": resolved_hit / resolved_total if resolved_total else 0.0,
         "declined_correctly": declined_hit,
         "declined_total": declined_total,
         "failures": failures,

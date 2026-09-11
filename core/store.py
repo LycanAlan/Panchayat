@@ -284,16 +284,41 @@ def _feeder_index_key(feeder_id: str, service, created_at: datetime,
     }
 
 
+#: Provenance token marking a case that was split off another. Lives in
+#: case.merged_from beside the household:claim tokens, in its own namespace --
+#: household ids are "hh_...", so the two cannot collide.
+_SPLIT_FROM = "split_from:"
+
+
+def _is_split_child(case: Case) -> bool:
+    return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
 def _feeder_index_item(case: Case) -> dict | None:
     """The row that lets recurrence_count() be a Query instead of a Scan.
 
-    None until the case has a feeder. That is what closes the orphan: the
-    ""-to-routed transition is the only key move a case makes in its normal
-    life, and there is nothing at the "" key to leave behind because we never
-    wrote one. An unrouted case is not a prior case on any feeder, so it is
-    also the right answer to the question recurrence_count asks.
+    None in two situations, both of which mean "this case is not a prior
+    failure on this feeder".
+
+    NO FEEDER YET. That is what closes the orphan: the ""-to-routed transition
+    is the only key move a case makes in its normal life, and there is nothing
+    at the "" key to leave behind because we never wrote one. An unrouted case
+    is genuinely not a prior case on any feeder either.
+
+    SPLIT OFF ANOTHER CASE. recurrence_count answers "how many prior failures
+    on this trunk main", and a split does not create a failure -- it corrects
+    how we grouped one. The parent always survives a split and keeps its row,
+    so the incident stays counted exactly once. Without this, merge/split/merge
+    /split was a RATCHET: each cycle stranded another child with its own row
+    and the count climbed without bound while describing one incident,
+    drifting in the direction that manufactures a pattern. Hard rule 6 says
+    merges are reversible; a reversal that moves the number is not.
+
+    The bias is deliberate. If a split child really was a separate incident,
+    this under-counts by one -- and under-counting costs leverage, while
+    over-counting fabricates the evidence an escalation is built on.
     """
-    if not case.feeder_id:
+    if not case.feeder_id or _is_split_child(case):
         return None
     d = _feeder_index_key(case.feeder_id, case.service, case.created_at,
                           case.case_id)
@@ -387,9 +412,16 @@ def open_cases(service: Service | None = None) -> list[Case]:
 
 
 def _claims_of(case: Case, household_id: str) -> list[str]:
-    """That household's claims on this case, read back out of the provenance."""
+    """That household's claims on this case, read back out of the provenance.
+
+    Skips the _SPLIT_FROM token explicitly. It cannot collide today -- a
+    household id is "hh_..." and never "split_from" -- but merged_from now
+    carries two namespaces and a reader that only works by luck is a trap for
+    whoever adds the third.
+    """
     return [t.split(":", 1)[1] for t in case.merged_from
-            if t.startswith(household_id + ":")]
+            if not t.startswith(_SPLIT_FROM)
+            and t.startswith(household_id + ":")]
 
 
 def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:
@@ -539,6 +571,10 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
                 authority=before.authority,
                 escalation_tier=before.escalation_tier,
                 sla_deadline=before.sla_deadline, created_at=before.created_at,
+                # Hard rule 6: provenance, so the lineage is readable and the
+                # feeder index knows this incident is already counted under
+                # the parent. Durable, so a later put_case cannot lose it.
+                merged_from=[_SPLIT_FROM + case_id],
             )
             after = replace(
                 before,
@@ -681,11 +717,27 @@ def revoke_consent(grant_id: str, now: datetime) -> bool:
     ptr = _t().get_item(Key={"PK": "GRANT#" + grant_id, "SK": "META"}).get("Item")
     if not ptr:
         return False
-    _t().update_item(
-        Key={"PK": "HH#" + ptr["household_id"], "SK": ptr["consent_sk"]},
-        UpdateExpression="SET revoked_at = :r",
-        ExpressionAttributeValues={":r": now.isoformat()},
-    )
+    try:
+        # CONDITIONAL, because update_item UPSERTS. With the consent row gone
+        # and its pointer alive -- a partial reset, a hand-deleted row, a
+        # pointer that outlived what it points at -- an unconditional update
+        # CREATES an item carrying nothing but revoked_at. This function would
+        # then report True having marked nothing, and every later
+        # live_consents() for that household would match the stub through
+        # begins_with("CONSENT#") and die in _consent_from on KeyError:
+        # 'grant_id'. One household's consent log permanently unreadable, from
+        # a call that said it succeeded, on the record that has to hold up
+        # eleven weeks later. Forging a grant nobody made is the worse half.
+        _t().update_item(
+            Key={"PK": "HH#" + ptr["household_id"], "SK": ptr["consent_sk"]},
+            UpdateExpression="SET revoked_at = :r",
+            ConditionExpression="attribute_exists(SK)",
+            ExpressionAttributeValues={":r": now.isoformat()},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
     return True
 
 

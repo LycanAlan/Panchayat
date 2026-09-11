@@ -28,11 +28,11 @@ from datetime import timedelta
 import yaml
 
 from core.clock import get_clock
+from core.tags import Tag, emit
 from core.types import InstitutionProfile
+from institutions.protocol import DeskReply, Outcome
 
 PROFILE_DIR = pathlib.Path(__file__).resolve().parent / "profiles"
-
-UNREACHABLE = "UNREACHABLE"
 
 
 def load_profile(name: str) -> InstitutionProfile:
@@ -69,6 +69,7 @@ class Ticket:
     responds_at: object
     sla_deadline: object
     will_breach: bool
+    will_false_close: bool          # decided at accept(), not at close()
     status: str = "open"            # open | closed | rejected
     actually_resolved: bool = False
     reason: str = ""
@@ -94,35 +95,52 @@ class Desk:
         self._n += 1
         return self.profile.name.upper() + "-" + str(100000 + self._n)
 
-    def accept(self, case_id: str, service: str, body: str, idempotency_key: str) -> str:
-        """File a grievance. Returns a ticket reference, a refusal, or UNREACHABLE."""
+    def accept(self, case_id: str, service: str, body: str,
+               idempotency_key: str) -> DeskReply:
+        """Register a grievance, refuse it, or be unreachable."""
         # Idempotency is checked before any random draw. A retrying Watchdog
         # must get the stored answer, not a second roll of the dice and a
         # duplicate grievance that reads as spam.
         if idempotency_key in self._by_key:
             existing = self.tickets[self._by_key[idempotency_key]]
-            return "DUPLICATE " + existing.ref + " status=" + existing.status
+            emit(Tag.DESK, "duplicate", desk=self.profile.name,
+                 case_id=case_id, ref=existing.ref)
+            return DeskReply(Outcome.DUPLICATE, existing.ref,
+                             "status=" + existing.status)
 
         if self._rng.random() < self.profile.unreachable_rate:
             # Stand-in for portal downtime. The higher-fidelity version is to
             # kill this process; the caller must pause the SLA clock either way
             # rather than run it against a filing that never landed.
-            return UNREACHABLE + ": portal not responding"
+            emit(Tag.DESK, "unreachable", desk=self.profile.name, case_id=case_id)
+            return DeskReply(Outcome.UNREACHABLE, detail="portal not responding")
 
         if self.profile.accepts_services and service not in self.profile.accepts_services:
-            return "REJECTED: " + service + " is not handled by this office"
+            emit(Tag.DESK, "wrong_office", desk=self.profile.name, service=service)
+            return DeskReply(Outcome.REJECTED,
+                             detail=service + " is not handled by this office")
 
         missing = [f for f in ("duration", "affected") if f not in body.lower()]
         if missing and self._rng.random() < self.profile.reject_malformed_rate:
-            return "REJECTED: incomplete particulars, resubmit with " + ", ".join(missing)
+            emit(Tag.DESK, "rejected", desk=self.profile.name, case_id=case_id,
+                 reason="incomplete")
+            return DeskReply(Outcome.REJECTED, detail="incomplete particulars,"
+                             " resubmit with " + ", ".join(missing))
         if self._rng.random() < self.profile.reject_malformed_rate:
             # Refused on a pretext. This happens to well-formed filings too, and
             # a system that only handles honest rejections does not survive a
             # real counterparty.
-            return "REJECTED: reference number does not match our records"
+            emit(Tag.DESK, "rejected", desk=self.profile.name, case_id=case_id,
+                 reason="pretext")
+            return DeskReply(Outcome.REJECTED,
+                             detail="reference number does not match our records")
 
         now = self._clock.now()
         will_breach = self._rng.random() < self.profile.breach_rate
+        # Decided here, once, rather than in close(). A ticket's fate must be a
+        # function of the ticket, not of how many times status() happened to
+        # poll it first -- see the regression test for why that matters.
+        will_false_close = self._rng.random() < self.profile.false_closure_rate
         ticket = Ticket(
             ref=self._next_ref(),
             case_id=case_id,
@@ -132,47 +150,76 @@ class Desk:
             responds_at=now + timedelta(hours=self.profile.mean_response_hours),
             sla_deadline=now + timedelta(days=self.profile.sla_days),
             will_breach=will_breach,
+            will_false_close=will_false_close,
         )
         self.tickets[ticket.ref] = ticket
         self._by_key[idempotency_key] = ticket.ref
-        return "ACCEPTED " + ticket.ref + " sla_days=" + str(self.profile.sla_days)
+        emit(Tag.DESK, "accepted", desk=self.profile.name, case_id=case_id,
+             ref=ticket.ref, will_breach=will_breach)
+        return DeskReply(Outcome.ACCEPTED, ticket.ref,
+                         "sla_days=" + str(self.profile.sla_days))
 
-    def reject(self, ref: str, reason: str) -> str:
-        """Explicit refusal with a legible reason. The trace UI shows this string."""
+    def reject(self, ref: str, reason: str) -> DeskReply:
+        """Explicit refusal with a legible reason. The trace UI shows this string.
+
+        Rejecting a ticket this desk previously accepted is deliberate, and so
+        is the reply reading `filed=False` afterwards. A row still exists in
+        this office's records, but there is no live filing being processed --
+        the household has to fix what was wrong and resubmit, and the clock
+        must not run in the meantime. That is what the caller needs to know.
+        """
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "REJECTED: no such reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         ticket.status = "rejected"
         ticket.reason = reason
-        return "REJECTED " + ref + ": " + reason
+        # Release the idempotency key. A rejection is an instruction to fix
+        # something and resubmit, and the corrected filing carries the same
+        # key (case|authority|tier, which a correction does not change). Left
+        # mapped, that resubmission came back DUPLICATE -- reading as filed,
+        # not pausing the clock, and never actually reaching this desk. A real
+        # office issues a new ticket number for a corrected complaint.
+        self._by_key = {k: v for k, v in self._by_key.items() if v != ref}
+        emit(Tag.DESK, "rejected", desk=self.profile.name, ref=ref, reason=reason)
+        return DeskReply(Outcome.REJECTED, ref, reason)
 
-    def close(self, ref: str) -> str:
-        """Close a ticket. Sometimes without the work having been done."""
+    def close(self, ref: str) -> DeskReply:
+        """Close a ticket. Sometimes without the work having been done.
+
+        Draws no randomness: whether this closure is honest was decided once,
+        at accept() time. Deciding it here made a ticket's outcome depend on
+        how many times it had been polled before it closed, which silently
+        broke reproducibility for Kartik's rate sweep.
+        """
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "REJECTED: no such reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         if ticket.status == "closed":
-            return "CLOSED " + ref + ": already closed"
+            return DeskReply(Outcome.CLOSED, ref, "already closed")
 
-        false_closure = self._rng.random() < self.profile.false_closure_rate
         ticket.status = "closed"
-        ticket.actually_resolved = not false_closure
-        ticket.reason = "resolved" if not false_closure else "resolved -- supply restored"
+        ticket.actually_resolved = not ticket.will_false_close
+        ticket.reason = ("resolved" if ticket.actually_resolved
+                         else "resolved -- supply restored")
         # On a false closure the desk states the work is done and it is not.
         # The Watchdog disputes this with live claims from other households,
         # which is ground truth a single citizen could never hold.
-        return "CLOSED " + ref + ": " + ticket.reason
+        emit(Tag.DESK, "closed", desk=self.profile.name, ref=ref,
+             actually_resolved=ticket.actually_resolved)
+        return DeskReply(Outcome.CLOSED, ref, ticket.reason)
 
-    def status(self, ref: str) -> str:
+    def status(self, ref: str) -> DeskReply:
         ticket = self.tickets.get(ref)
         if ticket is None:
-            return "UNKNOWN reference " + ref
+            return DeskReply(Outcome.UNKNOWN, detail="no such reference " + ref)
         now = self._clock.now()
         if ticket.status == "open" and not ticket.will_breach and now >= ticket.responds_at:
             return self.close(ticket.ref)
         if ticket.status == "open" and now >= ticket.sla_deadline:
-            return "OPEN " + ref + ": past the " + str(self.profile.sla_days) + "-day window"
-        return ticket.status.upper() + " " + ref + ": " + (ticket.reason or "in queue")
+            return DeskReply(Outcome.OPEN, ref, "past the "
+                             + str(self.profile.sla_days) + "-day window")
+        return DeskReply(Outcome(ticket.status.upper()), ref,
+                         ticket.reason or "in queue")
 
 
 def build_agent_factory(profile: InstitutionProfile):
@@ -181,25 +228,27 @@ def build_agent_factory(profile: InstitutionProfile):
 
     desk = Desk(profile)  # one desk per process, shared across A2A contexts
 
+    # The tools are the wire boundary, so they render the reply to text. Every
+    # one returns the same grammar: OUTCOME [ref][: detail].
     @tool
     def accept(case_id: str, service: str, body: str, idempotency_key: str) -> str:
         """Register an incoming grievance and issue a ticket reference."""
-        return desk.accept(case_id, service, body, idempotency_key)
+        return desk.accept(case_id, service, body, idempotency_key).render()
 
     @tool
     def reject(ref: str, reason: str) -> str:
         """Refuse a filing, stating a reason the citizen can act on."""
-        return desk.reject(ref, reason)
+        return desk.reject(ref, reason).render()
 
     @tool
     def close(ref: str) -> str:
         """Mark a ticket closed."""
-        return desk.close(ref)
+        return desk.close(ref).render()
 
     @tool
     def status(ref: str) -> str:
         """Report the current state of a ticket."""
-        return desk.status(ref)
+        return desk.status(ref).render()
 
     system_prompt = (
         "You are the " + profile.name + " grievance desk. You handle: "
@@ -214,20 +263,19 @@ def build_agent_factory(profile: InstitutionProfile):
         "process."
     )
 
-    model_id = os.environ.get("MODEL_SMALL", "")
-
     def make_agent(context_id: str):
-        kwargs = {}
-        if model_id:
-            from strands.models import BedrockModel
-            kwargs["model"] = BedrockModel(model_id=model_id)
+        # "cheap", not "reason". A desk picking which of four tools to call is
+        # classification, not deliberation -- the judgement in this lane lives
+        # in the profile's calibrated rates, not in the model.
+        from core.models import get_model
+
         return Agent(
             name=profile.name,
             description=profile.name + " grievance desk",
             system_prompt=system_prompt,
             tools=[accept, reject, close, status],
             callback_handler=None,
-            **kwargs,
+            model=get_model("cheap"),
         )
 
     return make_agent
@@ -242,10 +290,16 @@ def serve(name: str) -> None:
     from strands.multiagent.a2a import A2AServer
 
     profile = load_profile(name)
+    # host is where we BIND; http_url is what the agent card ADVERTISES, and an
+    # A2A client dials whatever the card says. Advertising 0.0.0.0 makes the
+    # card fetch succeed and every actual call fail with ConnectError, which
+    # reads like the desk is down rather than like a config error.
+    public_host = os.environ.get("PANCHAYAT_PUBLIC_HOST", "localhost")
     A2AServer(
         agent_factory=build_agent_factory(profile),
-        host="0.0.0.0",
+        host=os.environ.get("PANCHAYAT_BIND_HOST", "0.0.0.0"),
         port=profile.port,
+        http_url="http://" + public_host + ":" + str(profile.port),
     ).serve()
 
 
