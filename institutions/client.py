@@ -245,3 +245,66 @@ def build_filing_tool(client: InstitutionClient | None = None):
                                         idempotency_key, signed_by).render()
 
     return file_with_authority
+
+
+def build_submit(client: InstitutionClient | None = None,
+                 service: str = "water"):
+    """Adapter for the Watchdog's `submit: Callable[[Filing], bool]` seam.
+
+    It lives in this file and not in `agents/watchdog.py` on purpose: the
+    temporal lane must not import the institutions lane. The A2A boundary is
+    also the lane boundary, and an import across it is the first step to the
+    Watchdog knowing what a DeskReply is.
+
+    WHY IT COLLAPSES ON `reply.filed`
+    The obvious alternative, `should_pause_sla is False`, is wrong, and wrong
+    in the one direction that matters. The two agree on ACCEPTED, DUPLICATE,
+    REJECTED and UNREACHABLE, and disagree on the rest -- including
+    NEEDS_HUMAN, where it yields True. NEEDS_HUMAN is exactly what an unsigned
+    filing returns under hard rule 4, which today is every filing, because
+    nothing captures a signature yet. So that rule would report every unsigned
+    filing as successfully filed, advance the tier, and start a statutory
+    clock against a submission that never left the building. `filed` is true
+    only when a ticket exists on the other side.
+
+    NOTHING IS LOST TO THE BOOL
+    The reply's reference and rendered text are written back onto the Filing,
+    which `climb()` persists with `put_filing_once()` on the next line. The
+    bool is the control signal; the Filing keeps the detail.
+
+    `service` is a parameter because a Filing does not carry one and reading
+    the Case for it would mean importing our storage into this lane. The
+    institutional tail is water-only in this build, so the default is honest
+    rather than a guess; pass it explicitly when that stops being true.
+    """
+    from core.clock import get_clock
+    from core.types import Filing
+
+    bound = client or InstitutionClient()
+
+    def submit(filing: Filing) -> bool:
+        reply = bound.file_for_authority(
+            authority=filing.authority,
+            case_id=filing.case_id,
+            service=service,
+            body=filing.body,
+            idempotency_key=filing.idempotency_key or filing.compute_key(),
+            signed_by=filing.signed_by or "",
+        )
+
+        if reply.ref:
+            filing.external_ref = reply.ref
+        filing.response = reply.render()
+        if reply.filed:
+            filing.submitted_at = get_clock().now()
+
+        emit(Tag.FILING, "submitted", case_id=filing.case_id, tier=filing.tier,
+             authority=filing.authority, outcome=reply.outcome.value,
+             ref=reply.ref or None, filed=reply.filed,
+             # Surfaced so a retry that can never succeed is diagnosable
+             # rather than looking like portal downtime in the trace.
+             needs_human=reply.needs_human or None,
+             retryable=reply.should_retry or None)
+        return reply.filed
+
+    return submit

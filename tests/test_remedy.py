@@ -375,3 +375,67 @@ def test_the_composed_body_satisfies_the_desks_own_completeness_check():
     profile.reject_malformed_rate = 0.0   # isolate the keyword check from luck
     reply = Desk(profile).accept(case.case_id, "water", body, "idem-compose-1")
     assert reply.outcome.value == "ACCEPTED"
+
+
+# ------------------------------------------------- the table is not shared state
+
+def test_a_caller_mutating_an_entry_cannot_corrupt_the_table():
+    # The blocking bug. lookup() returned the cached object itself, so one
+    # caller emptying a ladder stalled climb() for every later case in the
+    # process -- and invisibly, because the next lookup() still succeeded and
+    # just returned the corrupted row. It cost 7 Watchdog tests in a merged
+    # tree while every lane passed in isolation.
+    first = lookup(Service.WATER, "ward12-4thcross")
+    first.authority = "CORRUPTED"
+    first.ladder.clear()
+    first.required_fields.append("injected")
+    first.not_authority.append("injected")
+
+    second = lookup(Service.WATER, "ward12-4thcross")
+    assert second is not first
+    assert second.authority == "BWSSB"
+    assert [s.tier for s in second.ladder] == [1, 2, 3, 4]
+    assert "injected" not in second.required_fields
+    assert "injected" not in second.not_authority
+
+
+def test_mutating_a_step_cannot_corrupt_the_table():
+    # The ladder is a list of objects. Copying the list but sharing the steps
+    # would leave exactly the same hole one level down.
+    entry = lookup(Service.WATER, "ward12-4thcross")
+    entry.ladder[0].authority = "CORRUPTED"
+    entry.ladder[0].window_days = 999
+
+    fresh = lookup(Service.WATER, "ward12-4thcross")
+    assert fresh.ladder[0].authority != "CORRUPTED"
+    assert fresh.ladder[0].window_days != 999
+
+
+def test_iterating_the_whole_table_cannot_corrupt_it_either():
+    table = load_table()
+    table[("water", "ward12-4thcross")].ladder.clear()
+    assert [s.tier for s in lookup(Service.WATER, "ward12-4thcross").ladder] == [1, 2, 3, 4]
+
+
+# --------------------------------------------- the shape decision 02 rests on
+
+def test_every_ladder_is_contiguous_from_tier_one():
+    # Decision 02 ruled the divergent authority/window fallbacks are dead code
+    # BECAUSE no curated ladder skips a tier -- so the step lookup never
+    # returns None on a reachable path. Nothing enforced that. If someone adds
+    # a service whose ladder starts at 2 or skips 3, the request path silently
+    # files against the umbrella body while the Watchdog stalls, and the only
+    # thing standing between us and that is this test.
+    for (_service, segment), entry in load_table().items():
+        tiers = [s.tier for s in entry.ladder]
+        assert tiers == sorted(tiers), segment + " ladder is out of order"
+        assert tiers == list(range(1, len(tiers) + 1)), (
+            segment + " ladder is " + str(tiers)
+            + ", which is not contiguous from tier 1. Decision 02 assumes it is."
+        )
+
+
+def test_the_whole_table_is_the_shape_decision_02_assumes():
+    table = load_table()
+    assert len(table) == 31, "decision 02 was ruled against 31 curated entries"
+    assert all([s.tier for s in e.ladder] == [1, 2, 3, 4] for e in table.values())

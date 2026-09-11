@@ -19,6 +19,7 @@ next_step() -- so nothing outside this file has to know the classes exist.
 
 from __future__ import annotations
 
+import copy
 import pathlib
 
 import yaml
@@ -152,6 +153,13 @@ class JurisdictionTable:
 
     def lookup(self, service, segment: str,
                feeder_id: str = "") -> JurisdictionEntry | None:
+        """Returns a COPY. The curated table is process-wide state, and a
+        caller that mutates what it was handed would corrupt it for everyone
+        else -- an emptied ladder stalls climb() on every later case, and the
+        failure is invisible because the next lookup() succeeds and simply
+        returns the corrupted row. This cost 7 Watchdog tests in a merged tree
+        while passing in isolation. 24 microseconds is the right price.
+        """
         key = (Service(service).value, (segment or "").strip().lower())
         entry = self.entries.get(key)
         if entry is None:
@@ -165,7 +173,7 @@ class JurisdictionTable:
                  claimed=feeder_id, curated=entry.feeder_id)
             return None
         emit(Tag.JURISDICTION, "hit", segment=key[1], authority=entry.authority)
-        return entry
+        return copy.deepcopy(entry)
 
     def ladder_for(self, entry: JurisdictionEntry) -> EscalationLadder:
         return EscalationLadder(entry.ladder)
@@ -291,9 +299,14 @@ _default = JurisdictionTable()
 # ---------------------------------------------------------------------------
 
 def load_table(directory: pathlib.Path | None = None) -> dict[tuple[str, str], JurisdictionEntry]:
-    """Read every jurisdiction YAML. Cached -- pass a directory to bypass the cache."""
+    """Read every jurisdiction YAML. Cached -- pass a directory to bypass the cache.
+
+    Also returns copies, for the same reason lookup() does. A caller iterating
+    the table to inspect it is exactly as able to mutate a row as one that
+    looked a single row up, and the corruption is just as process-wide.
+    """
     if directory is None:
-        return _default.entries
+        return copy.deepcopy(_default.entries)
     return JurisdictionTable(directory).entries
 
 
