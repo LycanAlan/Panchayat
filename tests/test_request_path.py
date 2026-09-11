@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import copy
 
-from core import db
-from core.types import CaseStatus, Tail
+from core import db, fakes
+from core.types import CaseStatus, Service, Tail
 from graph.request_path import build_graph, run_request_path
 
 REPORT = {
@@ -279,3 +279,49 @@ def request_path_nodes():
     from graph import request_path
 
     return request_path.NODES
+def test_routing_fields_reach_the_claim_even_when_the_warden_leaves_them_blank(monkeypatch):
+    """The real Warden's minimise() only sees what is inside the membrane, and
+    where the house sits is not in there -- so it returns segment="",
+    feeder_id="" and service at its dataclass default, by documented design.
+    Reproduced against agents.warden.minimise() during review: a household
+    position with no routing info comes back as segment='' feeder_id=''
+    service=Service.WATER (default) every time.
+
+    Without this backfill every claim routes on an empty segment and remedy
+    resolves nothing, no matter what was actually reported -- silently,
+    because UNROUTED reads as a legitimate answer rather than a bug.
+    """
+    from agents import warden
+
+    def bare_minimise(position):
+        # What the real Warden actually returns for routing fields today --
+        # verified against agents/warden.py, not assumed.
+        return fakes.a_claim(household_id=position.household_id,
+                             segment="", feeder_id="", service=Service.WATER)
+
+    monkeypatch.setattr(warden, "minimise", bare_minimise)
+    out = run_request_path({**REPORT, "segment": "ward12-4thcross",
+                            "feeder_id": "bwssb-tm-14", "service": "water"})
+
+    stored = db.get_claim(out["claim_id"])
+    assert stored.segment == "ward12-4thcross"
+    assert stored.feeder_id == "bwssb-tm-14"
+    assert out["authority"] == "BWSSB", "must actually route, not come back UNROUTED"
+
+
+def test_route_fields_never_override_what_the_warden_did_set(monkeypatch):
+    """The membrane is the Warden's. If it ever does set a routing field, the
+    platform lane backfilling blanks must not clobber it."""
+    from agents import warden
+
+    def opinionated_minimise(position):
+        return fakes.a_claim(household_id=position.household_id,
+                             segment="ward12-9thmain", feeder_id="bwssb-tm-22",
+                             service=Service.WATER)
+
+    monkeypatch.setattr(warden, "minimise", opinionated_minimise)
+    out = run_request_path({**REPORT, "segment": "ward12-4thcross",
+                            "feeder_id": "bwssb-tm-14"})
+
+    stored = db.get_claim(out["claim_id"])
+    assert stored.segment == "ward12-9thmain", "the Warden's value must win"
