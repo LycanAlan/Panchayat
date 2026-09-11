@@ -15,10 +15,17 @@ Owner: shared. Kartik owns the interface; anyone may fix a bug here.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
-from core.types import (Case, CaseStatus, Claim, ConsentGrant, DisclosureRecord,
-                        Filing, Service, new_id)
+from core.types import (
+    Case,
+    CaseStatus,
+    Claim,
+    ConsentGrant,
+    DisclosureRecord,
+    Filing,
+    Service,
+    new_id,
+)
 
 # Module-level state. Reset between tests with reset().
 _claims: dict[str, Claim] = {}
@@ -43,7 +50,7 @@ def put_claim(claim: Claim) -> None:
     _claims[claim.claim_id] = claim
 
 
-def get_claim(claim_id: str) -> Optional[Claim]:
+def get_claim(claim_id: str) -> Claim | None:
     return _claims.get(claim_id)
 
 
@@ -62,11 +69,11 @@ def put_case(case: Case) -> None:
     _cases[case.case_id] = case
 
 
-def get_case(case_id: str) -> Optional[Case]:
+def get_case(case_id: str) -> Case | None:
     return _cases.get(case_id)
 
 
-def open_cases(service: Optional[Service] = None) -> list[Case]:
+def open_cases(service: Service | None = None) -> list[Case]:
     done = {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}
     return [c for c in _cases.values()
             if c.status not in done and (service is None or c.service == service)]
@@ -175,3 +182,46 @@ def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
 def filings_for_case(case_id: str) -> list[Filing]:
     return sorted((f for f in _filings.values() if f.case_id == case_id),
                   key=lambda f: f.tier)
+
+
+def get_filing(idempotency_key: str) -> Filing | None:
+    return _filings.get(idempotency_key)
+
+
+def unsigned_filings(case_id: str | None = None) -> list[Filing]:
+    """Drafts waiting on a human. This is the Digest Agent's queue.
+
+    Hard rule 4 says agents draft and humans sign. Until 11 Sep nothing in the
+    repo could produce a signature at all -- `signed_by` was read by the
+    decoder, required by the institution client, and written by nobody. An
+    unenforceable rule is decoration, and a queue nobody can see is how a
+    draft sits for eleven weeks.
+    """
+    return sorted(
+        (f for f in _filings.values()
+         if f.signed_by is None and (case_id is None or f.case_id == case_id)),
+        key=lambda f: (f.case_id, f.tier),
+    )
+
+
+def sign_filing(idempotency_key: str, member_id: str,
+                now: datetime) -> tuple[bool, Filing | None]:
+    """Record a named person's approval. Returns (was_signed, filing).
+
+    FIRST SIGNATURE WINS, same shape as put_filing_once. A second call returns
+    (False, stored) with the original signatory intact rather than overwriting
+    it -- who approved a filing against a public body is the fact the whole
+    liability argument rests on, and the last writer is not automatically the
+    right answer.
+
+    Returns (False, None) when the key is unknown: signing something that does
+    not exist is a bug in the caller, not a no-op worth hiding.
+    """
+    filing = _filings.get(idempotency_key)
+    if filing is None:
+        return False, None
+    if filing.signed_by is not None:
+        return False, filing
+    filing.signed_by = member_id
+    filing.signed_at = now
+    return True, filing

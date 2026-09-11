@@ -25,6 +25,10 @@ import os
 
 _BACKEND = os.environ.get("PANCHAYAT_BACKEND", "memory").lower()
 
+# Named for the error messages: the backend is "dynamodb" but the module is
+# core/store.py, and pointing someone at core/dynamodb.py wastes their minute.
+_IMPL_MODULE = "core/store.py" if _BACKEND == "dynamodb" else "core/memstore.py"
+
 if _BACKEND == "dynamodb":
     from core import store as _impl  # Kartik's real implementation
 else:
@@ -45,7 +49,13 @@ REQUIRED = (
 )
 
 # Present on memstore, still legitimately absent from a half-built store.py.
-OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case")
+# Present on memstore, still legitimately absent from a half-built store.py.
+# sign_filing/unsigned_filings/get_filing landed 11 Sep to close the hard-rule-4
+# gap: nothing in the repo could record a human approval, so every escalation
+# would have returned NEEDS_HUMAN forever. Kartik -- these need a DynamoDB
+# implementation; until then the seam raises by name rather than binding None.
+OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case",
+            "get_filing", "unsigned_filings", "sign_filing", "reset")
 
 
 def _unavailable(name: str):
@@ -63,8 +73,8 @@ def _unavailable(name: str):
     def _raise(*_args, **_kwargs):
         raise NotImplementedError(
             "core.db." + name + "() is not implemented by the '" + _BACKEND
-            + "' backend. Either implement it in core/" + _BACKEND
-            + ".py, or run with PANCHAYAT_BACKEND=memory."
+            + "' backend. Either implement it in " + _IMPL_MODULE
+            + ", or run with PANCHAYAT_BACKEND=memory."
         )
 
     _raise.__name__ = name
@@ -104,8 +114,17 @@ get_claim = _bind("get_claim")
 open_cases = _bind("open_cases")
 revoke_consent = _bind("revoke_consent")
 filings_for_case = _bind("filings_for_case")
+get_filing = _bind("get_filing")
+unsigned_filings = _bind("unsigned_filings")
+sign_filing = _bind("sign_filing")
 
-reset = getattr(_impl, "reset", lambda: None)
+# NOT `lambda: None`. A silent no-op reset is worse than a missing one: the
+# autouse fixture believes it cleaned, rows accumulate across tests, and the
+# parity run passes on the first go and fails on the second with the count
+# climbing -- exactly the failure that fixture exists to prevent. Raising names
+# the backend and the function, and conftest turns it into one legible error at
+# startup rather than one per test.
+reset = _bind("reset")
 
 __all__ = [
     "add_household_to_case",
@@ -116,6 +135,7 @@ __all__ = [
     "filings_for_case",
     "get_case",
     "get_claim",
+    "get_filing",
     "live_consents",
     "open_cases",
     "put_case",
@@ -125,5 +145,7 @@ __all__ = [
     "recurrence_count",
     "reset",
     "revoke_consent",
+    "sign_filing",
     "split_case",
+    "unsigned_filings",
 ]

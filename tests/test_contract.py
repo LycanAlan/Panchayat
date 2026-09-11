@@ -10,6 +10,7 @@ That is the point: we find out on our own bench.
 """
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import pytest
@@ -110,29 +111,35 @@ def test_the_outage_fixture_has_a_decoy_and_a_duplicate_household():
 
 
 def test_virtual_clock_compresses_a_statutory_week(clock):
-    """Seven days must be reachable inside a five-day build."""
+    """Seven statutory days must be reachable inside a five-day build.
+
+    Not `(deadline - now).days == 7`: the two now() calls are not simultaneous,
+    and at 86400x a few microseconds of real time is minutes of virtual time,
+    so .days truncates 6d23h59m to 6. Whether that happens depends on the
+    platform -- Windows' monotonic clock is coarse (15.6ms) so both calls
+    usually land in one tick and drift is exactly zero, while a finer clock
+    drifts every run. That assertion passed here and failed 5/5 for Alakshendra.
+
+    Nor a drift tolerance in real seconds: at this scale one real second of
+    slack is 86400 virtual ones, a whole day of the window being measured, so
+    the bug it was written to catch sails through.
+
+    So measure the compression itself -- a real pause must buy `scale` times
+    as much virtual time. That is the property the demo actually depends on.
+    """
+    real_pause = 0.05
     start = clock.now()
-    deadline = start + timedelta(days=7)
-    remaining = (deadline - clock.now()).total_seconds()
+    time.sleep(real_pause)
+    virtual_elapsed = (clock.now() - start).total_seconds()
+    expected = real_pause * clock.scale
 
-    # NOT `.days == 7`. The two now() calls are not simultaneous, and at 86400x
-    # a few microseconds of real time is minutes of virtual time, so .days
-    # truncates 6d23h59m to 6. Whether that happens depends on the platform:
-    # Windows' monotonic clock is coarse (15.6ms) so both calls usually land in
-    # one tick and drift is exactly zero, while a finer clock drifts every run.
-    # Asserting equality made the suite pass here and fail 5/5 for Alakshendra.
-    #
-    # So assert the thing that is actually stable: the gap corresponds to under
-    # a second of REAL elapsed time.
-    drift_real_seconds = (7 * 86400 - remaining) / clock.scale
-    assert 0 <= drift_real_seconds < 1.0, (
-        "two now() calls should be within a second of each other in real time; "
-        "got " + str(drift_real_seconds) + "s"
+    # Wide bounds on purpose: sleep() overshoots, and on Windows it rounds up
+    # to the 15.6ms timer tick. A stopped or uncompressed clock still fails.
+    assert 0.5 * expected < virtual_elapsed < 4.0 * expected, (
+        "expected roughly " + str(int(expected)) + " virtual seconds from a "
+        + str(real_pause) + "s pause, got " + str(int(virtual_elapsed))
     )
-
-    # And the compression itself: seven statutory days cost seven real seconds.
-    assert clock.scale == 86400.0
-    assert (7 * 86400) / clock.scale == 7.0
+    assert clock.scale == 86400.0, "one statutory day per real second"
 
 
 def test_missing_backend_function_names_itself():
