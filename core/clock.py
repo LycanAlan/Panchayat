@@ -39,6 +39,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+class SchedulerNotConfigured(RuntimeError):
+    """No durable timer exists to schedule against.
+
+    Raised by RealClock.schedule() when WATCHDOG_LAMBDA_ARN or
+    SCHEDULER_ROLE_ARN is unset, INSTEAD of calling EventBridge with an empty
+    Arn and getting a ValidationException that names neither variable.
+
+    A specific type, not a bare RuntimeError, because callers must be able to
+    catch exactly this and degrade -- the same discipline as run_or_stub()
+    catching only NotImplementedError. A caller that swallows everything here
+    would hide a real scheduler outage, which is the failure this whole branch
+    is about.
+
+    It is an ERROR and not a silent no-op on purpose: a case with no wake is a
+    case that stops forever, so not scheduling has to be something the system
+    says out loud.
+    """
+
+
 class Clock(Protocol):
     """Everything that needs time takes one of these. Nothing calls datetime.utcnow()."""
 
@@ -72,7 +91,26 @@ class RealClock:
         return self._scheduler
 
     def schedule(self, case_id: str, at: datetime, action: str) -> str:
-        name = "pnc-" + case_id + "-" + action
+        if not WATCHDOG_LAMBDA_ARN or not SCHEDULER_ROLE_ARN:
+            # Before boto3, deliberately. Reaching AWS here put a live
+            # EventBridge call on the household's request path and in the
+            # offline test suite -- 36 seconds of botocore retries and a
+            # NoRegionError, against a promise that the whole system runs with
+            # PANCHAYAT_BACKEND=memory and no credentials.
+            raise SchedulerNotConfigured(
+                "cannot schedule " + action + " for " + case_id + ": "
+                + "WATCHDOG_LAMBDA_ARN and SCHEDULER_ROLE_ARN must both be "
+                "set. Without a durable timer the case has no wake and the "
+                "statutory clock never runs."
+            )
+
+        # The `at` timestamp is IN THE NAME. EventBridge names are unique and
+        # ActionAfterCompletion="DELETE" is not instant, so a retry that asks
+        # for "pnc-<case>-retry_submit" again while the previous one is still
+        # being cleaned up gets ConflictException -- and the retry path is
+        # precisely where that repeats daily against the same case and action.
+        name = ("pnc-" + case_id + "-" + action + "-"
+                + at.strftime("%Y%m%dT%H%M%S"))
         self._client().create_schedule(
             Name=name,
             ScheduleExpression="at(" + at.strftime("%Y-%m-%dT%H:%M:%S") + ")",

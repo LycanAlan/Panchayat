@@ -214,3 +214,55 @@ def approve(idempotency_key: str, member_id: str, clock) -> tuple[bool, Filing |
             "is not an approval."
         )
     return db.sign_filing(idempotency_key, member_id, clock.now())
+
+
+_STALLED = {
+    "en": ("{service}, {segment}: we could not get this filed. It is not "
+           "waiting on you -- the office would not take it. Someone should "
+           "chase it another way."),
+    "kn": ("{service}, {segment}: ಈ ದೂರನ್ನು ಸಲ್ಲಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ಇದು ನಿಮ್ಮ "
+           "ಮೇಲೆ ಕಾಯುತ್ತಿಲ್ಲ -- ಕಚೇರಿ ಸ್ವೀಕರಿಸಲಿಲ್ಲ."),
+    "hi": ("{service}, {segment}: यह शिकायत दर्ज नहीं हो सकी। यह आप पर "
+           "निर्भर नहीं है -- कार्यालय ने इसे स्वीकार नहीं किया।"),
+    "ta": ("{service}, {segment}: இதைப் பதிவு செய்ய முடியவில்லை. இது "
+           "உங்களை எதிர்பார்த்து இல்லை -- அலுவலகம் ஏற்கவில்லை."),
+}
+
+
+def stalled_requests(language: str = "en") -> list[dict]:
+    """Cases the Watchdog could not move. The Digest's second queue.
+
+    Until this existed, "surface it to a human" was a print statement: the
+    Watchdog paused a case, logged NEEDS_HUMAN, and nothing durable recorded
+    it. A line in CloudWatch that nobody queries has not told anyone.
+
+    Distinct from `signature_requests()` on purpose, and the wording says so.
+    An unsigned filing is waiting ON the household -- reply YES and it moves.
+    A stalled case is NOT: the office would not take it, there is nothing the
+    household can approve, and asking them to act would be asking for
+    something they cannot give. Hard rule 7 in miniature -- pressure points
+    outward, and so does blame.
+
+    Degrades to empty rather than raising, like the rest of this module: a
+    backend without `stalled_cases` costs the digest this section, not the
+    whole digest.
+    """
+    try:
+        cases = db.stalled_cases()
+    except NotImplementedError:
+        return []
+
+    template = _STALLED.get(language, _STALLED["en"])
+    return [
+        {
+            "case_id": case.case_id,
+            "tier": case.escalation_tier,
+            "message": template.format(service=case.service.value,
+                                       segment=case.segment),
+            # Deliberately NOT choose_recipient(): nobody is being asked to
+            # approve anything, so there is no liability to land on a person
+            # and no reason to single one out.
+            "needs": "someone to chase this desk another way",
+        }
+        for case in cases
+    ]

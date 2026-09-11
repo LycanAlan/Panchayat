@@ -288,7 +288,17 @@ def test_climb_pauses_the_clock_when_institution_unreachable():
     assert new_tier == 0  # did not advance against a filing that never landed
     assert updated.escalation_tier == 0
     assert updated.sla_paused is True
-    assert clock.scheduled == []  # no SLA wake scheduled for a filing that never landed
+    # The invariant this line was written for still holds and still matters:
+    # NO SLA wake. Running a statutory clock against a filing that never
+    # landed would breach a deadline the institution never received.
+    assert not [w for w in clock.scheduled if w[-1] == "check_sla"]
+
+    # But "no SLA wake" was asserted as "no wake at all", and that is what
+    # made the case stop forever -- nothing rescheduled it, and _check_sla()
+    # returns immediately while sla_paused is set. One retry wake, same tier.
+    retries = [w for w in clock.scheduled if w[-1] == "retry_submit"]
+    assert len(retries) == 1, "a paused case must be picked up again"
+
     assert db.filings_for_case(case.case_id) == []
 
 
@@ -454,3 +464,246 @@ def test_withdraw_removes_household_and_drops_corroboration():
 
     assert "hh_a" not in after.household_ids
     assert after.corroboration == before - 1
+
+
+# ------------------------------------------------- the pause path recovers
+#
+# Added by Ali, covering for Raghav. These pin the fix for the defect
+# Alakshendra found from the institutions side while writing build_submit():
+# a case whose filing could not be submitted paused its clock and was never
+# rescheduled, so it stopped permanently and silently. It only stayed
+# harmless because `submit` defaults to returning True.
+
+
+def _stuck_watchdog(answers):
+    """A Watchdog whose institution answers from a list, one call at a time.
+
+    `answers` is consumed per submit attempt, so a test can say "down, down,
+    then up" and watch the case actually recover.
+    """
+    calls = {"n": 0}
+
+    def submit(_filing) -> bool:
+        i = calls["n"]
+        calls["n"] += 1
+        return answers[i] if i < len(answers) else answers[-1]
+
+    wd = Watchdog(store=db, lookup=_lookup_fixture, submit=submit,
+                  submit_attempts=1)
+    return wd, calls
+
+
+def test_a_paused_case_schedules_its_own_retry_at_the_same_tier():
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, _ = _stuck_watchdog([False])
+    wd.climb(case.case_id, clock)
+
+    retries = [w for w in clock.scheduled if w[-1] == "retry_submit"]
+    assert len(retries) == 1
+    # A day out, taken from the injected clock -- never wall time. Hard rule 1.
+    assert retries[0][1] == fakes.T0 + timedelta(days=1)
+    assert db.get_case(case.case_id).escalation_tier == 0, (
+        "the tier must not advance against a filing that never landed")
+
+
+def test_the_retry_wake_files_when_the_desk_comes_back():
+    """The whole point. Down now, up tomorrow, case proceeds on its own."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, calls = _stuck_watchdog([False, True])
+
+    wd.climb(case.case_id, clock)
+    assert db.get_case(case.case_id).sla_paused is True
+
+    clock.advance(timedelta(days=1))
+    wd.handle(case.case_id, "retry_submit", clock)
+
+    updated = db.get_case(case.case_id)
+    assert updated.sla_paused is False, "the clock restarts once it lands"
+    assert updated.escalation_tier == 1, "the retry escalates, it does not stall"
+    assert calls["n"] == 2
+    assert len(db.filings_for_case(case.case_id)) == 1
+    assert [w for w in clock.scheduled if w[-1] == "check_sla"], (
+        "a landed filing starts its statutory clock")
+
+
+def test_a_desk_still_down_on_the_retry_surfaces_to_a_human(capsys):
+    """Day-two downtime is not news; day-three silence is.
+
+    digest.STAYS_QUIET holds `endpoint_unreachable` deliberately, and that is
+    right for a blip. A desk still refusing a day later is a different fact
+    and nothing in this system can act on it, so a person has to.
+    """
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, _ = _stuck_watchdog([False])
+
+    wd.climb(case.case_id, clock)
+    first = capsys.readouterr().out
+    assert "PAUSED" in first
+    assert "NEEDS_HUMAN" not in first, "one bad afternoon is not worth a person"
+
+    clock.advance(timedelta(days=1))
+    wd.handle(case.case_id, "retry_submit", clock)
+    second = capsys.readouterr().out
+    assert "NEEDS_HUMAN" in second, "a case stuck a day later must be surfaced"
+
+
+def test_it_keeps_retrying_rather_than_giving_up():
+    """Stamina is the product. A system that abandons the case after two bad
+    days is the neighbour who meant to follow up and didn't."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, _ = _stuck_watchdog([False])
+
+    wd.climb(case.case_id, clock)
+    for _ in range(4):
+        clock.advance(timedelta(days=1))
+        wd.handle(case.case_id, "retry_submit", clock)
+
+    assert len([w for w in clock.scheduled if w[-1] == "retry_submit"]) == 5
+    assert db.get_case(case.case_id).escalation_tier == 0
+
+
+def test_a_retry_on_an_unpaused_case_does_not_escalate_it():
+    """A stale wake must not push a healthy case up a tier.
+
+    The wake is scheduled a day out. In that day a human may have intervened,
+    a later filing may have landed, or the case may have been withdrawn and
+    reopened -- and a retry that climbed regardless would escalate a case that
+    was never stuck, against an authority nobody chose.
+    """
+    db.reset()
+    case = fakes.a_case(escalation_tier=1)
+    case.sla_paused = False
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, calls = _stuck_watchdog([True])
+    wd.handle(case.case_id, "retry_submit", clock)
+
+    assert calls["n"] == 0, "it must not even try to submit"
+    assert db.get_case(case.case_id).escalation_tier == 1
+
+
+def test_retry_submit_is_a_known_action():
+    assert "retry_submit" in ACTIONS
+    with pytest.raises(ValueError, match="unknown watchdog action"):
+        Watchdog(store=db, lookup=_lookup_fixture).handle("case_x", "nonsense")
+
+
+def test_a_stalled_case_reaches_a_durable_queue_not_just_a_log_line(capsys):
+    """"Surface it to a human" has to mean something a human can find.
+
+    The first version of this fix printed NEEDS_HUMAN and stopped. A trace
+    line in CloudWatch that nobody queries has not told anyone -- the case is
+    just as abandoned, with more logging.
+    """
+    from agents import digest
+
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, _ = _stuck_watchdog([False])
+    wd.climb(case.case_id, clock)
+    capsys.readouterr()
+
+    assert [c.case_id for c in db.stalled_cases()] == [case.case_id]
+
+    surfaced = digest.stalled_requests()
+    assert len(surfaced) == 1
+    assert surfaced[0]["case_id"] == case.case_id
+    # It must NOT read as something the household can action -- there is
+    # nothing to approve, and asking them to act would ask for what they
+    # cannot give.
+    assert "not waiting on you" in surfaced[0]["message"]
+
+
+def test_a_resolved_case_is_not_in_the_stalled_queue():
+    db.reset()
+    case = fakes.a_case(escalation_tier=2)
+    case.sla_paused = True
+    case.status = CaseStatus.RESOLVED
+    db.put_case(case)
+
+    assert db.stalled_cases() == []
+
+
+def test_top_of_the_ladder_asks_a_human_instead_of_retrying_forever():
+    """Not transient. No amount of waiting adds a tier 5, so a wake here would
+    be the machine pretending it still has moves."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=4)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: True)
+    wd.climb(case.case_id, clock)
+
+    assert [w for w in clock.scheduled if w[-1] == "retry_submit"] == []
+    assert db.get_case(case.case_id).status == CaseStatus.DORMANT
+
+
+def test_a_missing_jurisdiction_entry_leaves_a_wake_behind():
+    """Usually transient -- a case is opened with feeder_id="" and gains one
+    later. "Cannot climb now" is not "cannot climb"."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd = Watchdog(store=db, lookup=lambda *a, **k: None, submit=lambda f: True)
+    wd.climb(case.case_id, clock)
+
+    assert len([w for w in clock.scheduled if w[-1] == "retry_submit"]) == 1
+    assert db.get_case(case.case_id).sla_paused is True
+
+
+def test_a_retry_wake_for_a_withdrawn_case_does_not_file_for_them():
+    """sla_paused is never cleared on withdrawal, so the flag alone would let
+    a stale wake climb and file on behalf of a household that pulled out."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=1)
+    case.sla_paused = True
+    case.status = CaseStatus.WITHDRAWN
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0)
+    wd, calls = _stuck_watchdog([True])
+    wd.handle(case.case_id, "retry_submit", clock)
+
+    assert calls["n"] == 0, "it must not submit for a withdrawn household"
+    assert db.get_case(case.case_id).escalation_tier == 1
+
+
+def test_splitting_a_paused_case_does_not_hand_the_child_a_live_clock():
+    """A false merge is undone by split_case, and the child inherited
+    sla_paused=False -- so a case paused against a filing that never landed
+    came back with a running statutory clock and would climb on it."""
+    db.reset()
+    case = fakes.a_case(escalation_tier=1)
+    case.household_ids = ["hh_a", "hh_b"]
+    case.merged_from = ["hh_b:clm_b"]
+    case.claim_ids = ["clm_a", "clm_b"]
+    case.sla_paused = True
+    db.put_case(case)
+
+    children = db.split_case(case.case_id, ["hh_b"])
+
+    assert children, "nothing was split"
+    assert db.get_case(children[0]).sla_paused is True

@@ -73,6 +73,26 @@ def get_case(case_id: str) -> Case | None:
     return _cases.get(case_id)
 
 
+def stalled_cases(service: Service | None = None) -> list[Case]:
+    """Cases the Watchdog could not move, oldest deadline first.
+
+    This is the Digest's second queue, beside unsigned_filings(). It exists
+    because "surface it to a human" was, until now, a print statement: the
+    Watchdog paused a case, logged NEEDS_HUMAN, and nothing durable recorded
+    it, so nobody was actually told. A trace line in CloudWatch that no one
+    queries is not telling someone.
+
+    `sla_paused` is the flag, and it means exactly "the clock is held because
+    the filing did not land". Terminal cases are excluded -- a withdrawn case
+    that happened to be paused is not waiting on anybody.
+    """
+    done = {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}
+    stalled = [c for c in _cases.values()
+               if c.sla_paused and c.status not in done
+               and (service is None or c.service == service)]
+    return sorted(stalled, key=lambda c: (c.sla_deadline is None, c.sla_deadline))
+
+
 def open_cases(service: Service | None = None) -> list[Case]:
     done = {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}
     return [c for c in _cases.values()
@@ -110,6 +130,13 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             claim_ids=list(claim_ids), household_ids=[hh],
             authority=case.authority, escalation_tier=case.escalation_tier,
             sla_deadline=case.sla_deadline, created_at=case.created_at,
+            # sla_paused travels with the split. It was omitted while it was
+            # only an advisory flag; it is now the whole retry state machine,
+            # so dropping it hands the child a live statutory clock against a
+            # filing that never landed -- _check_sla() would run it to
+            # BREACHED and climb, escalating on the strength of a deadline the
+            # institution never received.
+            sla_paused=case.sla_paused,
         )
         _cases[child.case_id] = child
         new_ids.append(child.case_id)
