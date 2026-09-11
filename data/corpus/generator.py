@@ -174,8 +174,9 @@ def _street(rng: random.Random) -> str:
 HOUSEHOLDS_PER_FEEDER = 25
 
 
-def _build_ward(n_households: int, per_feeder: int,
-                rng: random.Random) -> list[Household]:
+def _build_ward(n_households: int, per_feeder: int, rng: random.Random,
+                geography: dict[str, list[str]] | None = None
+                ) -> list[Household]:
     """Lay out the ward before anything fails.
 
     A feeder serves several streets and a street is served by one feeder --
@@ -183,13 +184,25 @@ def _build_ward(n_households: int, per_feeder: int,
     rather than a contrived one. The mapping is fixed here, once, so a fault
     later has a genuine set of victims rather than a sampled one.
     """
-    n_feeders = max(2, min(len(FEEDERS), n_households // max(1, per_feeder)))
-    feeders = list(FEEDERS[:n_feeders])
-
-    # Each feeder serves one to three streets.
-    streets: dict[str, list[str]] = {}
-    for feeder in feeders:
-        streets[feeder] = [_street(rng) for _ in range(rng.randint(1, 3))]
+    if geography:
+        # A REAL ward, handed in by the caller. The synthetic one below invents
+        # plausible street names, and plausible is not the same as curated:
+        # agents.remedy.lookup() answers for 31 specific Ward 12 segments and
+        # returns None for everything else, so a corpus of invented streets
+        # routes to nothing and an end-to-end eval measures UNROUTED forever.
+        #
+        # Handed in rather than read here on purpose. This module must not
+        # import another lane's data, and the coupling belongs in the eval that
+        # wants the two to line up.
+        feeders = list(geography)
+        streets = {f: list(v) for f, v in geography.items()}
+    else:
+        n_feeders = max(2, min(len(FEEDERS),
+                               n_households // max(1, per_feeder)))
+        feeders = list(FEEDERS[:n_feeders])
+        # Each feeder serves one to three streets.
+        streets = {f: [_street(rng) for _ in range(rng.randint(1, 3))]
+                   for f in feeders}
 
     households = []
     for _ in range(n_households):
@@ -236,7 +249,8 @@ def _reports(household: Household, fault: Fault, rng: random.Random) -> bool:
 def generate_corpus(n_households: int = 300, days: int = 30, seed: int = 0,
                     severity: float | None = None,
                     faults_per_feeder_week: float = 0.5,
-                    households_per_feeder: int = HOUSEHOLDS_PER_FEEDER
+                    households_per_feeder: int = HOUSEHOLDS_PER_FEEDER,
+                    geography: dict[str, list[str]] | None = None
                     ) -> Corpus:
     """A ward, a stretch of time, and everything that broke in it.
 
@@ -244,13 +258,19 @@ def generate_corpus(n_households: int = 300, days: int = 30, seed: int = 0,
     what `eval/density_curve.py` means by "a fixed institution profile": vary
     one thing at a time or the curve is measuring two things at once.
 
+    `geography` is {feeder_id: [segment, ...]} and makes the corpus describe a
+    REAL ward rather than a plausible one. Invented street names route to
+    nothing, so any eval that files against an institution needs the two to
+    agree -- pass `eval.density_curve.curated_geography()`.
+
     `households_per_feeder` is how big a fault can get. A main serving 25
     houses cannot produce twenty reporters at any plausible reporting rate, so
     a caller that needs the N=20 point has to widen the main rather than the
     ward. Exposed for that reason rather than left as a formula to be inferred.
     """
     rng = random.Random(seed)
-    households = _build_ward(n_households, households_per_feeder, rng)
+    households = _build_ward(n_households, households_per_feeder, rng,
+                             geography)
     by_feeder: dict[str, list[Household]] = {}
     for household in households:
         by_feeder.setdefault(household.feeder_id, []).append(household)
