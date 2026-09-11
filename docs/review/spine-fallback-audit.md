@@ -1,7 +1,10 @@
 # Spine fallback audit + `feat/household-time` merge status
 
-By Raghav, 11 Sep. Two parts: where my branch actually stands after Kartik's
-merge-readiness pass, and the audit he named but left open —
+By Raghav, 11 Sep, updated same day after Ali's reply. Three parts: where my
+branch actually stands after Kartik's merge-readiness pass, the audit he
+named but left open, and confirmation of what Ali fixed in response — each
+re-verified independently rather than taken on his word, same as everything
+else in this doc.
 
 > *"Every fallback in `request_path.py` deserves the same audit."*
 
@@ -64,7 +67,10 @@ stubs are for.* Three of the four findings below are that same shape.
 
 ### F1 — `_minimise_fallback` contradicts its own docstring
 
-`graph/request_path.py`. Owner: Ali. **Latent, not live.**
+`graph/request_path.py`. Owner: Ali. **Latent, not live. Fixed on his
+current branch** — the fallback (now `_claim_stub`) no longer copies
+`position.summary` through, and the docstring argues it from hard rule 2
+directly rather than from a promise the code didn't keep.
 
 ```python
 def _minimise_fallback(ctx: RequestContext) -> Claim:
@@ -111,9 +117,14 @@ Live path (real intake → real deliberate) is fine. The stub path drops text.
 The real shape is the richer one, so the stub should conform to it, not the
 reverse — one line. Flagging rather than editing `request_path.py` myself.
 
+**Fixed on Ali's current branch** — the stub now emits `"description"`
+directly, and the trace-rendering code checks `("description", "summary",
+"raw_text")` in order rather than assuming one key.
+
 ### F3 — ternary precedence bug in `_household`'s trace line
 
-`graph/request_path.py`. Owner: Ali. **Live.**
+`graph/request_path.py`. Owner: Ali. **Live at the time this was found, fixed
+on his current branch** — restructured out of the ternary entirely.
 
 ```python
 str(len(position.contributing_members)) + " members reconciled, "
@@ -159,21 +170,95 @@ someone an hour.
 
 ---
 
-## Repo state at time of writing
+---
+
+## Part 3 — confirmed fixed, independently re-verified
+
+Ali replied same day with fixes for both blockers from Part 1's cumulative
+merge test, on a new branch (`feat/plat-day2-groundwork` — the one this was
+tested against, `feat/plat-spine-review-fixes`, has since been deleted,
+presumably superseded). Checked each in an isolated `git worktree` rather than
+touching this branch's tree, and confirmed both hold:
+
+**B2, `segment=''`** — `_warden` now calls `_apply_request_context(ctx, claim)`
+on both the real and the stub path, so the backfill can't be skipped by
+whichever branch fires. `tests/test_request_path.py`: **19/19 passed** in a
+clean worktree checkout of his branch.
+
+**B1, the shared jurisdiction table** — his test now does
+`entry = copy.deepcopy(shared)` before mutating `entry.ladder = []`, with a
+comment crediting the find and correctly pointing the real defect (a
+module-level cache in `agents/remedy.py` handing out mutable references) at
+Alakshendra rather than working around it locally. Verified in-process, not
+just by reading the diff — ran his full test file, then queried
+`remedy.lookup()` in the **same Python process** immediately after:
+
+```
+SAME PROCESS, after the full file ran: ladder has 4 tiers
+```
+
+Table survives. Both blockers are closed on his branch.
+
+**A third finding from his reply, worth recording:** a filing built with
+`authority=entry.authority` (the table's top-level string, e.g. `"BWSSB"`)
+rather than the tier-specific `step.authority` (e.g. `"BWSSB Assistant
+Engineer, sub-division office"` for tier 1) breaks hard rule 5 across two
+writers — `Filing.compute_key()` hashes the authority string, so the graph's
+initial filing and the Watchdog's later `climb()` call would compute
+**different keys for the same filing**, and `put_filing_once()` would never
+see the collision it exists to catch. Checked my own `climb()` against this:
+it already uses `step.authority`, correctly —
+`agents/watchdog.py:215`. My idempotency test
+(`test_climb_does_not_file_twice_on_a_retry`) derives the authority live from
+the real ladder specifically so it can't drift back into this mistake
+silently. Recording the shape of the bug here since it's the kind of thing
+that reappears wherever a `Filing` gets constructed.
+
+**Not done, and deliberately not done now:** Alakshendra's
+`compose_filing()` (curated `required_fields`, refuses on missing data,
+tested against the real desk) should replace my `Watchdog._draft_filing()` /
+`_draft_rti()`, which do the same job with fixed string interpolation and no
+missing-field check. Both Ali and Alakshendra agree it's mine to delete. Not
+doing it in this pass: `compose_filing()` lives only on
+`alakshendra/ladder-and-filing-client`, unmerged, and importing from it now
+would make this branch depend on one that isn't in `main` yet — exactly the
+kind of premature coupling the fake-based "nobody waits for anybody" setup
+exists to avoid. Once his branch merges, this is a straightforward deletion:
+swap the two private methods for a call to `remedy.compose_filing()`, keep
+the `is_rti` branch's draft-only behaviour, done.
+
+---
+
+## Repo state at time of writing (original audit, `feat/household-time` alone)
 
 ```
 105 passed, 5 failed, 1 skipped, 2 errors
 ```
 
-- 5 failed — all `tests/test_request_path.py`, all the `segment=''` root cause (F-above, Ali's).
+- 5 failed — all `tests/test_request_path.py`, all the `segment=''` root
+  cause (F2/B2 above). **Fixed on `feat/plat-day2-groundwork`, 19/19 passing,
+  independently re-verified in an isolated worktree — see Part 3.**
 - 2 errors — `test_institutions.py` / `test_remedy.py`, a Windows temp-dir
   permission issue in pytest's `tmp_path`, environmental rather than code.
 - 1 skipped — unrelated.
 
+## Status of every finding as of Part 3
+
+| # | Finding | Owner | Status |
+|---|---|---|---|
+| B1 | Shared jurisdiction table mutated by a test | Ali (his test) / Alakshendra (the underlying cache) | **Test fixed** (`copy.deepcopy`), verified in-process. Underlying shared-cache defect still open, correctly left to Alakshendra. |
+| B2 | `segment=''`, 8 spine tests red | Ali | **Fixed**, 19/19 re-verified independently. |
+| F1 | Fallback copied `position.summary` through | Ali | **Fixed.** |
+| F2 | Intake stub/real key mismatch | Ali (half mine — no schema was ever agreed) | **Fixed.** |
+| F3 | Ternary precedence dropped member count | Ali | **Fixed.** |
+| F4 | `AWS_PROFILE=""` fabricates a failure | environmental | Still worth a CLAUDE.md line; nobody's job specifically. |
+| — | `Filing(authority=entry.authority)` vs tier-specific `step.authority` | whoever else constructs a `Filing` | Confirmed my own `climb()` already does this correctly; recorded as a general hazard, not a bug in my lane. |
+
+**Everything Ali could fix on his side of the boundary is fixed and
+independently re-verified**, not merely re-read from his message.
+
 ## Deliberately not touched
 
-- **Ali's `_warden` backfill** — his file, his claimed fix, and the correct
-  place for it.
 - **`escalation_tier` / `put_case` race** — Kartik has taken the remaining
   half (`climb()`'s read-write window dropping a household that joins between
   read and write). His measurement on DynamoDB Local, his file.
@@ -182,3 +267,7 @@ someone an hour.
   group decision, documented in `agents/watchdog.py` and STATUS.md. Not a
   policy choice between "sign once" and "sign per tier": there is no signature
   capture step anywhere yet, for any tier.
+- **`_draft_filing()` / `_draft_rti()` → `compose_filing()`** — mine to
+  delete, blocked on Alakshendra's branch merging first. See Part 3.
+- **The module-level cache in `agents/remedy.py`** — Alakshendra's file;
+  flagged by both Ali's fix comment and this doc, not fixed here.
