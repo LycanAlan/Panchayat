@@ -379,6 +379,22 @@ def test_the_composed_body_satisfies_the_desks_own_completeness_check():
 
 # ------------------------------------------------- the table is not shared state
 
+@pytest.fixture(autouse=True)
+def _drop_the_cached_table():
+    """Rebuild the module table around every test in this file.
+
+    These tests deliberately mutate what lookup() hands back. If the copy
+    guard ever regresses, that corruption would otherwise outlive the test
+    and take out test_routing, test_watchdog and test_submit_adapter -- all
+    of which key off ward12-4thcross and all of which sort after this file.
+    A regression should fail where it is caused, not four files later.
+    """
+    from agents import remedy
+    remedy._default._entries = None
+    yield
+    remedy._default._entries = None
+
+
 def test_a_caller_mutating_an_entry_cannot_corrupt_the_table():
     # The blocking bug. lookup() returned the cached object itself, so one
     # caller emptying a ladder stalled climb() for every later case in the
@@ -435,7 +451,15 @@ def test_every_ladder_is_contiguous_from_tier_one():
         )
 
 
-def test_the_whole_table_is_the_shape_decision_02_assumes():
-    table = load_table()
-    assert len(table) == 31, "decision 02 was ruled against 31 curated entries"
-    assert all([s.tier for s in e.ladder] == [1, 2, 3, 4] for e in table.values())
+def test_every_ladder_reaches_the_rti_tier():
+    # The other half of what decision 02 assumes: not just contiguity, but
+    # that every ladder actually runs out at a drafted-only RTI rather than
+    # stopping somewhere a Watchdog would keep climbing. Asserted as a
+    # property, not as a hardcoded entry count -- curating a 32nd entry is
+    # this lane's own deliverable and must not fail a test about decision 02.
+    for (_service, segment), entry in load_table().items():
+        assert len(entry.ladder) >= 2, segment + " has nothing to climb to"
+        assert "RTI" in entry.ladder[-1].authority, (
+            segment + " ladder ends at " + entry.ladder[-1].authority
+            + ", not an RTI -- the Watchdog would climb past the top"
+        )

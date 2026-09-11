@@ -123,6 +123,17 @@ class JurisdictionTable:
 
     @property
     def entries(self) -> dict[tuple[str, str], JurisdictionEntry]:
+        """A COPY of the curated table. See `lookup()` for why.
+
+        Internal callers that only read take `_live_entries` and skip the
+        copy; everything that hands the table outward comes through here, so
+        there is one boundary to get right rather than three consumers to
+        remember.
+        """
+        return copy.deepcopy(self._live_entries)
+
+    @property
+    def _live_entries(self) -> dict[tuple[str, str], JurisdictionEntry]:
         if self._entries is None:
             entries: dict[tuple[str, str], JurisdictionEntry] = {}
             aliases: dict[str, str] = {}
@@ -146,7 +157,7 @@ class JurisdictionTable:
         return self._entries
 
     def aliases(self) -> dict[str, str]:
-        self.entries  # noqa: B018  -- forces the load
+        self._live_entries  # noqa: B018  -- forces the load
         return dict(self._aliases)
 
     # ---------------------------------------------------------------- query
@@ -161,7 +172,7 @@ class JurisdictionTable:
         while passing in isolation. 24 microseconds is the right price.
         """
         key = (Service(service).value, (segment or "").strip().lower())
-        entry = self.entries.get(key)
+        entry = self._live_entries.get(key)
         if entry is None:
             emit(Tag.JURISDICTION, "miss", service=key[0], segment=key[1])
             return None
@@ -306,7 +317,7 @@ def load_table(directory: pathlib.Path | None = None) -> dict[tuple[str, str], J
     looked a single row up, and the corruption is just as process-wide.
     """
     if directory is None:
-        return copy.deepcopy(_default.entries)
+        return _default.entries
     return JurisdictionTable(directory).entries
 
 

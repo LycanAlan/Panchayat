@@ -80,8 +80,42 @@ def test_an_unsigned_filing_never_advances_the_tier():
     after = db.get_case(case.case_id)
     assert returned == 0, "an unsigned filing must not report a climb"
     assert after.escalation_tier == 0
-    assert after.sla_paused is True, "no clock may run against an unfiled case"
     assert db.filings_for_case(case.case_id) == []
+    # Deliberately not asserting sla_paused here. climb() does set it, but
+    # DeskReply.should_pause_sla is false for NEEDS_HUMAN on purpose -- a
+    # person has to act, which is not the same as a clock being held. Pinning
+    # the current behaviour would tell whoever fixes the freeze below that
+    # their fix is the regression. What this test guards is the part that is
+    # unambiguous: nothing was filed, and no tier was claimed.
+
+
+def test_a_failed_filing_currently_freezes_the_case_permanently():
+    """KNOWN GAP, pinned so it is visible rather than discovered on Day 4.
+
+    climb() pauses the clock and returns without scheduling any wake, and
+    _check_sla short-circuits on sla_paused, so the case stops for good. This
+    is not live -- Watchdog still defaults to `lambda filing: True` -- but it
+    is the precondition for installing build_submit() as that default.
+
+    When the pause path learns to schedule a retry wake and surface to the
+    Digest, this test should start failing. That is the signal to delete it.
+    """
+    case = _a_case_ready_to_climb()
+    clock = RecordingClock(now=fakes.T0)
+    wd = Watchdog(store=db, lookup=remedy_lookup,
+                  submit=build_submit(_Desk(DeskReply(Outcome.ACCEPTED, "X-1"))))
+
+    wd.climb(case.case_id, clock)
+    assert clock.scheduled == [], "no wake is scheduled on the pause path"
+
+    # even firing a wake by hand does nothing: the short-circuit sees paused
+    clock.advance(timedelta(days=30))
+    wd.handle(case.case_id, "check_sla", clock)
+
+    after = db.get_case(case.case_id)
+    assert after.escalation_tier == 0
+    assert clock.scheduled == []
+    assert after.status is not CaseStatus.BREACHED
 
 
 def test_a_signed_filing_that_the_desk_accepts_does_advance():
@@ -112,8 +146,13 @@ def test_a_signed_filing_that_the_desk_accepts_does_advance():
         "the desk's ticket number has to survive the bool collapse -- without "
         "it the case can never be polled or escalated against"
     )
-    assert filings[0].submitted_at is not None
     assert filings[0].response.startswith("ACCEPTED")
+    # The adapter deliberately does NOT stamp submitted_at: the correct value
+    # is climb()'s injected clock, and Callable[[Filing], bool] cannot carry
+    # one. Reaching for the ambient clock instead would put real wall time on
+    # a filing whose case deadline came from a virtual clock -- a submission
+    # recorded as later than its own statutory deadline.
+    assert filings[0].submitted_at is None
 
 
 # ------------------------------------------- the collapse rule, per outcome
@@ -156,17 +195,21 @@ def test_the_desk_reference_is_written_back_onto_the_filing():
     assert filing.response == "DUPLICATE BWSSB-100042: status=open"
 
 
-def test_a_refusal_leaves_no_submitted_at():
-    # submitted_at means "it landed". A refused filing has not landed, and a
-    # timestamp there would make an unfiled case look filed in the trace.
+def test_a_refusal_leaves_no_reference_behind():
+    # external_ref is documented as "the institution's own ticket id", so a
+    # consumer may reasonably read a non-null one as proof a ticket exists.
+    # find() deliberately keeps a stray reference on a reply it could not
+    # classify, so the write has to be guarded on `filed`, not on `ref`.
     filing = Filing(case_id="case_1", tier=1, authority="BWSSB",
                     body="duration 3 days, affected 9", signed_by="mem_lakshmi")
     filing.idempotency_key = filing.compute_key()
 
-    build_submit(_Desk(DeskReply(Outcome.REJECTED, detail="missing RR")))(filing)
+    assert build_submit(
+        _Desk(DeskReply(Outcome.UNKNOWN, "BWSSB-100001", "who knows"))
+    )(filing) is False
 
-    assert filing.submitted_at is None
-    assert filing.response.startswith("REJECTED")
+    assert filing.external_ref is None, "no ticket exists; do not record one"
+    assert filing.response.startswith("UNKNOWN")
 
 
 # ------------------------------------------------------ the lane boundary
