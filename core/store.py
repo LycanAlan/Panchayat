@@ -840,9 +840,22 @@ def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
     items = [
         {"Put": {"TableName": TABLE, "Item": _clean(d),
                  "ConditionExpression": "attribute_not_exists(SK)"}},
+        # CONDITIONAL. The filing's own Put is conditional on its SK, but it
+        # is keyed PK=CASE#<case_id>, so a filing for a DIFFERENT case reusing
+        # the same idempotency_key passes that check -- and idempotency_key is
+        # a settable field callers do set. An unconditional pointer Put would
+        # then repoint FILING#<key> at the new case, and get_filing and
+        # sign_filing would both resolve through the hijacked pointer: the
+        # original draft becomes unreachable and can never be signed, which
+        # hard rule 4 says is the one thing that must happen before anything
+        # is submitted. Colliding across cases now fails the transaction
+        # instead of silently corrupting it.
         {"Put": {"TableName": TABLE, "Item": {
             "PK": "FILING#" + key, "SK": "META", "_type": "filing_pointer",
-            "case_id": filing.case_id}}},
+            "case_id": filing.case_id},
+            "ConditionExpression": (
+                "attribute_not_exists(PK) OR case_id = :cid"),
+            "ExpressionAttributeValues": {":cid": filing.case_id}}},
     ]
     if filing.signed_by is None:
         items.append({"Put": {"TableName": TABLE, "Item": {
@@ -898,7 +911,13 @@ def unsigned_filings(case_id: str | None = None) -> list[Filing]:
     rows = _query_all(KeyConditionExpression=Key("PK").eq(_UNSIGNED_PK))
     out = []
     for row in rows:
-        filing = get_filing(row["idempotency_key"])
+        # Read the filing DIRECTLY. The queue row already stores case_id, so
+        # going back through get_filing's pointer would cost two GetItems per
+        # draft instead of one, on the Digest Agent's main path.
+        item = _t().get_item(
+            Key={"PK": "CASE#" + row["case_id"],
+                 "SK": "FILING#" + row["idempotency_key"]}).get("Item")
+        filing = _filing_from(item) if item else None
         # A row whose filing is gone, or has since been signed, is a stale
         # queue entry rather than a draft. Skipped rather than raising: the
         # queue is a hint, and the filing row is the truth.

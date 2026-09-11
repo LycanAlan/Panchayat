@@ -35,10 +35,21 @@ from core.scoring import TAU, correlate, normalise_id
 from core.tags import Tag, emit
 from core.types import Case, CaseStatus, Claim, MergeProposal
 
-#: How far back a corroborating claim may sit. Three recency decay constants:
-#: at 72h the recency term is exp(-1.5) = 0.22, so a pair that old cannot reach
-#: TAU on recency alone and the query is bounded without discarding anything
-#: that could have clustered.
+#: How far back a corroborating claim may sit. 1.5 recency decay constants:
+#: at 72h the recency term is exp(-1.5) = 0.22.
+#:
+#: THIS BOUND IS ONLY SAFE WHILE SEMANTIC IS UNAVAILABLE, and it stops being
+#: safe the day embedding lands in this very Lambda -- which CLAUDE.md directs.
+#: On the renormalised path a pair needs recency to clear TAU, so nothing
+#: outside the window could have clustered. On the full path
+#: 0.40*topo + 0.35*sem already reaches 0.75 >= TAU with recency contributing
+#: nothing, so two claims on one trunk main five days apart with matching text
+#: score 0.771 and WOULD cluster -- and this query would never retrieve the
+#: older one. Silently, with nothing logged, which is the same shape as the
+#: 0.65 ceiling.
+#:
+#: Widen this when embeddings are switched on. Pinned by a test so the day it
+#: matters is not the day someone has to rediscover it.
 WINDOW_HOURS = 72.0
 
 #: Terminal. A case in one of these is not in flight and is not upgraded.
@@ -170,11 +181,33 @@ class PatternWatch:
             # path, which is the one thing it must never do.
             return None
 
-        scores = []
+        # A claim already live on a DIFFERENT case must not be pulled into
+        # this one. graph/request_path.py mints a fresh case per report, so
+        # twelve households reporting one outage open twelve cases on one
+        # feeder; merging their claims into cases[0] leaves the other eleven
+        # alive, each with its own deadline and tier, and Raghav's Watchdog
+        # files every one of them separately for the same fault. That is the
+        # duplicate that "reads as spam and gets both copies closed" (hard
+        # rule 5), with provenance split_case cannot reconcile (hard rule 6).
+        #
+        # What this actually needs is a CASE merge primitive -- withdraw the
+        # others with provenance -- which does not exist and is a group call.
+        # Until then the safe move is to leave them alone. Raised on STATUS.md.
+        spoken_for = {cid for c in cases if c.case_id != cases[0].case_id
+                      for cid in c.claim_ids}
+
+        scores, skipped = [], 0
         for other in self._candidates(claim, cases):
+            if other.claim_id in spoken_for:
+                skipped += 1
+                continue
             score = correlate(claim, other)
             if score.above_threshold:
                 scores.append(score)
+
+        if skipped:
+            emit(Tag.PATTERN, "claims_on_other_cases", case_id=cases[0].case_id,
+                 skipped=skipped)
 
         if not scores:
             return None
@@ -186,13 +219,21 @@ class PatternWatch:
             candidate_claim_ids=[claim.claim_id, *matched],
             scores=scores,
         )
+        # ALL, not ANY. With one pair carrying embeddings and ten not,
+        # any() logs "semantic ran" and claims, for ten of the eleven pairs,
+        # agreement that was never computed. CLAUDE.md is explicit that a demo
+        # doing that is the kind of thing a judge asks about. The count is
+        # reported beside it so the trace says exactly how much ran.
+        with_semantic = sum(1 for s in scores if s.semantic_available)
+        all_semantic = with_semantic == len(scores)
+
         emit(Tag.PATTERN, "crossed_tau", case_id=case.case_id,
-             claim_id=claim.claim_id, matched=len(matched),
-             tau=TAU,
-             semantic_available=any(s.semantic_available for s in scores))
+             claim_id=claim.claim_id, matched=len(matched), tau=TAU,
+             semantic_available=all_semantic,
+             semantic_pairs=f"{with_semantic}/{len(scores)}")
         _trace("PATTERN", "pattern", (
             f"{len(matched)} claim(s) on {case.feeder_id} cross TAU "
-            f"({'semantic ran' if any(s.semantic_available for s in scores) else 'topology and recency only'})"))
+            f"(semantic ran on {with_semantic}/{len(scores)} pairs)"))
         return proposal
 
     # ----------------------------------------------------- the one model call
@@ -233,18 +274,38 @@ class PatternWatch:
         prompt = self._prompt(proposal)
         try:
             verdict = self._judge(prompt)
+            # Shape-checked INSIDE the try. A model replying `[]`, `"none"` or
+            # {"reject": ["clm_a"]} is all valid JSON, parses clean, and then
+            # raises AttributeError on .get/.items -- outside the guard, that
+            # propagates out of the Lambda and kills the stream record.
+            if not isinstance(verdict, dict):
+                raise TypeError(
+                    f"expected an object, got {type(verdict).__name__}")
+            rejections = verdict.get("reject") or {}
+            if not isinstance(rejections, dict):
+                raise TypeError(
+                    f"'reject' must be an object, got "
+                    f"{type(rejections).__name__}")
         except Exception as exc:  # noqa: BLE001 - the message IS the diagnosis
-            emit(Tag.PATTERN, "adjudication_unavailable",
+            # "could not reach" and "reached, could not be understood" are
+            # different facts and the trace must not conflate them. A prompt
+            # bug reading as the account-level Bedrock block would let a real
+            # defect hide inside the story the whole demo rests on.
+            unreachable = not isinstance(exc, (TypeError, ValueError))
+            emit(Tag.PATTERN,
+                 "adjudication_unavailable" if unreachable
+                 else "adjudication_unreadable",
                  case_id=proposal.case_id, detail=str(exc)[:120])
             _trace("UNJUDGED", "pattern",
-                   "no model reachable -- merge rests on arithmetic and "
-                   "Anti-Abuse alone")
+                   ("no model reachable" if unreachable
+                    else "model replied in a shape we cannot read")
+                   + " -- merge rests on arithmetic and Anti-Abuse alone")
             return proposal
 
         candidates = set(proposal.candidate_claim_ids)
         rejected = list(proposal.rejected_claim_ids)
         reasons = dict(proposal.rejection_reasons)
-        for claim_id, reason in (verdict.get("reject") or {}).items():
+        for claim_id, reason in rejections.items():
             if claim_id not in candidates:
                 emit(Tag.PATTERN, "adjudication_hallucinated",
                      case_id=proposal.case_id, claim_id=claim_id)
@@ -300,6 +361,14 @@ class PatternWatch:
         if case is None:
             raise KeyError(proposal.case_id)
 
+        # THE GATE RUNS HERE, not only where a caller remembers to run it.
+        # The module-level on_new_claim/apply_upgrade pair is the frozen
+        # surface a Lambda codes against, and a Lambda that called the two of
+        # them merged the decoy with no gate at all -- no error, no log.
+        # Running verify() here is safe to do twice, because refusals only
+        # ever accumulate: a proposal already gated passes through unchanged.
+        proposal = self.gate.verify(proposal, case=case)
+
         get_claim = getattr(self.store, "get_claim", None)
         rejected = set(proposal.rejected_claim_ids)
         joined = 0
@@ -313,10 +382,20 @@ class PatternWatch:
                                              claim.claim_id)
             joined += 1
 
-        after = self.store.get_case(case.case_id)
-        recurrence = self.store.recurrence_count(
+        # Guarded like the read above it. The ambient path runs alongside
+        # split_case and the Watchdog, and dereferencing None here would be an
+        # AttributeError AFTER the membership writes had already committed --
+        # a half-applied merge with no legible error.
+        after = self.store.get_case(case.case_id) or case
+
+        # PRIOR cases, which is what the name and core/types.py both say.
+        # recurrence_count includes the case being upgraded, so the raw number
+        # is one too many: a feeder with exactly one case ever has had zero
+        # prior failures, and CLAUDE.md calls this "the number that most of
+        # the escalation argument rests on".
+        recurrence = max(0, self.store.recurrence_count(
             case.feeder_id, case.service,
-            self.clock.now() - timedelta(days=365))
+            self.clock.now() - timedelta(days=365)) - 1)
 
         emit(Tag.PATTERN, "upgraded", case_id=case.case_id, joined=joined,
              corroboration=after.corroboration, recurrence=recurrence,

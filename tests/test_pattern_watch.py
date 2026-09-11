@@ -18,7 +18,7 @@ import pytest
 from agents import pattern_watch
 from core import db, fakes
 from core.scoring import TAU
-from core.types import CaseStatus, Service
+from core.types import CaseStatus, ConsentScope, Service
 
 
 class FixedClock:
@@ -40,6 +40,16 @@ class FixedClock:
 
 def _boom(*_a, **_k):
     raise AssertionError("a model was invoked on the cheap path")
+
+
+def _consenting(*claims):
+    """Grant JOIN_COLLECTIVE. core/fakes.py grants FILE_INDIVIDUAL only, and
+    apply_upgrade now runs the gate itself, so a test about merging has to say
+    out loud that these households agreed to be merged."""
+    for claim in claims:
+        claim.consent_scopes = [ConsentScope.FILE_INDIVIDUAL,
+                                ConsentScope.JOIN_COLLECTIVE]
+    return list(claims)
 
 
 @pytest.fixture
@@ -155,9 +165,43 @@ def test_claims_on_two_segments_of_one_trunk_main_are_both_retrieved(watch):
 
 def test_a_claim_outside_the_window_is_not_retrieved():
     """The window is what keeps this bounded. A fault from six months ago is
-    not corroboration for one today."""
+    not corroboration for one today.
+
+    THIS TEST USED TO PASS VACUOUSLY. With only the ancient claim and the new
+    one in the store, the proposal was None anyway -- a claim does not
+    corroborate itself -- so `proposal is None or ...` was satisfied by its
+    left disjunct and the window bound was never exercised at all. Neutralise
+    the window (window_hours=10**6) and the old version still passed. It needs
+    a third, in-window claim so a proposal is actually produced.
+    """
     watch = pattern_watch.PatternWatch(
         clock=FixedClock(fakes.T0), window_hours=24)
+    db.put_case(fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
+                             segment=fakes.SEGMENT, status=CaseStatus.FILED))
+
+    ancient = fakes.a_claim(segment=fakes.SEGMENT, feeder_id=fakes.FEEDER,
+                            created_at=fakes.T0 - timedelta(days=180),
+                            household_id="hh_old")
+    neighbour = fakes.a_claim(segment=fakes.SEGMENT, feeder_id=fakes.FEEDER,
+                              created_at=fakes.T0 - timedelta(hours=1),
+                              household_id="hh_neighbour")
+    fresh = fakes.a_claim(segment=fakes.SEGMENT, feeder_id=fakes.FEEDER,
+                          created_at=fakes.T0, household_id="hh_new")
+    for c in (ancient, neighbour, fresh):
+        db.put_claim(c)
+
+    proposal = watch.on_new_claim(fresh)
+    assert proposal is not None, "the in-window neighbour should have clustered"
+    assert neighbour.claim_id in proposal.candidate_claim_ids
+    assert ancient.claim_id not in proposal.candidate_claim_ids, (
+        "a fault from six months ago was retrieved as corroboration")
+
+
+def test_widening_the_window_does_pull_the_old_claim_in():
+    """The other half, so the bound above is demonstrably the thing doing the
+    work rather than something else excluding it."""
+    watch = pattern_watch.PatternWatch(
+        clock=FixedClock(fakes.T0), window_hours=24 * 365)
     db.put_case(fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
                              segment=fakes.SEGMENT, status=CaseStatus.FILED))
 
@@ -169,8 +213,12 @@ def test_a_claim_outside_the_window_is_not_retrieved():
     db.put_claim(ancient)
     db.put_claim(fresh)
 
-    proposal = watch.on_new_claim(fresh)
-    assert proposal is None or ancient.claim_id not in proposal.candidate_claim_ids
+    # Retrieved now -- and still below TAU on recency, which is the point:
+    # the window excludes it from the QUERY, the arithmetic would exclude it
+    # from the CLUSTER. Two independent defences, and the test shows which is
+    # which rather than letting one hide behind the other.
+    candidates = watch._candidates(fresh, watch._cases_in_flight(fresh))
+    assert ancient.claim_id in [c.claim_id for c in candidates]
 
 
 def test_no_open_case_means_nothing_to_upgrade(watch):
@@ -298,7 +346,7 @@ def test_apply_upgrade_merges_and_keeps_provenance(watch):
                         segment=fakes.SEGMENT, status=CaseStatus.FILED,
                         claim_ids=[], household_ids=[], merged_from=[])
     db.put_case(case)
-    joining = out["claims"][2:5]
+    joining = _consenting(*out["claims"][2:5])
     for c in joining:
         db.put_claim(c)
 
@@ -327,7 +375,7 @@ def test_apply_upgrade_skips_what_anti_abuse_rejected(watch):
     case = fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
                         claim_ids=[], household_ids=[], merged_from=[])
     db.put_case(case)
-    good, decoy = out["claims"][2], out["decoys"][0]
+    good, decoy = _consenting(out["claims"][2], out["decoys"][0])
     db.put_claim(good)
     db.put_claim(decoy)
 
@@ -351,7 +399,7 @@ def test_applying_the_same_upgrade_twice_changes_nothing(watch):
     case = fakes.a_case(feeder_id=fakes.FEEDER, service=Service.WATER,
                         claim_ids=[], household_ids=[], merged_from=[])
     db.put_case(case)
-    joining = out["claims"][2:5]
+    joining = _consenting(*out["claims"][2:5])
     for c in joining:
         db.put_claim(c)
     proposal = pattern_watch.MergeProposal(
@@ -383,7 +431,7 @@ def test_apply_upgrade_does_not_write_the_escalation_tier(watch):
                         escalation_tier=1, claim_ids=[], household_ids=[],
                         merged_from=[])
     db.put_case(case)
-    claim = fakes.the_outage()["claims"][2]
+    claim = _consenting(fakes.the_outage()["claims"][2])[0]
     db.put_claim(claim)
 
     proposal = pattern_watch.MergeProposal(
@@ -448,6 +496,7 @@ def test_the_whole_ambient_pass_on_the_walkthrough_scenario():
                         escalation_tier=1,
                         claim_ids=[], household_ids=[], merged_from=[])
     db.put_case(case)
+    _consenting(*(out["claims"] + out["decoys"]))
     for c in out["claims"] + out["decoys"]:
         db.put_claim(c)
 
@@ -489,6 +538,7 @@ def test_a_merge_this_pass_produced_can_be_reversed():
                         segment=fakes.SEGMENT, status=CaseStatus.FILED,
                         claim_ids=[], household_ids=[], merged_from=[])
     db.put_case(case)
+    _consenting(*out["claims"])
     for c in out["claims"]:
         db.put_claim(c)
 

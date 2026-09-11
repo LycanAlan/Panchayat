@@ -27,17 +27,24 @@ from dataclasses import replace
 from core import db
 from core.scoring import normalise_id
 from core.tags import Tag, emit
-from core.types import Case, Claim, MergeProposal
+from core.types import Case, Claim, ConsentScope, MergeProposal
 
-#: Sentinel key in `rejection_reasons` recording checks that COULD NOT RUN.
-#: Not a claim id, and deliberately shaped so it can never collide with one.
+#: Structured-trace field naming checks that COULD NOT RUN.
 #:
 #: MergeProposal is frozen and has no field for "this check was unavailable",
 #: and that distinction is the whole lesson of `semantic_available`: a check
 #: that did not run is neither a pass nor a failure, and a merge that hides
-#: which checks were skipped is claiming scrutiny it never applied. Until the
-#: group agrees a field, it rides here where the trace UI already looks.
-CHECKS_NOT_RUN = "__checks_not_run__"
+#: which checks were skipped is claiming scrutiny it never applied.
+#:
+#: It rides in the emitted trace, NOT in `rejection_reasons`. That dict is
+#: typed and documented claim_id -> reason, and a sentinel key in it made
+#: `len(rejection_reasons) != len(rejected_claim_ids)` on every proposal and
+#: put a row for a claim that does not exist in front of anyone enumerating
+#: refusals for the trace UI. Ali: if you want this on the proposal itself it
+#: needs a field on MergeProposal, which is a frozen-type change and therefore
+#: a group call -- raising it rather than overloading a field that means
+#: something else.
+CHECKS_NOT_RUN = "checks_not_run"
 
 ADDRESS_UNVERIFIED = "address-not-verified"
 OUTAGE_FEED_UNAVAILABLE = "outage-feed-unavailable"
@@ -65,7 +72,8 @@ class AntiAbuse:
     """
 
     def __init__(self, store=db, register: Register | None = None,
-                 outage_feed: OutageFeed | None = None):
+                 outage_feed: OutageFeed | None = None,
+                 require_join_consent: bool = True):
         """`register` and `outage_feed` default to None, which means the check
         is UNAVAILABLE -- not passed, and not failed.
 
@@ -79,6 +87,7 @@ class AntiAbuse:
         self.store = store
         self.register = register
         self.outage_feed = outage_feed
+        self.require_join_consent = require_join_consent
 
     # ------------------------------------------------------------ helpers
 
@@ -129,6 +138,33 @@ class AntiAbuse:
                     "does not live on still manufactures a crowd.")
         return None
 
+    def _unconsented(self, claim: Claim) -> str | None:
+        """Joining a collective filing is a thing a household has to agree to.
+
+        `ConsentScope.JOIN_COLLECTIVE` is defined in the frozen contract as
+        "merge me into a group case", and until this agent existed NOTHING in
+        the repo ever read it -- `apply_upgrade` is the first code path that
+        performs the action the scope exists to authorise. A household that
+        agreed only to FILE_INDIVIDUAL has not agreed to have a filing made
+        against a public body in its name alongside ten strangers.
+
+        `fakes.a_claim()` grants FILE_INDIVIDUAL and nothing else, and
+        `graph/request_path.py` emits `consent_scopes=[]` while the Warden is
+        stubbed, so enforcing this refuses most traffic today. That is the
+        honest reading and not a bug in this check: the capture step does not
+        exist yet. Raised on STATUS.md; `require_join_consent=False` exists so
+        the group can decide rather than have this agent decide for them.
+        """
+        if not self.require_join_consent:
+            return None
+        scopes = {str(getattr(s, "value", s)) for s in claim.consent_scopes}
+        if ConsentScope.JOIN_COLLECTIVE.value in scopes:
+            return None
+        return ("No consent to join a collective: this household granted "
+                f"{sorted(scopes) or 'nothing'} and a group filing is made in "
+                "its name. Aggregation points outward, and only with the "
+                "household's agreement.")
+
     @staticmethod
     def _wrong_feeder(claim: Claim, case: Case) -> str | None:
         """Check 3. Topology beats distance, and it beats it in both
@@ -159,8 +195,12 @@ class AntiAbuse:
         case, claims = self._load(proposal, case, claims)
         by_id = {c.claim_id: c for c in claims}
 
-        rejected: list[str] = []
-        reasons: dict[str, str] = {}
+        # SEEDED FROM THE PROPOSAL, not empty. adjudicate() runs before this
+        # and records the merges a model refused; starting these from [] threw
+        # that away and merged the very claim the one LLM call exists to catch.
+        # Every stage in the chain may only ADD refusals.
+        rejected: list[str] = list(proposal.rejected_claim_ids)
+        reasons: dict[str, str] = dict(proposal.rejection_reasons)
         skipped: list[str] = []
 
         if case is None:
@@ -185,6 +225,8 @@ class AntiAbuse:
         # Pass one: the checks that judge a claim on its own merits.
         survivors: list[Claim] = []
         for claim_id in proposal.candidate_claim_ids:
+            if claim_id in rejected:
+                continue        # already refused upstream; it does not count
             claim = by_id.get(claim_id)
             if claim is None:
                 rejected.append(claim_id)
@@ -194,6 +236,7 @@ class AntiAbuse:
                 continue
 
             failure = (self._service_mismatch(claim, case)
+                       or self._unconsented(claim)
                        or self._unregistered(claim)
                        or self._wrong_feeder(claim, case))
             if failure:
@@ -225,14 +268,11 @@ class AntiAbuse:
             source = self.outage_feed(
                 case.feeder_id, str(getattr(case.service, "value", case.service)))
 
-        if skipped:
-            reasons[CHECKS_NOT_RUN] = ", ".join(skipped)
-
         emit(Tag.PATTERN, "verified", case_id=case.case_id,
              candidates=len(proposal.candidate_claim_ids),
              verified_households=len(counted), rejected=len(rejected),
              corroborating_source=source,
-             checks_not_run=", ".join(skipped) or None)
+             **{CHECKS_NOT_RUN: ", ".join(skipped) or None})
 
         return replace(
             proposal,

@@ -605,15 +605,36 @@ def test_signing_an_unknown_key_says_so_rather_than_forging_one():
 
 
 def test_the_queue_is_ordered_by_case_then_tier():
-    """memstore sorts by (case_id, tier). Here it falls out of the sort key
-    rather than out of a sort, and the two must still agree."""
-    case_id = "case_ordered"
-    for tier in (3, 1, 2):
-        f = fakes.a_filing(case_id=case_id, tier=tier)
-        db.put_filing_once(f)
+    """memstore sorts by (case_id, tier). Here it falls out of the UNSIGNED
+    partition's sort key, and the two must still agree.
 
+    THIS TEST USED TO EXERCISE THE WRONG BRANCH. Scoped to a case_id,
+    unsigned_filings() answers from filings_for_case(), which sorts in Python
+    -- so _unsigned_sk and its zero-padding were never read. Breaking the
+    padding (tier 10 sorting before tier 2) left the suite green while the
+    unscoped Digest queue, the one with no case_id to key on, came back out of
+    order. It has to be the UNSCOPED call, across more than one case, with a
+    tier that exposes lexicographic sorting.
+    """
+    for case_id in ("case_aaa", "case_bbb"):
+        for tier in (3, 10, 1, 2):
+            db.put_filing_once(fakes.a_filing(case_id=case_id, tier=tier))
+
+    queued = db.unsigned_filings()
+    ordered = [(f.case_id, f.tier) for f in queued]
+    assert ordered == sorted(ordered), f"queue out of order: {ordered}"
+    # Tier 10 after tier 2 is the assertion the padding actually buys: without
+    # zfill, "10" sorts before "2" as a string.
+    aaa = [t for c, t in ordered if c == "case_aaa"]
+    assert aaa == [1, 2, 3, 10], aaa
+
+
+def test_the_queue_can_still_be_read_per_case():
+    case_id = "case_scoped"
+    for tier in (3, 1, 2):
+        db.put_filing_once(fakes.a_filing(case_id=case_id, tier=tier))
     tiers = [f.tier for f in db.unsigned_filings(case_id)]
-    assert tiers == sorted(tiers), f"queue out of order: {tiers}"
+    assert tiers == [1, 2, 3], tiers
 
 
 def test_the_queue_can_be_scoped_to_one_case():
@@ -640,3 +661,28 @@ def test_a_refiled_duplicate_does_not_queue_a_second_draft():
     assert written is False
     assert stored.body == filing.body
     assert len(db.unsigned_filings(filing.case_id)) == 1
+
+
+def test_a_reused_key_across_two_cases_cannot_hijack_the_pointer():
+    """idempotency_key is a settable field and callers set it. The filing's own
+    Put is conditional on its SK but keyed PK=CASE#<case_id>, so the same key
+    on a DIFFERENT case passes that check. An unconditional pointer Put would
+    repoint FILING#<key> at the new case -- and the original draft would become
+    unreachable through get_filing and unsignable through sign_filing, which
+    hard rule 4 says must happen before anything is submitted."""
+    first = fakes.a_filing(case_id="case_one", body="THE REAL DRAFT")
+    db.put_filing_once(first)
+
+    hijack = fakes.a_filing(case_id="case_two", body="SOMEBODY ELSE")
+    hijack.idempotency_key = first.idempotency_key
+    written, _ = db.put_filing_once(hijack)
+
+    assert written is False, "a cross-case key collision was accepted"
+    back = db.get_filing(first.idempotency_key)
+    assert back is not None
+    assert back.case_id == "case_one", "the pointer was hijacked"
+    assert back.body == "THE REAL DRAFT"
+
+    signed, stored = db.sign_filing(first.idempotency_key, "mem_a1b2c3",
+                                    fakes.T0)
+    assert signed is True and stored.case_id == "case_one"
