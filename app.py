@@ -30,7 +30,18 @@ def invoke(payload: dict) -> dict:
         "member_id":    "mem_...",
         "text":         "three days now, no water in the tank",
         "language":     "kn",
+        "segment":      "ward12-4thcross",   # REQUIRED for routing
+        "feeder_id":    "bwssb-tm-14",       # optional, narrows the lookup
+        "service":      "water",             # optional, defaults to water
     }
+
+    `segment` is required and this docstring used to omit it, which is how a
+    deployed endpoint would have answered every real report with UNROUTED
+    while looking healthy. Jurisdiction is looked up by segment (hard rule 3),
+    `HouseholdPosition` is frozen and carries none, and there is no household
+    registry to resolve it from -- nothing in the repo writes a Household row.
+    So it has to arrive with the request. When it is missing the response says
+    `unrouted_reason: "no_segment"` rather than failing quietly five nodes in.
     """
     if payload.get("action") == "health":
         return health(payload)

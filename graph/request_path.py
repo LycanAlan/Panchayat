@@ -258,6 +258,13 @@ def _apply_request_context(ctx: RequestContext, claim: Claim) -> None:
         claim.service = Service(requested)
 
 
+_NO_SEGMENT = (
+    "no segment supplied -- routing needs to know which segment this household "
+    "is in, and there is no household registry to look it up from. Pass "
+    "`segment` in the payload."
+)
+
+
 def _remedy(ctx: RequestContext) -> str:
     """Grounded lookup. A hallucinated authority reproduces the exact failure
     we claim to fix, so an unknown segment must say so rather than guess."""
@@ -271,9 +278,18 @@ def _remedy(ctx: RequestContext) -> str:
     ctx.tail, ctx.entry = tail, entry
 
     if entry is None:
-        ctx.trace.record("UNROUTED", "remedy",
-                         "no jurisdiction entry for " + ctx.claim.segment
-                         + " -- asking, not guessing", stubbed=stub)
+        # Two different failures used to print the same line, and the one that
+        # actually happens in production read as the other. An absent segment
+        # is a CALLER problem -- nobody told us where this household is -- and
+        # an unknown segment is a DATA problem. "no jurisdiction entry for "
+        # with an empty string on the end looked like a missing curation row,
+        # and cost a debugging session that should have been one glance.
+        if not ctx.claim.segment:
+            ctx.trace.record("UNROUTED", "remedy", _NO_SEGMENT, stubbed=stub)
+        else:
+            ctx.trace.record("UNROUTED", "remedy",
+                             "no jurisdiction entry for " + ctx.claim.segment
+                             + " -- asking, not guessing", stubbed=stub)
     else:
         wrong = ", ".join(entry.not_authority) or "n/a"
         ctx.trace.record("ROUTED", "remedy",
@@ -497,6 +513,20 @@ def build_graph():
     return builder.build()
 
 
+def _unrouted_reason(ctx: RequestContext) -> str | None:
+    """Why routing produced nothing, in a form code can branch on.
+
+    `None` when it routed. "no_segment" is ours to fix at the caller;
+    "unknown_segment" is a curation gap and belongs to the institutions lane.
+    Telling them apart is the whole point -- see the note in `_remedy`.
+    """
+    if ctx.entry is not None:
+        return None
+    if ctx.claim is None:
+        return "no_claim"
+    return "no_segment" if not ctx.claim.segment else "unknown_segment"
+
+
 def run_request_path(payload: dict) -> dict:
     case_id = payload.get("case_id") or new_id("case")
     ctx = RequestContext(
@@ -519,7 +549,23 @@ def run_request_path(payload: dict) -> dict:
         "path": [n.node_id for n in result.execution_order],
         "claim_id": ctx.claim.claim_id if ctx.claim else None,
         "case_status": ctx.case.status.value if ctx.case else None,
+        # `authority` and `citation` are ONE fact: the routing decision, and
+        # hard rule 3's requirement that it carries a citation. They both come
+        # from the entry and must keep describing the same thing.
         "authority": ctx.entry.authority if ctx.entry else None,
+        # Who the draft is actually ADDRESSED to, which is a different fact --
+        # the tier's named officer, "BWSSB Assistant Engineer, sub-division
+        # office" rather than "BWSSB". Addressing a person is most of what
+        # makes a filing land, so the demo surface should not have to dig it
+        # out of the trace. A separate field, because overloading `authority`
+        # would have quietly decoupled it from `citation`.
+        "filed_to": ctx.filing.authority if ctx.filing else None,
+        "filed_tier": ctx.filing.tier if ctx.filing else None,
+        # DERIVED, not stored. This file's own rule: two copies of a fact can
+        # disagree, so the reason is computed from the same state the trace
+        # rendered rather than tracked alongside it. A caller can branch on
+        # this instead of pattern-matching prose.
+        "unrouted_reason": _unrouted_reason(ctx),
         "citation": ctx.entry.statute_ref if ctx.entry else None,
         "sla_deadline": (ctx.case.sla_deadline.isoformat()
                          if ctx.case and ctx.case.sla_deadline else None),

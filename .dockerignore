@@ -1,0 +1,28 @@
+# Keep secrets and bulk out of the build context.
+#
+# .env is FIRST and matters most: an image is pushed to ECR, and a key baked
+# into a layer is not removed by deleting the file in a later layer. .gitignore
+# already keeps it out of the repo; this keeps it out of the image.
+.env
+*.env
+!.env.example
+
+.venv/
+venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Not needed at runtime. Tests stay OUT: they pull in nothing the image needs
+# and only widen what ships.
+tests/
+docs/
+demo/
+eval/
+*.md
+!README.md
