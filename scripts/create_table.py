@@ -18,18 +18,23 @@ One table, one GSI, overloaded across every entity type -- the standard
 single-table pattern, and the one CLAUDE.md and core/types.py already commit
 to:
 
-    PK / SK              primary key.       CLAIM#<id> / META
-                                             CASE#<id>  / META
-    GSI1PK / GSI1SK       one shared index, several key patterns:
-        SEG#<segment>#SVC#<service>  / TS#<iso>       the Pattern Watch query
-                                                       (core/types.py's
-                                                       Claim.gsi1pk/gsi1sk)
-        FEEDER#<feeder>#SVC#<service> / CASE#<id>      recurrence_count
-                                                       (approved in review,
-                                                       docs/review/mesh-day1.md
-                                                       D2 -- no new GSI, no
-                                                       declared key changed)
-        STATUS#<status>              / <whatever Case sorts open_cases on>
+    Entity       PK                     SK                        GSI1PK           GSI1SK
+    Household    HH#<id>                META                      SEG#<segment>    HH#<id>
+    Claim        CLAIM#<id>             META                      SEG#<s>#SVC#<v>  TS#<iso>
+    Case         CASE#<id>              META                      STATUS#<s>       TS#<iso>
+    Case member  CASE#<id>              HH#<hh>                   --               --
+    Consent      HH#<id>                CONSENT#<ts>#<grant_id>   --               --
+    Filing       CASE#<id>              FILING#<idem>             --               --
+    Disclosure   HH#<id>                DISC#<ts>#<uniq>          --               --
+    Case/feeder  FEEDER#<f>#SVC#<v>     TS#<iso>#CASE#<id>        --               --
+    Grant ptr    GRANT#<grant_id>       META                      --               --
+
+The FEEDER#/SVC# row is recurrence_count, approved in review
+(docs/review/mesh-day1.md D2 -- no new GSI, no declared key changed). The
+access patterns and the key strings live in core/store.py and nowhere else;
+this file only declares the shape they need. That table came from Kartik's
+version of this script, which was written independently -- it documents his
+key schema, so it is the half worth keeping.
 
 No second GSI. A single overloaded index is deliberate: this table serves a
 five-day build's query patterns, all of them "give me recent items in one

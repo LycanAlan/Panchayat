@@ -8,6 +8,7 @@ learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
 Last updated: **11 Sep, 02:30** by Alakshendra
+Last updated: **11 Sep, 04:15** by Kartik
 
 ---
 
@@ -74,6 +75,12 @@ correctly against their own contract, they just haven't met yet:
 | **shared** | `tests/` | **DONE** | **99 passing**, no AWS needed |
 | Kartik | `core/store.py` | not started | DynamoDB. Must pass `tests/test_contract.py`. |
 | Kartik | `core/scoring.py` | not started | |
+| **shared** | `tests/` | **DONE** | **114 passing / 23 skipped** on memory, **137 passing** on dynamodb. No AWS needed. |
+| Kartik | `core/store.py` | **DONE, REVIEWED** | DynamoDB, 17 fns. All 5 review findings fixed. Membership writes are narrow + conditional + transactional, so ambient can no longer clobber the Watchdog's breach. Verified on DynamoDB Local, **not yet the real table**. |
+| Kartik | `core/scoring.py` | **DONE, REVIEWED** | `correlate()` renormalises when semantic is absent. `semantic_score()` is **gone** -- use `cosine()`, which returns `None`. `embed()` written but never executed. |
+| Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes. Numbers under D3 below. |
+| Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
+| Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
 | Kartik | `agents/pattern_watch.py` | not started | |
 | Kartik | `agents/anti_abuse.py` | not started | |
 | Alakshendra | `data/jurisdiction/ward12.yaml` | **DONE** | 31 entries. Water only. 24 BWSSB, 3 BBMP borewell, 3 builder line. **Sample can now be deleted** — see decisions log. |
@@ -102,7 +109,7 @@ correctly against their own contract, they just haven't met yet:
 | Who | Gate | Result |
 |---|---|---|
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
-| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | — |
+| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** After merging main: **137 passed** on dynamodb, **114 passed / 23 skipped** on memory, zero failures either way. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
 | Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
 
@@ -129,3 +136,100 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **10 Sep** — Desks return a typed `DeskReply`, not a string. Three callers were going to parse that text and one of them would have got it wrong. **`should_pause_sla` is the one to respect** — never run a statutory clock against a filing that never landed.
 - **10 Sep** — `NEEDS_HUMAN` is distinct from `REJECTED`. A rejection means resubmit with the missing particulars; NEEDS_HUMAN means no desk exists and retrying can never help. Tier 4 RTI is the case: drafted, never filed.
 - **10 Sep** — `A2AServer(host=...)` is the BIND address and the agent card advertises it; an A2A client dials whatever the card says. Binding `0.0.0.0` published `http://0.0.0.0:9002/` and every call died with `ConnectError` that read like the desk being down. Desks now bind broadly and advertise `PANCHAYAT_PUBLIC_HOST` (default `localhost`). **Anyone standing up a new A2A server: set `http_url`.**
+- **10 Sep** — `core/store.py` is real. `PANCHAYAT_BACKEND=dynamodb` works; set
+  `PANCHAYAT_DDB_ENDPOINT=http://localhost:8000` to run it against DynamoDB
+  Local. Nothing else changes -- keep importing `core.db`.
+- **10 Sep** — **`store.reset()` refuses a non-local endpoint.** It deletes
+  every row and `conftest.py` calls it twice per test, so
+  `PANCHAYAT_BACKEND=dynamodb pytest` without a local endpoint was silently
+  emptying the shared table. Set `PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes` only
+  if you mean it.
+- **11 Sep** — **SETTLED (Ali, review D2).** The two extra index row types are
+  approved: `FEEDER#<f>#SVC#<svc>` for `recurrence_count` and `GRANT#<id>`
+  for `revoke_consent`, plus uniquifiers on the consent and disclosure sort
+  keys. Neither adds a GSI, neither changes a declared entity key. Now written
+  into the schema table in `docs/team/KARTIK.md`.
+- **10 Sep** — `requirements.txt` needs **Python >= 3.12**: `numpy>=2.5.3`
+  refuses to install on 3.11. If your venv is 3.11 you are blocked.
+- **10 Sep** — Open bug, nobody's lane yet: `split_case` rebuilds a child's
+  claims only from `merged_from`, so a case's FOUNDING household splits into a
+  child with no claims. `core/memstore.py:95` has it too, so it must be fixed
+  in both or the backends diverge.
+- **10 Sep** — ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~
+  **FIXED by Ali in `0befb9b`.** It compared `start + 7 days` against a LATER
+  `clock.now()`, and at scale 86400 even ~40us between the calls is ~3.4
+  virtual seconds, so `.days` floored to 6. The suite is now green on both
+  backends with nothing skipped that should run.
+- **10 Sep** — `ruff check .` is not clean repo-wide: 70 errors, 57 outside the
+  mesh lane (`core/types.py` 18, `scripts/scaffold_stubs.py` 16,
+  `core/clock.py` 9, `core/fakes.py` 8, `core/memstore.py` 4).
+- **11 Sep** — **`scoring.semantic_score()` is deleted.** It collapsed
+  "could not compute" to a bare `0.0`, which folded into the weighted sum caps
+  every score at 0.65 and puts it under TAU forever. Use **`cosine(a, b)`**,
+  which returns `None` when the term is unavailable. If you want the answer
+  `correlate()` uses, call `correlate()`.
+- **11 Sep** — **`RECENCY_HALFLIFE_HOURS` is now `RECENCY_DECAY_HOURS`.**
+  `exp(-d/H)` halves at `H*ln2 = 33.3h`, not at 48h. Same arithmetic, honest
+  name. Asked for "a 24h half-life" you would have set 24.0 and got 16.6h.
+- **11 Sep** — **A NaN cosine used to read as PERFECT agreement.**
+  `min(1.0, nan)` is `1.0` in Python, and `pack_embedding` overflows to `inf`
+  above 65504, so a vector that could not survive storage came back out as
+  semantic agreement flagged as computed. Fixed in `cosine()`. If you are
+  writing anything that scores vectors, guard `np.isfinite` on the **result**
+  as well as the inputs -- 1e200 is finite and its square is not.
+- **11 Sep** — **Case writes are no longer whole-item puts.**
+  `add_household_to_case` and `split_case` write only `household_ids`,
+  `claim_ids` and `merged_from`, conditionally, with a retry, in one
+  transaction with the member row. If you write a Case from the ambient or
+  temporal path, **do not** read-modify-write the whole item: the Watchdog owns
+  `status` and `sla_deadline` and a full put takes its breach back out with
+  nothing logged.
+- **11 Sep** — `open_cases()` now returns **oldest first** on dynamodb.
+  memstore still returns insertion order; it needs the same sort to agree.
+  Ali's call, `core/memstore.py` is shared.
+- **11 Sep** — **D3 has numbers, and it needs a group call.**
+  `python -m eval.tau_sweep`. TAU = 0.72 is not the right threshold for either
+  scoring path: the renormalised one wants **0.78** (all three semantic models,
+  zero missed clusters, under a 1% false-merge ceiling). Turning semantic on
+  costs **0.7% / 8.4% / 22.0%** of same-fault pairs depending on how much a
+  real cosine separates the classes -- and **zero** pairs ever start
+  clustering, so the regression is one-way. Proposal, backed by Ali:
+  `TAU_TOPOLOGICAL` and `TAU_FULL`, swept separately, with the trace naming
+  which one applied.
+  **CORRECTED 04:15** -- the first numbers posted (0.8/5.9/17.6%) came off a
+  corpus whose street suffix was drawn at random rather than derived from the
+  number, so one street appeared under several spellings and pairs physically
+  on it scored 0 topology. The conclusion is unchanged and slightly stronger:
+  the cost in the harder regimes was UNDER-stated.
+- **11 Sep** — **Open, nobody's lane: segment normalisation stops at the
+  scorer.** `topology_score` now normalises case and whitespace, but
+  `claims_in_window` builds `GSI1PK` from the raw `claim.segment`, so
+  `Ward12-4thCross` and `ward12-4thcross` land in different partitions and
+  Pattern Watch never retrieves the pair to score at all. Same bug one layer
+  down. Needs normalising **on the way in** (intake or the Warden, before a
+  `Claim` is emitted), or agreed as a rule both backends apply at the key --
+  fixing it in `store.py` alone breaks backend parity.
+- **11 Sep** — `scripts/create_table.py` exists. Idempotent, reads
+  `PANCHAYAT_TABLE` and `PANCHAYAT_DDB_ENDPOINT`, carries the full key table in
+  its docstring. Ali's lane; there because he asked for it in review D4.
+- **11 Sep** — **`feeder_id` is normalised now, like `segment`.** Both fold
+  through one `_norm()` in `core/scoring.py`. Compared byte-exact,
+  `BWSSB-TM-14` and `bwssb-tm-14` scored topology **0.0** -- two houses on one
+  trunk main renormalising to 0.385 and never clustering, through the field
+  that carries four times the weight of the one that was already fixed.
+- **11 Sep** — **A split child no longer files its own feeder index row.**
+  `recurrence_count` answers "how many prior failures on this trunk main", and
+  a split corrects how we grouped one rather than creating another. It was a
+  ratchet: merge/split/merge/split climbed 1 -> 2 -> 3 -> 4 for one incident.
+  The child now carries `split_from:<parent>` in `merged_from` (hard rule 6
+  provenance) and the parent keeps the row. **`core/memstore.py` counts case
+  records and needs the same exclusion to agree** -- shared file, raised not
+  edited.
+- **11 Sep** — **`revoke_consent` is conditional now.** `update_item` UPSERTS,
+  so with a live pointer and a missing consent row it CREATED a stub carrying
+  only `revoked_at`, returned True having marked nothing, and every later
+  `live_consents()` for that household died on `KeyError: 'grant_id'`. It
+  returns False instead. If you call it, check the return.
+- **11 Sep** — `eval.tau_sweep`'s `best()` returns **None** when no threshold
+  clears the false-merge ceiling, instead of falling back to one that violates
+  it and printing it under the ceiling's own heading.
