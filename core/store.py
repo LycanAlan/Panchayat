@@ -794,6 +794,21 @@ def _filing_from(item: dict) -> Filing:
     )
 
 
+#: The one partition holding drafts waiting on a human. This is the Digest
+#: Agent's queue, and it is a partition rather than a filter because the
+#: question "what needs a signature anywhere" has no case_id to key on, and the
+#: alternatives were a Scan (reads every claim, case and consent row to find a
+#: handful of drafts) or a third GSI. A ward's unsigned drafts are a short list
+#: and rows leave the moment they are signed, so the partition stays small.
+_UNSIGNED_PK = "UNSIGNED"
+
+
+def _unsigned_sk(filing: Filing) -> str:
+    """Sorts by case then tier, matching memstore's ordering exactly."""
+    return ("CASE#" + filing.case_id + "#TIER#" + str(filing.tier).zfill(3)
+            + "#FILING#" + filing.idempotency_key)
+
+
 def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
     """Conditional put on attribute_not_exists(SK).
 
@@ -801,18 +816,45 @@ def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
     instead -- a retrying Watchdog must NOT file twice. Handing back the
     caller's object on the losing branch would let a retry carrying different
     text look as though it had been accepted.
+
+    Writes two index rows beside the filing, in ONE transaction with it:
+
+    * `FILING#<key> -> case_id`, because sign_filing() and get_filing() are
+      handed an idempotency key and the filing's PK is its case. Same shape,
+      and the same reason, as the GRANT# pointer append_consent writes.
+    * a row in the UNSIGNED queue, but only when the filing arrives without a
+      signature. Hard rule 4 says agents draft and humans sign, and a draft
+      nobody can see is how one sits for eleven weeks.
+
+    All three land together or none do. Written separately, a throttle between
+    them leaves a filing that cannot be signed because its pointer is missing,
+    or a draft that never appears in the queue -- and in both cases the filing
+    itself looks fine, which is what makes it expensive to find.
     """
     key = filing.idempotency_key or filing.compute_key()
     filing.idempotency_key = key
 
     d = to_dict(filing)
     d.update(PK="CASE#" + filing.case_id, SK="FILING#" + key, _type="filing")
+
+    items = [
+        {"Put": {"TableName": TABLE, "Item": _clean(d),
+                 "ConditionExpression": "attribute_not_exists(SK)"}},
+        {"Put": {"TableName": TABLE, "Item": {
+            "PK": "FILING#" + key, "SK": "META", "_type": "filing_pointer",
+            "case_id": filing.case_id}}},
+    ]
+    if filing.signed_by is None:
+        items.append({"Put": {"TableName": TABLE, "Item": {
+            "PK": _UNSIGNED_PK, "SK": _unsigned_sk(filing),
+            "_type": "unsigned_filing", "case_id": filing.case_id,
+            "idempotency_key": key, "tier": filing.tier}}})
+
     try:
-        _t().put_item(Item=_clean(d),
-                      ConditionExpression="attribute_not_exists(SK)")
+        _t().meta.client.transact_write_items(TransactItems=items)
         return True, filing
     except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+        if not _condition_failed(exc):
             raise
         stored = _t().get_item(
             Key={"PK": "CASE#" + filing.case_id, "SK": "FILING#" + key}
@@ -822,6 +864,108 @@ def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
             # gets here; the caller's filing is then the only copy we have.
             return False, filing
         return False, _filing_from(stored)
+
+
+def get_filing(idempotency_key: str) -> Filing | None:
+    """Answered through the FILING# pointer, because the filing's own PK is its
+    case and a key alone does not carry one."""
+    ptr = _t().get_item(
+        Key={"PK": "FILING#" + idempotency_key, "SK": "META"}).get("Item")
+    if not ptr:
+        return None
+    item = _t().get_item(Key={"PK": "CASE#" + ptr["case_id"],
+                              "SK": "FILING#" + idempotency_key}).get("Item")
+    return _filing_from(item) if item else None
+
+
+def unsigned_filings(case_id: str | None = None) -> list[Filing]:
+    """Drafts waiting on a human. This is the Digest Agent's queue.
+
+    Hard rule 4 says agents draft and humans sign. Until 11 Sep nothing in the
+    repo could produce a signature at all -- `signed_by` was read by the
+    decoder, required by the institution client, and written by nobody. An
+    unenforceable rule is decoration, and a queue nobody can see is how a
+    draft sits for eleven weeks.
+
+    Scoped to one case it is a Query on that case's own partition. Unscoped it
+    is a Query on the UNSIGNED partition, whose sort key is already
+    case-then-tier, so memstore's ordering falls out of the index rather than
+    out of a sort.
+    """
+    if case_id is not None:
+        return [f for f in filings_for_case(case_id) if f.signed_by is None]
+
+    rows = _query_all(KeyConditionExpression=Key("PK").eq(_UNSIGNED_PK))
+    out = []
+    for row in rows:
+        filing = get_filing(row["idempotency_key"])
+        # A row whose filing is gone, or has since been signed, is a stale
+        # queue entry rather than a draft. Skipped rather than raising: the
+        # queue is a hint, and the filing row is the truth.
+        if filing is not None and filing.signed_by is None:
+            out.append(filing)
+    return out
+
+
+def sign_filing(idempotency_key: str, member_id: str,
+                now: datetime) -> tuple[bool, Filing | None]:
+    """Record a named person's approval. Returns (was_signed, filing).
+
+    FIRST SIGNATURE WINS, same shape as put_filing_once. A second call returns
+    (False, stored) with the original signatory intact rather than overwriting
+    it -- who approved a filing against a public body is the fact the whole
+    liability argument rests on, and the last writer is not automatically the
+    right answer. Enforced by a condition rather than by reading first, so two
+    people signing at once cannot both win.
+
+    Returns (False, None) when the key is unknown: signing something that does
+    not exist is a bug in the caller, not a no-op worth hiding.
+    """
+    ptr = _t().get_item(
+        Key={"PK": "FILING#" + idempotency_key, "SK": "META"}).get("Item")
+    if not ptr:
+        return False, None
+
+    case_id = ptr["case_id"]
+    stored = _t().get_item(Key={"PK": "CASE#" + case_id,
+                                "SK": "FILING#" + idempotency_key}).get("Item")
+    if not stored:
+        return False, None
+
+    filing = _filing_from(stored)
+    try:
+        _t().meta.client.transact_write_items(TransactItems=[
+            {"Update": {
+                "TableName": TABLE,
+                "Key": {"PK": "CASE#" + case_id,
+                        "SK": "FILING#" + idempotency_key},
+                "UpdateExpression": "SET signed_by = :m, signed_at = :t",
+                # attribute_exists(SK) too: without it the update would UPSERT
+                # a stub filing if the row vanished between the read above and
+                # this write, the same way revoke_consent used to forge a
+                # consent row nobody granted.
+                "ConditionExpression": (
+                    "attribute_exists(SK) AND attribute_not_exists(signed_by)"),
+                "ExpressionAttributeValues": {":m": member_id,
+                                              ":t": now.isoformat()},
+            }},
+            {"Delete": {"TableName": TABLE, "Key": {
+                "PK": _UNSIGNED_PK, "SK": _unsigned_sk(filing)}}},
+        ])
+    except ClientError as exc:
+        if not _condition_failed(exc):
+            raise
+        # Already signed, by whoever got there first. Hand back THEIR record.
+        current = _t().get_item(
+            Key={"PK": "CASE#" + case_id,
+                 "SK": "FILING#" + idempotency_key}).get("Item")
+        if not current:
+            return False, None
+        return False, _filing_from(current)
+
+    filing.signed_by = member_id
+    filing.signed_at = now
+    return True, filing
 
 
 def filings_for_case(case_id: str) -> list[Filing]:
