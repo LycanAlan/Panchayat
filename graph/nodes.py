@@ -29,6 +29,8 @@ from strands.agent import AgentResult
 from strands.multiagent.base import MultiAgentBase, MultiAgentResult, NodeResult, Status
 from strands.telemetry.metrics import EventLoopMetrics
 
+from graph.observability import span
+
 
 def _as_agent_result(text: str) -> AgentResult:
     """Graph requires node output to look like an agent turn, so that nested
@@ -62,7 +64,16 @@ class FunctionNode(MultiAgentBase):
                 "FunctionNode '" + self.node_id + "' got no ctx. Invoke the "
                 "graph as graph(task, invocation_state={'ctx': RequestContext})."
             )
-        summary = self.fn(ctx)
+        # One span per node, carrying the case_id. Without it a slow request is
+        # just a slow request; with it, the node that cost the time is named --
+        # and every span from this case, across all four execution paths, sits
+        # under one query. See graph/observability.py; it is a no-op with no
+        # SDK configured, so this costs the offline suite nothing.
+        with span("panchayat.node." + self.node_id,
+                  case_id=getattr(ctx, "case_id", None),
+                  node=self.node_id):
+            summary = self.fn(ctx)
+
         return MultiAgentResult(
             status=Status.COMPLETED,
             results={

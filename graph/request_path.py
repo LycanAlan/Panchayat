@@ -45,6 +45,7 @@ from core.types import (
     new_id,
 )
 from graph.nodes import FunctionNode
+from graph.observability import annotate, span
 from graph.trace import CaseTrace, use_trace
 
 # ---------------------------------------------------------------- context
@@ -526,10 +527,15 @@ def _unrouted_reason(ctx: RequestContext) -> str | None:
     """
     if ctx.entry is not None:
         return None
+    # No claim means the graph never got that far -- including the refusal
+    # before it starts. Read the segment off the payload there, so this stays
+    # DERIVED rather than taking a reason its caller had to know.
+    segment = (ctx.claim.segment if ctx.claim
+               else str(ctx.payload.get("segment", "")).strip())
+    if not segment:
+        return "no_segment"
     if ctx.claim is None:
         return "no_claim"
-    if not ctx.claim.segment:
-        return "no_segment"
     # `run_or_stub` hands back (INSTITUTIONAL, None, "") when remedy.resolve
     # raises, so a perfectly good segment can arrive here with no entry. Saying
     # "unknown_segment" there blames the institutions lane's curated data for
@@ -541,24 +547,48 @@ def _unrouted_reason(ctx: RequestContext) -> str | None:
     return "unknown_segment"
 
 
-def _held_response(ctx: RequestContext, reason: str) -> dict:
-    """The same shape `run_request_path` always returns, for a request that
-    never reached the graph. Same keys, so a caller branches on
-    `unrouted_reason` rather than on which keys happen to exist.
+def _response(ctx: RequestContext, result=None) -> dict:
+    """THE response shape. One builder, deliberately.
+
+    There were briefly two -- this one and a `_held_response` for the request
+    that never reaches the graph -- and that is the same defect this file
+    warns about everywhere else: two copies of a fact, drifting. Add a field
+    to one and a caller branching on it gets a KeyError from the other, on the
+    path that only fires when something already went wrong.
+
+    `result` is None when the graph never ran. Everything else is read off the
+    context, which is empty in exactly the way that says so.
     """
+    usage = getattr(result, "accumulated_usage", None) if result else None
     return {
         "case_id": ctx.case_id,
-        "status": "completed",
-        "path": [],
-        "claim_id": None,
-        "case_status": None,
-        "authority": None,
-        "unrouted_reason": reason,
-        "filed_to": None,
-        "filed_tier": None,
-        "citation": None,
-        "sla_deadline": None,
-        "usage": {},
+        # .value, not str(): Strands' Status is a bare Enum, so str() renders
+        # "Status.COMPLETED" and nothing matching on "completed" ever matches.
+        "status": (getattr(result.status, "value", str(result.status))
+                   if result else "completed"),
+        "path": [n.node_id for n in result.execution_order] if result else [],
+        "claim_id": ctx.claim.claim_id if ctx.claim else None,
+        "case_status": ctx.case.status.value if ctx.case else None,
+        # `authority` and `citation` are ONE fact: the routing decision, and
+        # hard rule 3's requirement that it carries a citation. They both come
+        # from the entry and must keep describing the same thing.
+        "authority": ctx.entry.authority if ctx.entry else None,
+        "citation": ctx.entry.statute_ref if ctx.entry else None,
+        # Who the draft is actually ADDRESSED to, which is a different fact --
+        # the tier's named officer, "BWSSB Assistant Engineer, sub-division
+        # office" rather than "BWSSB". Addressing a person is most of what
+        # makes a filing land, so the demo surface should not have to dig it
+        # out of the trace. A separate field, because overloading `authority`
+        # would have quietly decoupled it from `citation`.
+        "filed_to": ctx.filing.authority if ctx.filing else None,
+        "filed_tier": ctx.filing.tier if ctx.filing else None,
+        # DERIVED, not stored, for the same reason this function is one
+        # function: computed from the state the trace rendered.
+        "unrouted_reason": _unrouted_reason(ctx),
+        "sla_deadline": (ctx.case.sla_deadline.isoformat()
+                         if ctx.case and ctx.case.sla_deadline else None),
+        # Free evidence for the cost argument. Log it from day one.
+        "usage": dict(usage) if usage else {},
         "stubbed_agents": ctx.trace.stubbed_agents,
         "trace": ctx.trace.to_dict(),
         "trace_text": ctx.trace.render(),
@@ -581,49 +611,32 @@ def run_request_path(payload: dict) -> dict:
     # reads back. Patching the trace line downstream left that intact; this is
     # the actual root cause, and it is ours, not the storage lane's.
     if not str(payload.get("segment", "")).strip():
-        with use_trace(ctx.trace):
+        # Traced too. A request refused before the graph is still a request,
+        # and a dashboard that only shows the ones that got through cannot
+        # answer "how many are we turning away, and why".
+        with span("panchayat.request", case_id=case_id, refused="no_segment"),                 use_trace(ctx.trace):
             ctx.trace.record("HELD", "intake", _NO_SEGMENT)
-        return _held_response(ctx, "no_segment")
+        return _response(ctx)
 
     # Bind the trace for this request so any lane reached from here --
     # including code that was never handed the CaseTrace object -- records
     # into this case's story rather than printing into the void.
-    with use_trace(ctx.trace):
+    with span("panchayat.request",
+              case_id=case_id,
+              segment=str(payload.get("segment", "")),
+              service=str(payload.get("service", "water"))) as sp,             use_trace(ctx.trace):
         result = build_graph()(payload.get("text", ""),
                                invocation_state={"ctx": ctx})
 
-    usage = getattr(result, "accumulated_usage", None)
-    return {
-        "case_id": case_id,
-        # .value, not str(): Strands' Status is a bare Enum, so str() renders
-        # "Status.COMPLETED" and nothing matching on "completed" ever matches.
-        "status": getattr(result.status, "value", str(result.status)),
-        "path": [n.node_id for n in result.execution_order],
-        "claim_id": ctx.claim.claim_id if ctx.claim else None,
-        "case_status": ctx.case.status.value if ctx.case else None,
-        # `authority` and `citation` are ONE fact: the routing decision, and
-        # hard rule 3's requirement that it carries a citation. They both come
-        # from the entry and must keep describing the same thing.
-        "authority": ctx.entry.authority if ctx.entry else None,
-        # Who the draft is actually ADDRESSED to, which is a different fact --
-        # the tier's named officer, "BWSSB Assistant Engineer, sub-division
-        # office" rather than "BWSSB". Addressing a person is most of what
-        # makes a filing land, so the demo surface should not have to dig it
-        # out of the trace. A separate field, because overloading `authority`
-        # would have quietly decoupled it from `citation`.
-        "filed_to": ctx.filing.authority if ctx.filing else None,
-        "filed_tier": ctx.filing.tier if ctx.filing else None,
-        # DERIVED, not stored. This file's own rule: two copies of a fact can
-        # disagree, so the reason is computed from the same state the trace
-        # rendered rather than tracked alongside it. A caller can branch on
-        # this instead of pattern-matching prose.
-        "unrouted_reason": _unrouted_reason(ctx),
-        "citation": ctx.entry.statute_ref if ctx.entry else None,
-        "sla_deadline": (ctx.case.sla_deadline.isoformat()
-                         if ctx.case and ctx.case.sla_deadline else None),
-        # Free evidence for the cost argument. Log it from day one.
-        "usage": dict(usage) if usage else {},
-        "stubbed_agents": ctx.stubbed,
-        "trace": ctx.trace.to_dict(),
-        "trace_text": ctx.trace.render(),
-    }
+        # After the work, not before: which authority and whether it routed at
+        # all are the attributes worth querying on, and neither is known until
+        # the graph has run. A closed span cannot be annotated.
+        annotate(sp,
+                 authority=ctx.entry.authority if ctx.entry else None,
+                 filed_to=ctx.filing.authority if ctx.filing else None,
+                 filed_tier=ctx.filing.tier if ctx.filing else None,
+                 unrouted_reason=_unrouted_reason(ctx),
+                 stubbed=",".join(ctx.trace.stubbed_agents) or None,
+                 path=",".join(n.node_id for n in result.execution_order))
+
+    return _response(ctx, result)

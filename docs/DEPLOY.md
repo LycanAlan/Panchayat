@@ -15,6 +15,8 @@ Honesty first, because a runbook that overstates itself is worse than none.
 | Response survives JSON encoding | **tested** — `sla_deadline`, `trace`, `usage` |
 | A report with no `segment` degrades, not 500s | **tested** |
 | Two concurrent reports | **tested** — full path, no shared `Graph` state |
+| Spans carry `case_id` | **tested** — real in-memory exporter |
+| One trace per request | **tested** — Strands' own spans included |
 | `uvicorn` / `starlette` present in the image | **verified** from package metadata, not from a build |
 | `docker build` | **NOT verified** — no Docker on the machine this was written on |
 | Push to ECR, `agentcore` deploy | **NOT verified** — nothing has been deployed yet |
@@ -103,6 +105,21 @@ uses transactions in `add_household_to_case`, `split_case` and
 household reports on an existing case. So a role built from a `*Item` glob
 deploys clean, serves the single-household demo perfectly, and throws
 AccessDenied on the first *merged* case — which is the demo that matters.
+
+## Observability
+
+`opentelemetry-instrument` in the image CMD sets up the SDK; `graph/observability.py`
+emits the spans. One `panchayat.request` span per invocation plus one
+`panchayat.node.<id>` per node, all carrying `panchayat.case_id`.
+
+Query by `panchayat.case_id` to find the trace, and everything comes with it —
+Strands' own `invoke_graph` span sits in the same trace, and so will the model
+calls once the account clears. That grouping is why CLAUDE.md puts
+observability *before* the trace UI: the UI is a view of it.
+
+With no SDK configured — every `pytest` run, and any local `python app.py` —
+the spans are `NonRecordingSpan`: attributes accepted, nothing exported, no
+collector contacted. So this costs the offline suite nothing and needs no AWS.
 
 ## Known blockers
 
