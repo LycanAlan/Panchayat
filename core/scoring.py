@@ -37,15 +37,20 @@ EMBED_DIMS = 1024
 _SEGMENT = re.compile(r"^(?P<ward>[^-]+)-(?P<n>\d+)(?:st|nd|rd|th)(?P<kind>[a-z]+)$")
 
 
-def _norm(value: str) -> str:
+def normalise_id(value: str) -> str:
     """Fold a topology identifier to its comparable form.
 
     Segments and feeder ids both arrive out of intake free text and out of
     routing, so casing and stray spaces are the normal condition rather than
-    the exception. ONE helper for both on purpose: normalising the segment and
-    not the feeder id was the original bug, and it left the failure in the
-    field that carries four times the weight. Anything compared in
-    topology_score goes through here.
+    the exception.
+
+    ONE helper for both on purpose: normalising the segment and not the feeder
+    id was the original bug, and it left the failure in the field that carries
+    four times the weight. Anything compared in topology_score goes through
+    here.
+
+    PUBLIC because agents/anti_abuse.py compares feeder ids too. Two
+    normalisation rules in two files is precisely how the first one drifted.
     """
     return value.strip().lower() if value else ""
 
@@ -53,7 +58,7 @@ def _norm(value: str) -> str:
 def _norm_segment(segment: str) -> str:
     """Kept as a name because _parse_segment and the adjacency rule read as
     segment-specific. Same fold."""
-    return _norm(segment)
+    return normalise_id(segment)
 
 
 def _parse_segment(segment: str) -> tuple[str, int, str] | None:
@@ -91,7 +96,7 @@ def topology_score(a: Claim, b: Claim) -> float:
     # `feed_a and` matters for the same reason `seg_a and` does below: two
     # claims that have not been routed yet both carry the dataclass default
     # and must not corroborate on the strength of both being empty.
-    feed_a, feed_b = _norm(a.feeder_id), _norm(b.feeder_id)
+    feed_a, feed_b = normalise_id(a.feeder_id), normalise_id(b.feeder_id)
     if feed_a and feed_a == feed_b:
         return 1.0
     seg_a, seg_b = _norm_segment(a.segment), _norm_segment(b.segment)
