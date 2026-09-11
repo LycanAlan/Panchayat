@@ -8,7 +8,7 @@ learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
 Last updated: **11 Sep, 02:30** by Alakshendra
-Last updated: **12 Sep, 05:30** by Kartik
+Last updated: **12 Sep, 07:10** by Kartik
 
 ---
 
@@ -81,7 +81,7 @@ correctly against their own contract, they just haven't met yet:
 | Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
 | Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
 | Kartik | `agents/pattern_watch.py` | **DONE** | Ambient path. `on_new_claim` → `adjudicate` → `anti_abuse.verify` → `apply_upgrade`. Below TAU it returns `None` having invoked **no model**. `apply_upgrade` does **not** write `escalation_tier` — see the blocker. |
-| Kartik | `agents/anti_abuse.py` | **DONE** | Four checks, each with a reason the trace UI can render. **Ali:** `rejection_reasons` carries a sentinel key `__checks_not_run__` listing checks that could not run — say if the UI wants a different shape. |
+| Kartik | `agents/anti_abuse.py` | **DONE** | **Five** checks now — service, consent, register, feeder, dedup — each with a reason the trace UI can render. `rejection_reasons` keys ONLY on rejected claims; checks that could not run ride the trace as `checks_not_run=`. |
 | Kartik | `core/store.py` filings | **DONE** | `get_filing`, `unsigned_filings`, `sign_filing` now exist on the dynamodb backend too. **Ali: the Digest Agent works on the real table now** — it raised NotImplementedError there before. |
 | Kartik | `data/corpus/generator.py` | not started | Day 2 carry-over. |
 | Kartik | `eval/density_curve.py` | not started | Day 4. The number. |
@@ -271,3 +271,41 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **12 Sep** — `core.scoring._norm` is now **`normalise_id`** (public).
   `anti_abuse` compares feeder ids too, and two normalisation rules in two
   files is exactly how the first one drifted.
+
+---
+
+## Blocker raised 12 Sep — nothing captures consent to join a collective
+
+`ConsentScope.JOIN_COLLECTIVE` has been in the frozen contract since day one
+as *"merge me into a group case"*. **Nothing in the repo has ever read it.**
+`agents/pattern_watch.apply_upgrade()` is the first code path that performs the
+action the scope exists to authorise, and until today it merged households into
+a collective filing against a public body without checking.
+
+`agents/anti_abuse.verify()` now refuses a claim that does not carry it, and
+that is enforced by default.
+
+**This refuses most traffic today, and that is the honest state rather than a
+bug in the check:**
+
+- `core/fakes.py` grants `FILE_INDIVIDUAL` and nothing else
+- `graph/request_path.py` emits `consent_scopes=[]` while the Warden is stubbed
+- no intake step anywhere asks the household the question
+
+**Who this needs.** Raghav owns `agents/warden.py` and `agents/intake.py`, so
+the capture step is his lane; Ali owns the graph that would surface the ask.
+`AntiAbuse(require_join_consent=False)` exists so the group can stand it down
+deliberately rather than have my agent decide for everyone — but the default
+stays strict, because a filing made in a household's name is exactly the thing
+hard rule 4 is about.
+
+## Also open, and not mine to fix alone
+
+**A case-merge primitive does not exist.** `graph/request_path.py` mints a new
+case per report, so twelve households reporting one outage open twelve cases on
+one feeder. `pattern_watch` merges *claims* into one case, which would leave the
+other eleven alive, each with its own deadline and tier, for the Watchdog to
+file separately — hard rule 5's duplicate, with provenance `split_case` cannot
+reconcile. For now claims already live on another case are **skipped** and the
+skip is traced. The real answer is either a case merge (withdraw the others with
+provenance) or the spine reusing a case per feeder+service. **Ali + Raghav.**
