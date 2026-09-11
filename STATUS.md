@@ -8,7 +8,7 @@ learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
 Last updated: **11 Sep, 02:30** by Alakshendra
-Last updated: **11 Sep, 04:15** by Kartik
+Last updated: **12 Sep, 05:30** by Kartik
 
 ---
 
@@ -74,17 +74,17 @@ correctly against their own contract, they just haven't met yet:
 | **shared** | `core/memstore.py` | **DONE** | In-memory, full interface |
 | **shared** | `core/db.py` | **DONE** | The seam. Import from here. Missing backend fns now raise by name instead of binding `None`. |
 | **shared** | `core/fakes.py` | **DONE** | `the_outage()` has 12 claims + a decoy |
-| **shared** | `tests/` | **DONE** | **99 passing**, no AWS needed |
-| Kartik | `core/store.py` | not started | DynamoDB. Must pass `tests/test_contract.py`. |
-| Kartik | `core/scoring.py` | not started | |
-| **shared** | `tests/` | **DONE** | **114 passing / 23 skipped** on memory, **137 passing** on dynamodb. No AWS needed. |
+| **shared** | `tests/` | **DONE** | **320 passing / 35 skipped** on memory, **355 passing, zero failures** on dynamodb — the first fully green cross-backend run. No AWS needed. |
 | Kartik | `core/store.py` | **DONE, REVIEWED** | DynamoDB, 17 fns. All 5 review findings fixed. Membership writes are narrow + conditional + transactional, so ambient can no longer clobber the Watchdog's breach. Verified on DynamoDB Local, **not yet the real table**. |
 | Kartik | `core/scoring.py` | **DONE, REVIEWED** | `correlate()` renormalises when semantic is absent. `semantic_score()` is **gone** -- use `cosine()`, which returns `None`. `embed()` written but never executed. |
 | Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes. Numbers under D3 below. |
 | Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
 | Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
-| Kartik | `agents/pattern_watch.py` | not started | |
-| Kartik | `agents/anti_abuse.py` | not started | |
+| Kartik | `agents/pattern_watch.py` | **DONE** | Ambient path. `on_new_claim` → `adjudicate` → `anti_abuse.verify` → `apply_upgrade`. Below TAU it returns `None` having invoked **no model**. `apply_upgrade` does **not** write `escalation_tier` — see the blocker. |
+| Kartik | `agents/anti_abuse.py` | **DONE** | Four checks, each with a reason the trace UI can render. **Ali:** `rejection_reasons` carries a sentinel key `__checks_not_run__` listing checks that could not run — say if the UI wants a different shape. |
+| Kartik | `core/store.py` filings | **DONE** | `get_filing`, `unsigned_filings`, `sign_filing` now exist on the dynamodb backend too. **Ali: the Digest Agent works on the real table now** — it raised NotImplementedError there before. |
+| Kartik | `data/corpus/generator.py` | not started | Day 2 carry-over. |
+| Kartik | `eval/density_curve.py` | not started | Day 4. The number. |
 | Alakshendra | `data/jurisdiction/ward12.yaml` | **DONE** | 31 entries. Water only. 24 BWSSB, 3 BBMP borewell, 3 builder line. **Sample can now be deleted** — see decisions log. |
 | Alakshendra | `agents/remedy.py` | **DONE** | `lookup(service, segment, feeder_id)` and `resolve(claim) -> (tail, entry, citation)`. Returns `None` on a miss, never a guess. |
 | Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005. Now on `core.models.get_model("cheap")` — a desk picking a tool is classification, not deliberation. |
@@ -119,7 +119,6 @@ correctly against their own contract, they just haven't met yet:
 | Alakshendra | 50 labelled complaints routed, **target ≥80%** | **PASSED — 47/50, 94%.** Correct body 92%, declined-to-guess 14/14. `python -m eval.routing_accuracy` |
 | Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | **PASS, same caveat.** After merging main: **137 passed** on dynamodb, **114 passed / 23 skipped** on memory, zero failures either way. Still **DynamoDB Local**, not our table -- no AWS credentials here. Re-run when they land. |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | — |
-| Kartik | `store.py` passes `tests/test_contract.py` on DynamoDB | — |
 | Raghav | `test_clock.py` proves 7 virtual days fire in ~7 real seconds | **PASSED.** Whole lane green, no AWS creds. 1 honest skip (`strands` not installed locally). |
 | Ali | one claim in, one filing out, **on deployed infra** | **PARTIAL — passes locally.** `pytest tests/test_request_path.py`, 8/8. Routes to BWSSB with a real citation through Alakshendra's table. Deploy still pending. |
 
@@ -243,3 +242,32 @@ Append here when something is settled, so nobody relitigates it at 2am.
 - **11 Sep** — `eval.tau_sweep`'s `best()` returns **None** when no threshold
   clears the false-merge ceiling, instead of falling back to one that violates
   it and printing it under the ceiling's own heading.
+- **12 Sep** — **The ambient path is live.** `agents/pattern_watch.py` +
+  `agents/anti_abuse.py`. Import them, do not reimplement them:
+  `on_new_claim(claim) -> MergeProposal | None`, `adjudicate(proposal)`,
+  `apply_upgrade(proposal) -> case_id`, `anti_abuse.verify(proposal)`. All four
+  keep the exact stub signatures. The classes `PatternWatch(...)` and
+  `AntiAbuse(...)` take injected dependencies if you need to drive them in a
+  test.
+- **12 Sep** — **`apply_upgrade()` deliberately does NOT write
+  `escalation_tier`.** That is the open blocker: two would-be writers, and
+  `put_case` is a blind overwrite. It emits `tag=pattern
+  event=escalation_requested` instead, which is the "climb() as sole writer,
+  apply_upgrade requests rather than performs" option. **Raghav:** if you take
+  that option, `climb()` reads the request and nothing else changes. If the
+  group picks a version attribute instead, the request line becomes the write.
+  Not deciding it alone.
+- **12 Sep** — **Adjudication degrades when no model is reachable**, which is
+  every invoke on this account. The proposal passes through unchanged and the
+  trace logs `adjudication_unavailable`. Anti-Abuse is the hard gate, not the
+  model. If you see a cluster in the demo, it formed on topology and recency
+  alone and the trace says so.
+- **12 Sep** — **Open, needs Ali: GSI1 is keyed on SEGMENT, clustering is by
+  FEEDER.** A fault on one trunk main spanning two streets is retrieved by
+  `claims_in_window` only for the street you query. `pattern_watch` works
+  around it by fanning out over the segments of cases already in flight on that
+  feeder — bounded and still on the index, but a feeder-keyed GSI answers it in
+  one query. Schema change, so raised not taken.
+- **12 Sep** — `core.scoring._norm` is now **`normalise_id`** (public).
+  `anti_abuse` compares feeder ids too, and two normalisation rules in two
+  files is exactly how the first one drifted.
