@@ -8,11 +8,13 @@ Honesty first, because a runbook that overstates itself is worse than none.
 
 | Step | State |
 |---|---|
-| `app.py` serves the AgentCore contract | **verified** — started locally, real HTTP |
-| `GET /ping` | **verified** — `{"status":"Healthy",...}` |
-| `POST /invocations`, health action | **verified** |
-| `POST /invocations`, full spine | **verified** — routes, drafts, tracks |
-| Two concurrent reports | **verified** — test, no shared `Graph` state |
+| `app.py` serves the AgentCore contract | **tested** — `tests/test_app.py`, real ASGI |
+| `GET /ping` | **tested** — through Starlette routing |
+| `POST /invocations`, health action | **tested** |
+| `POST /invocations`, full spine | **tested** — routes, drafts, tracks, over HTTP |
+| Response survives JSON encoding | **tested** — `sla_deadline`, `trace`, `usage` |
+| A report with no `segment` degrades, not 500s | **tested** |
+| Two concurrent reports | **tested** — full path, no shared `Graph` state |
 | `uvicorn` / `starlette` present in the image | **verified** from package metadata, not from a build |
 | `docker build` | **NOT verified** — no Docker on the machine this was written on |
 | Push to ECR, `agentcore` deploy | **NOT verified** — nothing has been deployed yet |
@@ -59,18 +61,48 @@ nothing; see `tests/test_app.py`.
 
 ## Build and deploy
 
+**Read this before running `agentcore configure`.** The toolkit generates its
+own `Dockerfile` and `.dockerignore` in the project root and builds from
+those. Run it blind and it overwrites the two in this repo — taking the arm64
+pin, `DOCKER_CONTAINER=1`, the `opentelemetry-instrument` entrypoint and the
+`**/.env` exclusion with it, and the image that reaches ECR is not the one
+those files describe.
+
+So pick one and know which:
+
 ```bash
+# A. our Dockerfile is the source of truth -- back the generated pair out
+#    if configure overwrites them, and confirm before launching:
 docker buildx build --platform linux/arm64 -t panchayat:latest .
+git diff --stat Dockerfile .dockerignore     # must be empty after configure
+
 agentcore configure --entrypoint app.py
 agentcore launch
 ```
 
+If the toolkit insists on its own image, port these four into the generated
+Dockerfile by hand — each one is load-bearing and each fails silently:
+`--platform=linux/arm64`, `ENV DOCKER_CONTAINER=1`, the
+`opentelemetry-instrument` wrapper, and `**/.env` in the ignore file.
+
 ## The execution role needs
 
 - `bedrock:InvokeModel*` on the inference profiles in `core/models.py`
-- `dynamodb:*Item`, `Query` on the `panchayat` table and `GSI1`
-- `logs:CreateLogStream`, `logs:PutLogEvents`
+- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`,
+  `BatchWriteItem` **and `TransactWriteItems`** on the `panchayat` table
+  and its `GSI1`
+- `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
 - ECR pull on the repository the image lands in
+- a trust relationship allowing `bedrock-agentcore.amazonaws.com` to assume it
+
+**`dynamodb:*Item` is not enough, and the gap is invisible at N=1.** IAM globs
+match literally: `*Item` covers `PutItem`/`GetItem`/`UpdateItem`/`DeleteItem`
+but **not `TransactWriteItems`** — different word, plural. `core/store.py`
+uses transactions in `add_household_to_case`, `split_case` and
+`append_consent`, and the request path reaches the first the moment a second
+household reports on an existing case. So a role built from a `*Item` glob
+deploys clean, serves the single-household demo perfectly, and throws
+AccessDenied on the first *merged* case — which is the demo that matters.
 
 ## Known blockers
 

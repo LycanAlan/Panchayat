@@ -224,7 +224,11 @@ def _claim_stub(ctx: RequestContext) -> Claim:
     pos = ctx.position
     return fakes.a_claim(
         household_id=pos.household_id,
-        segment=ctx.payload.get("segment", fakes.SEGMENT),
+        # NOT fakes.SEGMENT. Defaulting here is what hid the routing bug for
+        # two days: a household we cannot place was born in ward12 and got a
+        # real filing addressed to a real officer for a ward it may not live
+        # in. Hard rule 3 -- an invented location is an invented authority.
+        segment=ctx.payload.get("segment", ""),
         feeder_id=ctx.payload.get("feeder_id", ""),
         service=Service(ctx.payload.get("service", "water")),
         created_at=get_clock().now(),
@@ -524,7 +528,41 @@ def _unrouted_reason(ctx: RequestContext) -> str | None:
         return None
     if ctx.claim is None:
         return "no_claim"
-    return "no_segment" if not ctx.claim.segment else "unknown_segment"
+    if not ctx.claim.segment:
+        return "no_segment"
+    # `run_or_stub` hands back (INSTITUTIONAL, None, "") when remedy.resolve
+    # raises, so a perfectly good segment can arrive here with no entry. Saying
+    # "unknown_segment" there blames the institutions lane's curated data for
+    # our own stub -- the exact misattribution this function exists to end.
+    if "remedy" in ctx.trace.stubbed_agents:
+        return "remedy_stubbed"
+    if ctx.tail is not None and ctx.tail is not Tail.INSTITUTIONAL:
+        return "not_institutional"
+    return "unknown_segment"
+
+
+def _held_response(ctx: RequestContext, reason: str) -> dict:
+    """The same shape `run_request_path` always returns, for a request that
+    never reached the graph. Same keys, so a caller branches on
+    `unrouted_reason` rather than on which keys happen to exist.
+    """
+    return {
+        "case_id": ctx.case_id,
+        "status": "completed",
+        "path": [],
+        "claim_id": None,
+        "case_status": None,
+        "authority": None,
+        "unrouted_reason": reason,
+        "filed_to": None,
+        "filed_tier": None,
+        "citation": None,
+        "sla_deadline": None,
+        "usage": {},
+        "stubbed_agents": ctx.trace.stubbed_agents,
+        "trace": ctx.trace.to_dict(),
+        "trace_text": ctx.trace.render(),
+    }
 
 
 def run_request_path(payload: dict) -> dict:
@@ -533,6 +571,20 @@ def run_request_path(payload: dict) -> dict:
         payload=dict(payload), case_id=case_id,
         trace=CaseTrace(case_id, get_clock()),
     )
+    # Refuse BEFORE the graph runs, not five nodes into it.
+    #
+    # Without this the Warden pass still happens and `db.put_claim()` still
+    # writes -- a claim with segment="" that can never be routed, found or
+    # closed. Under the dynamodb backend every such row lands in the SAME
+    # index partition (GSI1PK "SEG##SVC#water"), so every segment-less report
+    # from every household piles into one partition that claims_in_window("")
+    # reads back. Patching the trace line downstream left that intact; this is
+    # the actual root cause, and it is ours, not the storage lane's.
+    if not str(payload.get("segment", "")).strip():
+        with use_trace(ctx.trace):
+            ctx.trace.record("HELD", "intake", _NO_SEGMENT)
+        return _held_response(ctx, "no_segment")
+
     # Bind the trace for this request so any lane reached from here --
     # including code that was never handed the CaseTrace object -- records
     # into this case's story rather than printing into the void.

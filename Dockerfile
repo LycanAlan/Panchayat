@@ -33,6 +33,11 @@ WORKDIR /app
 # declares both (uvicorn>=0.34.2, starlette>=0.46.2) and app.run() imports
 # uvicorn lazily, so a missing one would build clean and fail only on the
 # first request. Verified against the installed metadata, not assumed.
+#
+# KNOWN, and deliberately not fixed here: this installs the `# Dev` block too
+# (pytest, ruff). Splitting a requirements-prod.txt is the right answer, but
+# requirements.txt is one of the three files CLAUDE.md says needs all four of
+# us explicitly, and the two packages are small. Raised, not done unilaterally.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -43,8 +48,23 @@ COPY . .
 ENV PANCHAYAT_BACKEND=dynamodb \
     TIME_SCALE=1
 
+# Its own ENV on purpose: a `#` comment inside an ENV line-continuation is a
+# syntax error, which is how this nearly shipped broken.
+#
+# BedrockAgentCoreApp.run() picks its own bind address -- 0.0.0.0 only when
+# /.dockerenv exists or DOCKER_CONTAINER is set, otherwise 127.0.0.1.
+# /.dockerenv is written by the Docker daemon, and nothing promises the
+# runtime's container host is Docker. Without this the process starts, logs
+# "Uvicorn running on http://127.0.0.1:8080", refuses every request from
+# outside the container, and the deploy fails liveness with no application
+# error anywhere to read.
+ENV DOCKER_CONTAINER=1
+
 EXPOSE 8080
 
-# Not `python app.py` -- that works, but exec form means signals reach the
-# process instead of a shell, so the runtime can actually stop it.
-CMD ["python", "app.py"]
+# `opentelemetry-instrument`, not bare python. aws-opentelemetry-distro is
+# pinned in requirements.txt and does NOTHING unless the process launches
+# through its wrapper -- installed, dormant, and the traces tab empty on
+# Thursday with no error to explain it. Exec form so signals reach the
+# process instead of a shell, and the runtime can actually stop it.
+CMD ["opentelemetry-instrument", "python", "app.py"]
