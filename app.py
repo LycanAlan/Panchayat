@@ -42,9 +42,41 @@ def invoke(payload: dict) -> dict:
     registry to resolve it from -- nothing in the repo writes a Household row.
     So it has to arrive with the request. When it is missing the response says
     `unrouted_reason: "no_segment"` rather than failing quietly five nodes in.
+
+    A payload with NO `action` is a household reporting -- the write path, and
+    the original behaviour. `action` selects everything else:
+
+        {"action": "health"}
+        {"action": "get_case",   "case_id": "case_..."}
+        {"action": "list_cases", "household_id": "hh_..."}
+        {"action": "approve",    "idempotency_key": "...",
+                                 "member_id": "mem_..."}
+
+    Read actions answer at the top level; only the report path wraps itself in
+    `{"result": ...}`, which is the shape already shipped and tested.
+
+    An UNRECOGNISED action is an error, not a report. Before this, anything
+    that was not "health" fell through to the request path, so a client typo
+    like `{"action": "get_cse", "case_id": ...}` would file a complaint --
+    against a real authority, on behalf of a household that asked for a
+    lookup. Silence is not an acceptable answer to a misspelled verb.
     """
-    if payload.get("action") == "health":
+    action = str(payload.get("action", "")).strip()
+
+    if action == "health":
         return health(payload)
+
+    if action:
+        from graph.read_api import ACTIONS
+
+        handler = ACTIONS.get(action)
+        if handler is None:
+            return {
+                "error": "unknown_action",
+                "action": action,
+                "known": ["health", *sorted(ACTIONS)],
+            }
+        return handler(payload)
 
     from graph.request_path import run_request_path
 
