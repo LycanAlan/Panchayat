@@ -22,3 +22,10 @@ demo/recordings/
 # docs/DEPLOY.md. Holds no secrets, just machine-local paths and the agent id.
 .bedrock_agentcore.yaml
 .bedrock_agentcore/
+
+# Per-person working notes. These were untracked from Day 1 and swept into a
+# commit by a `git add -A`; SESSION-SUMMARY.txt carries a private Claude
+# session URL, and both are one person's scratch rather than anything the
+# other three build against. STATUS.md is the shared brain -- put it there.
+SESSION-SUMMARY.txt
+*-day1-prompt.md

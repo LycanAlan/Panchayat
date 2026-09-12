@@ -155,6 +155,27 @@ def _query_all(**kwargs) -> list[dict]:
 
 # ----------------------------------------------------------------- claims
 
+def _seg_key(segment: str) -> str:
+    """The segment as it goes INTO a key, folded.
+
+    ISSUE #17. `GSI1PK` was built from the raw `claim.segment`, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them -- and that fix could not reach one layer
+    down, because the two claims were never handed to the scorer together.
+    Nothing errors; the cluster simply never forms, which is the same silent
+    shape as the 0.65 ceiling.
+
+    THE STORED ATTRIBUTE KEEPS ITS ORIGINAL SPELLING. Only the key is folded,
+    so a filing still quotes the street the way the household wrote it.
+
+    Same fold as core.scoring.normalise_id, deliberately duplicated rather
+    than imported: storage must not depend on the scorer, and memstore must
+    stay importable without numpy. The contract tests pin that the two agree.
+    """
+    return segment.strip().lower() if segment else ""
+
+
 def _claim_item(claim: Claim) -> dict:
     d = to_dict(claim)
     d["embedding"] = pack_embedding(claim.embedding)
@@ -165,7 +186,7 @@ def _claim_item(claim: Claim) -> dict:
         # does `self.service.value`, which raises AttributeError on the bare
         # string memstore accepts happily -- the seam's whole job is to catch
         # that, and this is the write path of the busiest entity we have.
-        GSI1PK="SEG#" + claim.segment + "#SVC#" + _svc(claim.service),
+        GSI1PK="SEG#" + _seg_key(claim.segment) + "#SVC#" + _svc(claim.service),
         GSI1SK=claim.gsi1sk(),
         _type="claim",
     )
@@ -191,8 +212,34 @@ def _claim_from(item: dict) -> Claim:
     )
 
 
+def claim_from_item(item: dict) -> Claim:
+    """A stored claim item -> Claim. The public face of the decoder.
+
+    Exists for `handlers/ambient.py`, which reads claims out of the table's
+    own stream rather than through `core.db`. A stream record is DynamoDB by
+    definition, so that handler is allowed to know this module -- but it must
+    not carry its own copy of the decoding rules. Two decoders drift, and the
+    one on the ambient path would drift silently: a claim whose embedding or
+    consent scopes decoded differently there would score differently and
+    nothing would raise.
+    """
+    return _claim_from(item)
+
+
 def put_claim(claim: Claim) -> None:
-    """PK=CLAIM#<id> SK=META, GSI1PK=claim.gsi1pk() GSI1SK=claim.gsi1sk().
+    """PK=CLAIM#<id> SK=META, GSI1SK=claim.gsi1sk().
+
+    GSI1PK IS NOT `claim.gsi1pk()` ANY MORE, and this docstring said it was.
+    That helper lives in the frozen core/types.py and interpolates
+    `self.segment` raw; since issue #17 the stored key folds the segment
+    (_seg_key), so "Ward12-4thCross" and "ward12-4thcross" land in one
+    partition and Pattern Watch can retrieve the pair to score. The two now
+    disagree by design, and a caller who uses the helper to build a Query key
+    gets a partition with nothing in it -- no error, no rows, the same silent
+    shape as the bug the fold fixed. Reconciling them means editing
+    core/types.py, which is hard rule 10 and a group call, so until then the
+    divergence is pinned by a test in tests/test_store_pure.py rather than
+    left to be discovered.
 
     Packs an embedding that is already on the claim. It never COMPUTES one:
     embedding here would put a Bedrock call on the household's request path and
@@ -218,7 +265,7 @@ def claims_in_window(segment: str, service: Service, since: datetime) -> list[Cl
     items = _query_all(
         IndexName="GSI1",
         KeyConditionExpression=(
-            Key("GSI1PK").eq("SEG#" + segment + "#SVC#" + _svc(service))
+            Key("GSI1PK").eq("SEG#" + _seg_key(segment) + "#SVC#" + _svc(service))
             & Key("GSI1SK").gte("TS#" + since.isoformat())
         ),
     )
@@ -466,17 +513,57 @@ def stalled_cases(service: Service | None = None) -> list[Case]:
                                         c.sla_deadline, c.case_id))
 
 
-def _claims_of(case: Case, household_id: str) -> list[str]:
+def _claims_of(case: Case, household_id: str,
+               origin: Case | None = None) -> list[str]:
     """That household's claims on this case, read back out of the provenance.
 
     Skips the _SPLIT_FROM token explicitly. It cannot collide today -- a
     household id is "hh_..." and never "split_from" -- but merged_from now
     carries two namespaces and a reader that only works by luck is a trap for
     whoever adds the third.
+
+    THE FOUNDING HOUSEHOLD HAS NO PROVENANCE, and that is not a gap in the
+    data -- nothing merged it, it opened the case. Reading merged_from alone
+    returned [] for it, so splitting the founder off produced a child with no
+    claims and the claim ended up on NO case at all. Hard rule 6 says merges
+    are reversible; that made them reversible only for joiners (issue #13).
+
+    So: a household with no provenance entry inherits the claims no other
+    household has a claim on -- which is exactly what it arrived with.
+
+    THE ATTRIBUTION IS READ OFF `origin`, NOT OFF THE CASE BEING NARROWED.
+    split_case() removes each household from the parent as it goes and then
+    re-reads it, and the count of households with no provenance is what
+    decides whether the untagged claims can be attributed at all. Counting
+    that on the shrinking parent made it fall by one every pass: splitting two
+    untagged households gave the first an EMPTY child ("two untagged, cannot
+    attribute") and handed the second BOTH claims, because by then it was the
+    only one left. Measured identically on memstore -- the backends agreed,
+    and were both wrong. One household's claim on another household's case is
+    hard rule 7 pointing inward, and it survives into the filing.
+
+    So the caller passes the case as it stood BEFORE the split began, and
+    every household in one call is attributed against the same picture.
     """
-    return [t.split(":", 1)[1] for t in case.merged_from
-            if not t.startswith(_SPLIT_FROM)
-            and t.startswith(household_id + ":")]
+    origin = case if origin is None else origin
+    tagged = [t.split(":", 1)[1] for t in origin.merged_from
+              if not t.startswith(_SPLIT_FROM)
+              and t.startswith(household_id + ":")]
+    if tagged or household_id not in origin.household_ids:
+        return tagged
+
+    attributed = {t.split(":", 1)[1] for t in origin.merged_from
+                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+    untagged = [h for h in origin.household_ids
+                if not any(t.startswith(h + ":") for t in origin.merged_from
+                           if not t.startswith(_SPLIT_FROM))]
+    if len(untagged) > 1:
+        # More than one household without provenance: the claims cannot be
+        # attributed and GUESSING would hand somebody else's claim to this
+        # household. Returning nothing is wrong too, but it is wrong in the
+        # direction that loses nothing and invents nothing.
+        return []
+    return [c for c in origin.claim_ids if c not in attributed]
 
 
 def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:
@@ -608,6 +695,15 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     add_household_to_case, and for the same reason: split runs while the
     Watchdog may be moving the parent's deadline.
     """
+    # The picture every household in this call is attributed against, read
+    # once. The loop below narrows the parent and re-reads it, so attributing
+    # against `before` made the answer depend on how many households had
+    # already left -- see _claims_of. Deliberately NOT re-read on a retry: the
+    # attribution is as of the split request, not as of the last contention.
+    origin = get_case(case_id)
+    if origin is None:
+        raise KeyError(case_id)
+
     new_ids: list[str] = []
     for hh in household_ids:
         for attempt in range(_MEMBERSHIP_ATTEMPTS):
@@ -617,7 +713,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             if hh not in before.household_ids:
                 break
 
-            claim_ids = _claims_of(before, hh)
+            claim_ids = _claims_of(before, hh, origin=origin)
             child = Case(
                 case_id=new_id("case"), service=before.service,
                 segment=before.segment, feeder_id=before.feeder_id,
@@ -1070,6 +1166,68 @@ def sign_filing(idempotency_key: str, member_id: str,
     filing.signed_by = member_id
     filing.signed_at = now
     return True, filing
+
+
+def record_submission(idempotency_key: str, external_ref: str,
+                      now: datetime, response: str = "") -> Filing | None:
+    """Write back what the desk said. Returns the stored filing, or None.
+
+    THE MISSING HALF OF put_filing_once. That function is write-once by
+    design -- a retrying Watchdog that files twice produces the duplicate that
+    reads as spam and gets both copies closed (hard rule 5). But the desk's
+    ticket number arrives AFTER the write, and `agents/watchdog.py::withdraw`
+    already flags the consequence: `core.db` had no filing-amend function at
+    all, so the reference existed only on whichever Python object happened to
+    be in memory.
+
+    That hid as a passing test. memstore hands back the live object the
+    institution client mutated, so `external_ref` was there; DynamoDB decodes
+    a fresh Filing from the table, so it was None. The same divergence class
+    as every other one this week.
+
+    NOT idempotent-by-refusal like sign_filing. A resubmission that produces a
+    different reference is the institution's answer, not a race between two
+    people, and the latest answer is the right one. `submitted_at` moves with
+    it, because "when did this land" means the landing we have a reference for.
+    """
+    ptr = _t().get_item(
+        Key={"PK": "FILING#" + idempotency_key, "SK": "META"}).get("Item")
+    if not ptr:
+        return None
+
+    case_id = ptr["case_id"]
+    values = {":r": external_ref, ":t": now.isoformat()}
+    # EVERY name aliased, not just the one that broke. `response` is a
+    # DynamoDB RESERVED KEYWORD, so the bare expression raises
+    # ValidationException -- and only against a real engine: memstore is a
+    # dict and could never see it. Aliasing all three costs nothing and means
+    # the next field added here cannot reintroduce it.
+    names = {"#ref": "external_ref", "#at": "submitted_at"}
+    expression = "SET #ref = :r, #at = :t"
+    if response:
+        expression += ", #resp = :resp"
+        names["#resp"] = "response"
+        values[":resp"] = response
+
+    try:
+        _t().update_item(
+            Key={"PK": "CASE#" + case_id, "SK": "FILING#" + idempotency_key},
+            UpdateExpression=expression,
+            # Never UPSERT. Without this the update forges a stub filing when
+            # the row is gone, the way revoke_consent used to forge a consent
+            # nobody granted.
+            ConditionExpression="attribute_exists(SK)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if not _condition_failed(exc):
+            raise
+        return None
+
+    item = _t().get_item(Key={"PK": "CASE#" + case_id,
+                              "SK": "FILING#" + idempotency_key}).get("Item")
+    return _filing_from(item) if item else None
 
 
 def filings_for_case(case_id: str) -> list[Filing]:

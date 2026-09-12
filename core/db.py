@@ -46,17 +46,27 @@ REQUIRED = (
     "add_household_to_case", "split_case", "append_consent", "live_consents",
     "record_disclosure", "disclosure_history", "put_filing_once",
     "recurrence_count",
+    # PROMOTED FROM OPTIONAL. Every one of these is now implemented by BOTH
+    # backends, and OPTIONAL was the hole that let them drift apart.
+    #
+    # OPTIONAL was right while store.py was half-built -- a missing function
+    # that names itself beats one that binds None and fails four layers deep
+    # inside an agent. It stopped being right the moment both sides had them,
+    # because `test_the_seam_declares_the_whole_interface` only walks REQUIRED:
+    # stalled_cases lived on memstore alone for a day, db.stalled_cases()
+    # raised on DynamoDB, and the queue that surfaces a stuck household to a
+    # person worked offline and nowhere else. Nothing failed until somebody
+    # ran the suite against a real engine. See issue #25.
+    "get_claim", "open_cases", "revoke_consent", "filings_for_case",
+    "get_filing", "unsigned_filings", "sign_filing", "stalled_cases",
+    "record_submission", "reset",
 )
 
-# Present on memstore, still legitimately absent from a half-built store.py.
-# Present on memstore, still legitimately absent from a half-built store.py.
-# sign_filing/unsigned_filings/get_filing landed 11 Sep to close the hard-rule-4
-# gap: nothing in the repo could record a human approval, so every escalation
-# would have returned NEEDS_HUMAN forever. Kartik -- these need a DynamoDB
-# implementation; until then the seam raises by name rather than binding None.
-OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case",
-            "get_filing", "unsigned_filings", "sign_filing", "stalled_cases",
-            "reset")
+#: Nothing is optional any more. Kept as an empty tuple rather than deleted:
+#: it is part of this module's public surface and something may import it.
+#: Add a name here ONLY while one backend genuinely cannot implement it yet,
+#: and move it to REQUIRED the day the second one lands.
+OPTIONAL = ()
 
 
 def _unavailable(name: str):
@@ -118,6 +128,7 @@ filings_for_case = _bind("filings_for_case")
 get_filing = _bind("get_filing")
 unsigned_filings = _bind("unsigned_filings")
 sign_filing = _bind("sign_filing")
+record_submission = _bind("record_submission")
 stalled_cases = _bind("stalled_cases")
 
 # NOT `lambda: None`. A silent no-op reset is worse than a missing one: the
@@ -148,6 +159,7 @@ __all__ = [
     "reset",
     "revoke_consent",
     "sign_filing",
+    "record_submission",
     "split_case",
     "unsigned_filings",
 ]

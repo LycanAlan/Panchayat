@@ -73,7 +73,7 @@ from datetime import datetime, timedelta
 from agents import anti_abuse, pattern_watch, remedy
 from agents import watchdog as watchdog_agent
 from core import db
-from core.types import Case, CaseStatus, ConsentScope, Service, Tail
+from core.types import Case, CaseStatus, ConsentScope, Filing, Service, Tail
 from data.corpus.generator import generate_corpus
 from institutions.protocol import DeskReply, Outcome
 from institutions.server import Desk, load_profile
@@ -301,7 +301,26 @@ def run_one(fault, households, n: int, desk: Desk, clock: FixedClock) -> Outcome
     polled = desk.status(ref=reply.ref)
     polled = DeskReply.find(polled) if isinstance(polled, str) else polled
 
-    as_shipped = watchdog_agent.reconcile_closure(case.case_id, clock=clock)
+    # RECONCILE AGAINST THE DESK'S ACTUAL ANSWER, not against the module-level
+    # default. `agents.watchdog.reconcile_closure` delegates to a Watchdog
+    # built with no arguments, whose desk poll is None -- which now means
+    # honestly "we never asked", so it reports no closure and disputes
+    # nothing. Calling it from here would have made this table read every
+    # closure as undisputed, including the false ones the harness exists to
+    # count.
+    #
+    # So the harness wires the same seam handlers/temporal.py wires in
+    # production, from the status it just polled, and records the filing the
+    # ref belongs to so the Watchdog can find it the way it would on a real
+    # case.
+    filing = Filing(case_id=case.case_id, tier=1, authority=entry.ladder[0].authority
+                    if entry.ladder else "BWSSB",
+                    body=body, signed_by="mem_eval", external_ref=reply.ref)
+    filing.idempotency_key = filing.compute_key()
+    db.put_filing_once(filing)
+    as_shipped = watchdog_agent.Watchdog(
+        closed=lambda authority, ref: polled.outcome is Outcome.CLOSED,
+    ).reconcile_closure(case.case_id, clock=clock)
     corrected = corrected_dispute(case.case_id, clock)
 
     # THE ORACLE. The desk decided `will_false_close` at accept() and set
@@ -536,12 +555,32 @@ def main() -> None:
     print("""
 READ ALL THREE TABLES TOGETHER, and do not quote the first one on its own.
 
-reconcile_closure counts every claim on the segment in the last seven days as
-contradicting the closure, including the claims that OPENED the case. With
-sla_days=7 and a 36-hour mean response, every realistic closure falls inside
-that window, so it disputes everything and the first curve is flat at zero
-whatever N is. That is an INSTRUMENT LIMITATION, not evidence about collective
-pressure, and a flat line means the opposite thing here.
+THE FIRST TABLE IS STILL FLAT, AND THE REASON HAS CHANGED. Read this rather
+than the version of it you may remember.
+
+It used to be flat because reconcile_closure counted the case's OWN founding
+claims as evidence against its closure, so it disputed everything it was ever
+shown. That is fixed (agents/watchdog.py; the canary test that was written to
+fail on the day it was fixed has been deleted).
+
+What is left is one step removed and is a real limitation, not a bug. The
+harness writes every household the corpus says reported the fault -- including
+those who never joined the case, which is what the deployed system does too.
+Their claims sit on the same segment inside the seven-day look-back, so they
+contradict the closure. Often they SHOULD: they are households still reporting
+a fault the institution called fixed, which is exactly the evidence this check
+exists for. But a claim filed at the outage and never merged looks identical
+to one filed after a false closure, and the FALSE ALARMS column is how much of
+the first table that accounts for -- when it tracks the flagged column, the
+rule is not discriminating.
+
+The discriminator is TIME RELATIVE TO THE CLOSURE, and nothing records when a
+desk closed a case. `Case` carries no `closed_at` -- reconcile_closure's own
+docstring says so -- and core/types.py is frozen, so adding one is a group
+call (hard rule 10). The other route is polling the desk for status and
+recording the reply, which is now possible (db.record_submission stores the
+ticket number) and is cross-lane wiring. Either would make this table mean
+something; neither is a line in this file.
 
 THE SECOND TABLE IS GROUND TRUTH, NOT ANOTHER RULE OF OURS. It used to be a
 second dispute rule -- "live claims from OTHER households", the one
@@ -574,10 +613,13 @@ end of the curve -- which is the end this whole thesis is about. Three samples
 at N=20 read exactly like twenty-five. Check the attrition row before quoting
 any rate above it.
 
-Nothing in the repo writes CaseStatus.RESOLVED either. This harness decides
-resolution from the desk reply and the dispute verdict, which is a state
-transition the existing decision already implies. The day the Watchdog writes
-it, this should agree -- tests/test_density_curve.py pins that.
+CaseStatus.RESOLVED IS WRITTEN NOW, by agents/watchdog.reconcile_closure when
+a closure survives the dispute check (issue #9 -- until then it appeared twice
+outside its own enum, both times in a comment saying nothing wrote it). This
+harness still decides resolution from the desk reply and the dispute verdict
+rather than reading the status back, because it drives reconcile_closure
+directly and the two are the same decision. tests/test_density_curve.py pins
+that they agree.
 
 
 AND THE FINDING THAT MATTERS MORE THAN EITHER TABLE

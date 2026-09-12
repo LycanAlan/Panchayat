@@ -34,6 +34,36 @@ def test_seven_virtual_days_fire_in_seven_real_seconds(clock):
     assert 6.0 < elapsed < 9.0
 
 
+def test_the_demo_clock_fires_through_the_wired_dispatcher():
+    """HARD RULE 1, AT THE COMPOSITION POINT. One code path for both clocks.
+
+    `VirtualClock._fire` used to call `agents.watchdog.watchdog()`, the
+    module-level surface, which delegates to a `Watchdog()` built with no
+    arguments -- so its `submit` was still `lambda filing: True`. The real
+    institution adapter was installed in `handlers/temporal.py` and only the
+    Lambda got it, leaving the compressed-time path reporting successful
+    filings at named officers that had never left the building. That is the
+    path the demo and the eval harness run on, and the one a judge watches.
+
+    Asserted structurally rather than by driving a whole case: the point is
+    WHICH function the timer reaches, not what that function then does.
+    """
+    import inspect
+
+    from core.clock import VirtualClock
+
+    source = inspect.getsource(VirtualClock._fire)
+    assert "handlers.temporal" in source, (
+        "the demo clock no longer fires through the wired composition point")
+    assert "from agents.watchdog import watchdog" not in source, (
+        "the demo clock is back on the no-op submit")
+
+    # And it really is importable and callable from here -- a late import that
+    # cycles would only fail at fire time, on a daemon thread, silently.
+    from handlers.temporal import dispatch
+    assert callable(dispatch)
+
+
 def test_cancel_stops_a_pending_fire():
     fired: list[tuple[str, str]] = []
     c = VirtualClock(scale=8_640_000.0, on_fire=lambda cid, a: fired.append((cid, a)))

@@ -140,7 +140,15 @@ def test_the_harness_does_not_reimplement_anyone_elses_judgement():
         assert reimplemented not in body, f"the harness reimplements {reimplemented}"
 
     # And it must actually call the real things rather than approximating them.
-    for real in ("watchdog_agent.reconcile_closure", "remedy.compose_filing",
+    #
+    # `.reconcile_closure`, not `watchdog_agent.reconcile_closure`: the harness
+    # now builds a `watchdog_agent.Watchdog` with the desk poll wired from the
+    # status it just read, instead of going through the module-level default.
+    # It has to. That default's `closed` seam is None, which honestly means "we
+    # never asked the institution" -- so it disputes nothing, and this table
+    # would have read every closure as undisputed, false ones included. Still
+    # the real function, called on the real class.
+    for real in (".reconcile_closure", "remedy.compose_filing",
                  "remedy.lookup", "desk.accept", "desk.status",
                  "pattern_watch.PatternWatch", "anti_abuse.AntiAbuse"):
         assert real in body, f"the harness does not use {real}"

@@ -31,8 +31,81 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agents.watchdog import ACTIONS, watchdog
+from agents.watchdog import ACTIONS, Watchdog
 from graph.trace import record as trace_record
+
+#: The Watchdog this Lambda drives, built once per container.
+_dispatcher: Watchdog | None = None
+
+
+def _watchdog() -> Watchdog:
+    """The Watchdog, wired to the REAL institution client.
+
+    THIS IS THE COMPOSITION POINT, and it is here rather than in
+    agents/watchdog.py on purpose. `build_submit()` lives in institutions/
+    because the temporal lane must not import the institutions lane -- the A2A
+    boundary is also the lane boundary. A handler is the one place allowed to
+    know both: bridging an AWS trigger to a lane is exactly what it is for.
+
+    UNTIL NOW THE DEFAULT WAS `lambda filing: True`. Every escalation reported
+    a successful filing at a named officer, advanced the tier, and started a
+    statutory clock -- having sent nothing to anybody. Nothing in the repo
+    ever installed the adapter that actually files; it existed, was fully
+    tested, and was used only by its own tests.
+
+    Built lazily and cached. InstitutionClient does no network at construction
+    (the A2A agent is built per desk on first use), so this is cheap -- but
+    doing it at import would put an institutions import into every process
+    that merely loads this module.
+
+    A desk that is not running is not a crash: file() returns UNREACHABLE,
+    build_submit collapses that to False, and climb() pauses the clock,
+    schedules a retry and surfaces to the Digest if it is still down a day
+    later. That is the designed path, and it is the truth -- unlike reporting
+    a filing that never left the building.
+    """
+    global _dispatcher
+    if _dispatcher is None:
+        from institutions.client import build_closure_probe, build_submit
+
+        # BOTH halves of the institutional seam, wired in the same place.
+        # `closed` is the desk-status poll reconcile_closure needs and never
+        # had: without it that function measured only "is any other household
+        # still complaining", which on a one-household street is always no, so
+        # it wrote RESOLVED -- terminal -- for a desk that had said nothing.
+        # Defaulting it to None in the Watchdog makes the unwired case honest
+        # (the pursuit continues); wiring it here makes the deployed case
+        # true.
+        _dispatcher = Watchdog(submit=build_submit(),
+                               closed=build_closure_probe())
+    return _dispatcher
+
+
+def _dispatch(case_id: str, action: str) -> None:
+    """One wake, handed to the Watchdog.
+
+    A named seam rather than an inline call: tests replace this to drive the
+    error paths, and the alternative -- patching the cached instance -- makes
+    every test know how the cache works.
+    """
+    _watchdog().handle(case_id, action)
+
+
+def dispatch(case_id: str, action: str) -> None:
+    """The same wake, for a caller that is not Lambda.
+
+    THE DEMO FIRES THROUGH HERE, and that is the point. `VirtualClock._fire`
+    used to call `agents.watchdog.watchdog()`, which delegates to a
+    module-level `Watchdog()` built with no arguments -- so its `submit` was
+    still `lambda filing: True`. Installing the real adapter in `_watchdog()`
+    fixed the Lambda and left the compressed-time path reporting successful
+    filings at named officers that had never left the building, which is the
+    configuration the video is recorded in.
+
+    One composition point, both clocks, per hard rule 1: if the demo needs a
+    different filing path from production, the clock is wrong.
+    """
+    _dispatch(case_id, action)
 
 
 class TransientWakeFailure(RuntimeError):
@@ -112,7 +185,7 @@ def _wake(record: Any) -> dict:
                 "error": "unknown action " + repr(action)}
 
     try:
-        watchdog(case_id, action)
+        _dispatch(case_id, action)
     except Exception as exc:                     # noqa: BLE001
         # repr(), not type(exc).__name__: a ClientError is a throttle, a
         # missing table, or access denied, and the class name alone cannot

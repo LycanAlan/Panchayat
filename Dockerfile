@@ -34,12 +34,18 @@ WORKDIR /app
 # uvicorn lazily, so a missing one would build clean and fail only on the
 # first request. Verified against the installed metadata, not assumed.
 #
-# KNOWN, and deliberately not fixed here: this installs the `# Dev` block too
-# (pytest, ruff). Splitting a requirements-prod.txt is the right answer, but
-# requirements.txt is one of the three files CLAUDE.md says needs all four of
-# us explicitly, and the two packages are small. Raised, not done unilaterally.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements-prod.txt, NOT requirements.txt. This used to install the `# Dev`
+# block too, putting pytest and ruff inside a container that files complaints
+# against public bodies -- dead weight at best, and an attack surface on a box
+# holding household data at worst.
+#
+# requirements.txt is untouched: it is one of the three files CLAUDE.md says
+# needs all four of us explicitly, and splitting the runtime out additively
+# needs none of that. tests/test_requirements.py fails if the shared pins in
+# the two files ever disagree, because two dependency files drifting apart is
+# a worse problem than the one this solves.
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
 COPY . .
 

@@ -10,6 +10,73 @@ or rebuilding it. That is the whole point.
 Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
+Last updated: **13 Sep** by Kartik -- `feat/mesh-ambient-and-fixes`, see below
+
+---
+
+## 13 Sep -- five defects found by review and reproduced before fixing
+
+All five were invisible to a green suite, and three of them turned the
+product into the thing it exists to catch. **Not pushed yet.** Both backends
+green: `pytest` 518 passed, `PANCHAYAT_BACKEND=dynamodb pytest` 555 passed
+against DynamoDB Local.
+
+1. **Every single-household case resolved itself on deadline day.**
+   `reconcile_closure` is documented as "the institution says resolved; live
+   claims from other households say otherwise" -- and nothing in the repo ever
+   polled a desk, so only the second half was measured. On a one-household
+   street nobody else has filed, so that half is unconditionally "undisputed",
+   and the function wrote `RESOLVED`, which is terminal. Measured: a TRACKING
+   case with no desk reply anywhere in the table came back `resolved`. The
+   spine runs at N=1, so this was every case.
+   **Fix:** the Watchdog takes a `closed(authority, external_ref)` seam --
+   same shape as `submit`, so the temporal lane still imports nothing from
+   institutions -- wired in `handlers/temporal.py` from the new
+   `institutions.client.build_closure_probe()`. Unwired it defaults to None,
+   which honestly means "we never asked" and the pursuit continues. An
+   UNREACHABLE portal is not a closure.
+
+2. **`_check_sla` had no TERMINAL guard.** `climb()` books `check_sla` and
+   `check_closure` for the same instant, so with closure running first a
+   just-RESOLVED case was breached, climbed, and had a tier-2 filing drafted
+   against it. Same path would escalate a WITHDRAWN case -- filing against a
+   public body for a household that pulled out. `_retry_submit` has carried
+   this guard since the withdrawal bug; this path never got it.
+
+3. **A multi-household split handed one household another household's
+   claims.** `split_case` narrows the parent as it goes, and the attribution
+   rule counts how many households have no provenance. Counting that off the
+   shrinking parent made it fall by one every pass: the first child came out
+   empty, the second was handed BOTH claims. Hard rule 7 pointing inward, on
+   **both backends identically** -- which is why the parity suite could not
+   see it. Attribution is now snapshotted before the split begins.
+
+4. **The scheduler IAM policy could never have worked.** The policy scoped to
+   `schedule/default/panchayat-*`; `core/clock.py` names every schedule
+   `pnc-<case>-<action>`. Every `create_schedule` on a real deploy would have
+   been AccessDenied, so no case would have had a wake at all -- the whole
+   temporal path, dead, in the only environment that counts, and no amount of
+   local pytest would have found it. Prefix is now a named constant and
+   `tests/test_deploy_policy.py` pins the two together.
+
+5. **The demo still filed to a no-op.** `VirtualClock._fire` called
+   `agents.watchdog.watchdog()`, whose module-level default `Watchdog()` still
+   had `submit = lambda filing: True`. The real adapter was installed in
+   `handlers/temporal.py`, so the Lambda got it and compressed time -- the
+   configuration the video is recorded in -- did not. Both clocks now fire
+   through the same composition point.
+
+Also: `SESSION-SUMMARY.txt` and `kartik-day1-prompt.md` had been swept into a
+commit by a `git add -A` -- untracked again and gitignored; the first carries a
+private session URL. And `Claim.gsi1pk()` in the frozen `core/types.py` no
+longer builds the key storage writes (the segment fold, #17), which is pinned
+by a test rather than left to be found: **reconciling them needs a group call
+on core/types.py.**
+
+**New end-to-end cover:** `tests/test_submit_adapter.py` now drives the whole
+arc -- draft, sign, file through the real client, poll the desk, reconcile --
+for a genuine closure, a false one, and a desk that has not answered. Nothing
+covered that join before, and both of the worst bugs lived in it.
 
 ---
 
