@@ -655,8 +655,17 @@ def test_top_of_the_ladder_asks_a_human_instead_of_retrying_forever():
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: True)
     wd.climb(case.case_id, clock)
 
-    assert [w for w in clock.scheduled if w[-1] == "retry_submit"] == []
-    assert db.get_case(case.case_id).status == CaseStatus.DORMANT
+    assert [w for w in clock.scheduled if w[-1] == "retry_submit"] == [], (
+        "waiting changes nothing -- no amount of time adds a tier 5")
+
+    # sla_paused, NOT DORMANT. Dormant excluded it from open_cases AND
+    # stalled_cases, so the case that most needs a person vanished from every
+    # queue. It has to stay findable.
+    after = db.get_case(case.case_id)
+    assert after.sla_paused is True
+    assert after.status is not CaseStatus.DORMANT
+    assert case.case_id in [c.case_id for c in db.stalled_cases()], (
+        "a ladder-exhausted case must reach the queue a human reads")
 
 
 def test_a_missing_jurisdiction_entry_leaves_a_wake_behind():

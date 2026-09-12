@@ -138,6 +138,18 @@ class Watchdog:
     def _check_sla(self, case: Case, clock: Clock) -> None:
         if case.sla_paused:
             return  # never run a clock against a filing that never landed
+        if case.status == CaseStatus.DRAFTED:
+            # A DRAFTED case has been submitted to nobody: hard rule 4 means
+            # nothing leaves the building until a named person signs. Breaching
+            # it would start a statutory clock against an office that never
+            # received the complaint, then climb() would draft and submit a
+            # tier-2 filing to a named officer -- escalating on the strength of
+            # a deadline nobody was given, with no human in it anywhere.
+            #
+            # The wake that belongs on an unsigned draft is expire_draft, and
+            # _expire_unsigned_draft already guards on exactly this status.
+            # This is the safety net for whoever scheduled the wrong one.
+            return
         if case.sla_deadline is None or clock.now() < case.sla_deadline:
             return
         case.status = CaseStatus.BREACHED
@@ -161,7 +173,13 @@ class Watchdog:
         `sla_paused` also carries "have we been here before", so no new field
         is needed and core/types.py stays frozen (hard rule 10).
         """
-        repeat = bool(self.db.get_case(case.case_id).sla_paused)
+        # Read off the case we were handed, BEFORE setting the flag -- not via
+        # a second get_case. memstore returns the live object, so re-reading
+        # after any caller had already set sla_paused made `repeat` True on the
+        # very first pause: a one-off blip paged a person with NEEDS_HUMAN.
+        # And DynamoDB's _case_from() rebuilds, so the same input produced
+        # PAUSED there -- a backend divergence on a line a human reads.
+        repeat = bool(case.sla_paused)
 
         clock.schedule(case.case_id,
                        clock.now() + timedelta(days=RETRY_AFTER_DAYS),
@@ -293,7 +311,6 @@ class Watchdog:
             # not "cannot climb". Returning bare, as this did, was the same
             # permanent silence as the unreachable path: nothing rescheduled
             # it and nothing said so.
-            case.sla_paused = True
             self._pause_and_retry(case, clock, "no jurisdiction entry")
             return case.escalation_tier
 
@@ -305,7 +322,17 @@ class Watchdog:
             # transient -- no amount of waiting adds a tier 5 -- so it gets a
             # human instead of a wake. Retrying forever would be the machine
             # pretending it still has moves.
-            case.status = CaseStatus.DORMANT
+            # sla_paused, NOT DORMANT. Marking it dormant excluded it from
+            # open_cases() AND from stalled_cases(), so the case that most
+            # needs a person vanished from every queue -- the same "a log
+            # line nobody queries has not told anyone" failure this branch
+            # exists to fix, one step further along. DORMANT also already
+            # means something else here (_expire_unsigned_draft: nobody
+            # wanted it), and this case is the opposite of unwanted.
+            #
+            # No wake either: unlike every other pause, waiting changes
+            # nothing. No amount of time adds a tier 5.
+            case.sla_paused = True
             self.db.put_case(case)
             _trace("NEEDS_HUMAN", "watchdog",
                    f"tier {next_tier} does not exist -- the ladder is "

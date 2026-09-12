@@ -104,26 +104,39 @@ class RealClock:
                 "statutory clock never runs."
             )
 
-        # The `at` timestamp is IN THE NAME. EventBridge names are unique and
-        # ActionAfterCompletion="DELETE" is not instant, so a retry that asks
-        # for "pnc-<case>-retry_submit" again while the previous one is still
-        # being cleaned up gets ConflictException -- and the retry path is
-        # precisely where that repeats daily against the same case and action.
-        name = ("pnc-" + case_id + "-" + action + "-"
-                + at.strftime("%Y%m%dT%H%M%S"))
-        self._client().create_schedule(
-            Name=name,
-            ScheduleExpression="at(" + at.strftime("%Y-%m-%dT%H:%M:%S") + ")",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            Target={
-                "Arn": WATCHDOG_LAMBDA_ARN,
-                "RoleArn": SCHEDULER_ROLE_ARN,
-                "Input": json.dumps({"case_id": case_id, "action": action}),
-            },
-            # Self-cleaning. Without this you accumulate orphan schedules and
-            # hit the account limit somewhere around Thursday.
-            ActionAfterCompletion="DELETE",
-        )
+        # ONE NAME PER (case, action), and a ConflictException treated as
+        # success.
+        #
+        # A previous version put the `at` timestamp in the name to dodge that
+        # conflict, and it traded away the only idempotency the scheduler had:
+        # two wakes for the same case and action then both existed and both
+        # fired, so a redelivered Lambda batch minted another permanent
+        # schedule every time instead of colliding with the one already there.
+        # Two schedules is two climbs.
+        #
+        # The conflict is not an error. It means the wake this call wanted is
+        # already booked, which is the outcome being asked for.
+        name = "pnc-" + case_id + "-" + action
+        try:
+            self._client().create_schedule(
+                Name=name,
+                ScheduleExpression="at(" + at.strftime("%Y-%m-%dT%H:%M:%S") + ")",
+                FlexibleTimeWindow={"Mode": "OFF"},
+                Target={
+                    "Arn": WATCHDOG_LAMBDA_ARN,
+                    "RoleArn": SCHEDULER_ROLE_ARN,
+                    "Input": json.dumps({"case_id": case_id, "action": action}),
+                },
+                # Self-cleaning. Without this you accumulate orphan schedules
+                # and hit the account limit somewhere around Thursday.
+                ActionAfterCompletion="DELETE",
+            )
+        except Exception as exc:  # noqa: BLE001 -- narrowed on the next line
+            if type(exc).__name__ != "ConflictException" and (
+                    getattr(exc, "response", {})
+                    .get("Error", {}).get("Code") != "ConflictException"):
+                raise
+            # Already booked for this case and action. Idempotent by design.
         return name
 
     def cancel(self, handle: str) -> None:

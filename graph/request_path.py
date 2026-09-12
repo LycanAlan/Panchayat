@@ -345,8 +345,18 @@ def _file(ctx: RequestContext) -> str:
         # Catching exactly SchedulerNotConfigured, and nothing else. A real
         # scheduler outage must still raise -- swallowing it would recreate
         # the silence this is here to end, one layer up.
+        # `expire_draft`, NOT `check_sla`. The case is DRAFTED -- hard rule 4
+        # means nothing has been submitted to anybody, because nobody has
+        # signed. A check_sla wake here breaches a statutory window no office
+        # ever received, and climb() then drafts and submits a tier-2 filing
+        # to a named officer with no human in it anywhere.
+        #
+        # What an unsigned draft actually needs is someone to sign it or for
+        # it to lapse, which is what _expire_unsigned_draft does. The
+        # statutory clock starts where it should: climb() schedules check_sla
+        # once a filing has actually landed.
         try:
-            get_clock().schedule(case.case_id, case.sla_deadline, "check_sla")
+            get_clock().schedule(case.case_id, case.sla_deadline, "expire_draft")
             woken = True
         except SchedulerNotConfigured:
             woken = False
@@ -356,7 +366,8 @@ def _file(ctx: RequestContext) -> str:
         if woken:
             ctx.trace.record(
                 "TRACKING", "watchdog",
-                "SLA " + window + "d, breach at " + breach + ", wake scheduled",
+                "SLA " + window + "d, breach at " + breach
+                + " -- draft expires then unless someone signs it",
                 citation=step.statute_ref if step else None)
         else:
             # Said out loud, on the demo surface. "TRACKING" with no timer
@@ -367,7 +378,13 @@ def _file(ctx: RequestContext) -> str:
                 "TRACKING", "watchdog",
                 "SLA " + window + "d, breach at " + breach
                 + " -- NO WAKE SCHEDULED, scheduler not configured",
-                citation=step.statute_ref if step else None, stubbed=True)
+                citation=step.statute_ref if step else None)
+            # stubbed=False deliberately, for the same reason the UNCONSENTED
+            # branch above gives: a missing env var is a CONFIG gap, not an
+            # unlanded module. Marking it stubbed put "watchdog" into
+            # trace.stubbed_agents on every offline run, so the integration
+            # dashboard would report that lane as unlanded forever after it
+            # shipped. The NO WAKE SCHEDULED text already says it out loud.
     return "file: " + ("drafted" if written else "duplicate suppressed")
 
 
