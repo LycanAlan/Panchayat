@@ -155,10 +155,48 @@ coincidences. One support conversation naming all three is likelier to fix it
 than three quota forms. **This is a schedule risk, not a code risk** — nothing
 above is a defect in the repo.
 
-If the wait becomes unacceptable, `--deployment-type direct_code_deploy`
-bypasses CodeBuild and ECR entirely and is equally AWS — it just stops applying
-our Dockerfile, so `PANCHAYAT_BACKEND=dynamodb` must be passed with `--env` or
-the runtime silently uses the memory backend.
+#### The fallback if the account does not clear: `direct_code_deploy`
+
+Equally AWS — same Bedrock AgentCore Runtime, same `/invocations` contract.
+AWS runs our source on a managed Python runtime instead of building a
+container, so it **needs neither CodeBuild nor ECR** and sidesteps the quota.
+
+Checked against the installed toolkit rather than assumed:
+
+- **`PYTHON_3_12` is supported.** Our `numpy>=2.5.3` floor is fine.
+- **OpenTelemetry survives.** `package.py` scans requirements for
+  `aws-opentelemetry-distro` (we pin `0.19.0`) and `build_entrypoint_array()`
+  then emits `["opentelemetry-instrument", "app.py"]` — byte for byte the
+  Dockerfile's CMD. Observability is not lost.
+
+**What IS lost is the Dockerfile's `ENV` block**, and two of those are
+load-bearing enough to fail silently:
+
+```bash
+agentcore configure --entrypoint app.py --name panchayat \
+  --deployment-type direct_code_deploy --runtime PYTHON_3_12 \
+  --region us-east-1 --requirements-file requirements.txt \
+  --disable-memory --non-interactive
+
+agentcore deploy --agent panchayat \
+  --env PANCHAYAT_BACKEND=dynamodb \
+  --env DOCKER_CONTAINER=1 \
+  --env TIME_SCALE=1
+```
+
+- **`PANCHAYAT_BACKEND`** defaults to `memory`. Omit it and the deploy looks
+  perfectly healthy while every case evaporates between invocations and the
+  DynamoDB table stays empty.
+- **`DOCKER_CONTAINER=1`** is what makes `app.run()` bind `0.0.0.0`.
+  `bedrock_agentcore/runtime/app.py:662` picks the host from `/.dockerenv` or
+  that variable and otherwise binds `127.0.0.1` — nothing promises a managed
+  runtime provides the first. Wrong bind = liveness fails with no application
+  error anywhere to read.
+
+The real cost is not technical, it is repeatability: three settings that the
+Dockerfile records in commented detail become flags on a command line, where
+they are easy to forget. If we go this way, that command belongs in a script,
+not in someone's shell history.
 
 ### 1.3 Give the runtime its table
 
