@@ -84,7 +84,7 @@ def test_a_transient_failure_is_raised_so_the_schedule_is_not_deleted(case, monk
     def explode(case_id, action, clock=None):
         raise RuntimeError("storage said no")
 
-    monkeypatch.setattr(mod, "watchdog", explode)
+    monkeypatch.setattr(mod, "_dispatch", explode)
 
     with pytest.raises(TransientWakeFailure):
         handler({"case_id": case.case_id, "action": "check_sla"})
@@ -111,7 +111,7 @@ def test_one_bad_case_does_not_stop_the_others_running_first(case, monkeypatch):
         if case_id == "case_bad":
             raise RuntimeError("storage said no")
 
-    monkeypatch.setattr(mod, "watchdog", selective)
+    monkeypatch.setattr(mod, "_dispatch", selective)
 
     with pytest.raises(TransientWakeFailure):
         handler({"wakes": [
@@ -177,3 +177,31 @@ def test_a_non_object_record_fails_only_that_record(case):
     assert out["woken"] == 1
     assert out["failed"] == 1
     assert out["results"][0]["retryable"] is False
+
+
+def test_the_lambda_drives_a_watchdog_wired_to_a_real_desk():
+    """THE WIRING THIS FILE EXISTS TO GUARANTEE.
+
+    `Watchdog.__init__` defaults `submit` to `lambda filing: True`, and until
+    this handler composed one, that default was what ran in production: every
+    escalation reported a successful filing at a named officer, advanced the
+    tier and started a statutory clock, having sent nothing to anybody.
+    `build_submit()` existed, was fully tested, and was used only by its own
+    tests.
+
+    Asserted on the function's identity rather than by calling it, because
+    calling it would need a desk listening.
+    """
+    import handlers.temporal as mod
+
+    submit = mod._watchdog()._submit
+    assert submit.__qualname__.startswith("build_submit"), (
+        "the Lambda is running the no-op submit -- nothing would be filed")
+
+
+def test_the_composed_watchdog_is_built_once():
+    """Per container, not per wake. A fresh InstitutionClient per record would
+    drop the per-desk A2A agent cache on every invocation."""
+    import handlers.temporal as mod
+
+    assert mod._watchdog() is mod._watchdog()

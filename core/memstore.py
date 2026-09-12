@@ -14,6 +14,7 @@ Owner: shared. Kartik owns the interface; anyone may fix a bug here.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 from core.types import (
@@ -54,11 +55,33 @@ def get_claim(claim_id: str) -> Claim | None:
     return _claims.get(claim_id)
 
 
+def _seg_key(segment: str) -> str:
+    """The segment as it goes INTO a key, folded.
+
+    ISSUE #17. `GSI1PK` was built from the raw `claim.segment`, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them -- and that fix could not reach one layer
+    down, because the two claims were never handed to the scorer together.
+    Nothing errors; the cluster simply never forms, which is the same silent
+    shape as the 0.65 ceiling.
+
+    THE STORED ATTRIBUTE KEEPS ITS ORIGINAL SPELLING. Only the key is folded,
+    so a filing still quotes the street the way the household wrote it.
+
+    Same fold as core.scoring.normalise_id, deliberately duplicated rather
+    than imported: storage must not depend on the scorer, and memstore must
+    stay importable without numpy. The contract tests pin that the two agree.
+    """
+    return segment.strip().lower() if segment else ""
+
+
 def claims_in_window(segment: str, service: Service, since: datetime) -> list[Claim]:
     """The Pattern Watch query. In DynamoDB this is a GSI1 query, never a scan."""
     return sorted(
         (c for c in _claims.values()
-         if c.segment == segment and c.service == service and c.created_at >= since),
+         if _seg_key(c.segment) == _seg_key(segment)
+         and c.service == service and c.created_at >= since),
         key=lambda c: c.created_at,
     )
 
@@ -111,6 +134,61 @@ def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> Non
         case.merged_from.append(token)
 
 
+#: Provenance for a case created BY a split, so recurrence_count() does not
+#: count a reversed merge as a second incident on the feeder. Matches the token
+#: core/store.py writes; the contract tests pin that they agree rather than
+#: sharing a constant, because core/types.py is frozen and memstore must not
+#: import the DynamoDB module.
+_SPLIT_FROM = "split_from:"
+
+
+def _is_split_child(case: Case) -> bool:
+    return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def _claims_of(case: Case, household_id: str,
+               origin: Case | None = None) -> list[str]:
+    """That household's claims on this case, read out of the provenance.
+
+    THE FOUNDING HOUSEHOLD HAS NO PROVENANCE ENTRY, and that is not missing
+    data -- nothing merged it, it opened the case. Reading merged_from alone
+    returned [] for it, so splitting the founder off produced a child with no
+    claims and the claim landed on NO case at all. Hard rule 6 says merges are
+    reversible; that made them reversible for joiners only (issue #13).
+
+    THE ATTRIBUTION IS READ OFF `origin`, NOT OFF THE CASE BEING NARROWED.
+    split_case() removes each household from the parent as it goes, and this
+    function decides who owns the untagged claims by counting how many
+    households have no provenance. Reading that off the shrinking parent made
+    the count fall by one on every pass: splitting two untagged households
+    gave the first an EMPTY child (two untagged, cannot attribute) and then
+    handed the second BOTH claims, because by then it was the only one left.
+    Measured on both backends -- child ['hh_one'] -> [], child ['hh_two'] ->
+    ['clm_one', 'clm_two']. One household's claim on another household's case
+    is hard rule 7 going the wrong way, and it survives into the filing.
+
+    So the caller passes the case as it stood BEFORE the split began, and
+    every household in one call is attributed against the same picture.
+    """
+    origin = case if origin is None else origin
+    tagged = [t.split(":", 1)[1] for t in origin.merged_from
+              if not t.startswith(_SPLIT_FROM)
+              and t.startswith(household_id + ":")]
+    if tagged or household_id not in origin.household_ids:
+        return tagged
+
+    attributed = {t.split(":", 1)[1] for t in origin.merged_from
+                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+    untagged = [h for h in origin.household_ids
+                if not any(t.startswith(h + ":") for t in origin.merged_from
+                           if not t.startswith(_SPLIT_FROM))]
+    if len(untagged) > 1:
+        # Two households with no provenance: the claims cannot be attributed,
+        # and guessing would hand one household another's claim.
+        return []
+    return [c for c in origin.claim_ids if c not in attributed]
+
+
 def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     """Reverse a merge. Originals must survive intact.
 
@@ -118,12 +196,16 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     dismissed and takes the valid individual complaints with it.
     """
     case = _cases[case_id]
+    # The picture every household in this call is attributed against. Taken
+    # once, because the loop below narrows `case` as it goes -- see _claims_of.
+    origin = replace(case, household_ids=list(case.household_ids),
+                     claim_ids=list(case.claim_ids),
+                     merged_from=list(case.merged_from))
     new_ids: list[str] = []
     for hh in household_ids:
         if hh not in case.household_ids:
             continue
-        claim_ids = [t.split(":", 1)[1] for t in case.merged_from
-                     if t.startswith(hh + ":")]
+        claim_ids = _claims_of(case, hh, origin=origin)
         child = Case(
             case_id=new_id("case"), service=case.service, segment=case.segment,
             feeder_id=case.feeder_id, tail=case.tail, status=case.status,
@@ -137,6 +219,12 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             # BREACHED and climb, escalating on the strength of a deadline the
             # institution never received.
             sla_paused=case.sla_paused,
+            # Hard rule 6, and the reason recurrence_count can tell a reversed
+            # merge from a second incident. core/store.py writes the same
+            # token; without it here, a split child counted as a NEW case on
+            # the feeder on this backend and not on the other -- a +1 on the
+            # number the escalation argument rests on (issue #18).
+            merged_from=[_SPLIT_FROM + case_id],
         )
         _cases[child.case_id] = child
         new_ids.append(child.case_id)
@@ -153,7 +241,13 @@ def recurrence_count(feeder_id: str, service: Service, since: datetime) -> int:
     """Prior cases on the same feeder. The thing a single complaint can never show."""
     return sum(1 for c in _cases.values()
                if c.feeder_id == feeder_id and c.service == service
-               and c.created_at >= since)
+               and c.created_at >= since
+               # A case created by undoing a merge is the SAME incident coming
+               # back apart, not a second one. Counting it inflates the number
+               # in the direction that manufactures a pattern, which is the one
+               # direction it must never drift. core/store.py achieves this by
+               # writing no feeder index row for a split child.
+               and not _is_split_child(c))
 
 
 # --------------------------------------------------------------- consent
@@ -252,3 +346,23 @@ def sign_filing(idempotency_key: str, member_id: str,
     filing.signed_by = member_id
     filing.signed_at = now
     return True, filing
+
+
+def record_submission(idempotency_key: str, external_ref: str,
+                      now: datetime, response: str = "") -> Filing | None:
+    """Write back what the desk said. Returns the stored filing, or None.
+
+    The missing half of put_filing_once, which is write-once by design. The
+    desk's ticket number arrives after the write, and until this existed it
+    lived only on whichever Python object was in memory -- which LOOKED fine
+    here, because this store hands back the very object the institution
+    client mutated, and was None on DynamoDB.
+    """
+    filing = _filings.get(idempotency_key)
+    if filing is None:
+        return None
+    filing.external_ref = external_ref
+    filing.submitted_at = now
+    if response:
+        filing.response = response
+    return filing

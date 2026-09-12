@@ -219,3 +219,235 @@ def test_the_stalled_queue_is_ordered_by_deadline_with_undated_last():
 
     assert [c.case_id for c in db.stalled_cases()] == [
         early.case_id, late.case_id, undated.case_id]
+
+
+# ------------------------------------------------ the desk's reply, stored
+
+def test_the_desks_reference_survives_the_write():
+    """put_filing_once is write-once by design (hard rule 5), but the ticket
+    number arrives AFTER the write. Until record_submission existed the
+    reference lived only on whichever Python object was in memory -- which
+    looked correct on memstore, because it hands back the very object the
+    institution client mutated, and was None on DynamoDB."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    back = db.record_submission(filing.idempotency_key, "BWSSB-100001",
+                                fakes.T0, "ACCEPTED BWSSB-100001")
+
+    assert back is not None
+    assert back.external_ref == "BWSSB-100001"
+    assert back.submitted_at == fakes.T0
+    assert back.response.startswith("ACCEPTED")
+
+    stored = db.get_filing(filing.idempotency_key)
+    assert stored.external_ref == "BWSSB-100001", "not durable"
+    assert stored.submitted_at == fakes.T0
+
+
+def test_recording_against_an_unknown_key_forges_nothing():
+    """The same rule as revoke_consent: an UPSERT here would invent a filing
+    against a public body that nobody drafted."""
+    assert db.record_submission("no_such_key", "X-1", fakes.T0) is None
+    assert db.get_filing("no_such_key") is None
+
+
+def test_a_later_reply_replaces_the_earlier_one():
+    """Unlike a signature, this is not first-writer-wins. A resubmission that
+    produces a different reference is the institution's answer, not a race
+    between two people, and the latest answer is the right one."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    db.record_submission(filing.idempotency_key, "FIRST-1", fakes.T0)
+    later = fakes.T0 + timedelta(days=1)
+    db.record_submission(filing.idempotency_key, "SECOND-2", later)
+
+    stored = db.get_filing(filing.idempotency_key)
+    assert stored.external_ref == "SECOND-2"
+    assert stored.submitted_at == later
+
+
+def test_recording_a_reply_does_not_forge_a_signature():
+    """Hard rule 4. A desk accepting something is not a person approving it,
+    and these two writes touch the same row."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+    db.record_submission(filing.idempotency_key, "X-1", fakes.T0)
+
+    assert db.get_filing(filing.idempotency_key).signed_by is None
+
+
+# ------------------------------------------- undoing a merge, both halves
+
+def test_splitting_off_the_founding_household_keeps_its_claim():
+    """ISSUE #13. The founder is in household_ids and never in merged_from --
+    nothing merged it, it opened the case. Reading provenance alone gave it no
+    claims, so the split produced an empty child and the claim ended up on NO
+    case at all. Hard rule 6 says merges are reversible; that made them
+    reversible for joiners only."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_founder", "hh_joiner"]
+    case.claim_ids = ["clm_founder", "clm_joiner"]
+    case.merged_from = ["hh_joiner:clm_joiner"]
+    db.put_case(case)
+
+    children = db.split_case(case.case_id, ["hh_founder"])
+
+    assert len(children) == 1
+    child = db.get_case(children[0])
+    assert child.household_ids == ["hh_founder"]
+    assert child.claim_ids == ["clm_founder"], "the founding claim was lost"
+
+
+def test_a_split_child_is_not_a_second_incident_on_the_feeder():
+    """ISSUE #18. recurrence_count is the number most of the escalation
+    argument rests on. A case created by undoing a merge is the same incident
+    coming back apart -- counting it inflates the number in the direction that
+    manufactures a pattern."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_a", "hh_b"]
+    case.claim_ids = ["clm_a", "clm_b"]
+    case.merged_from = ["hh_b:clm_b"]
+    db.put_case(case)
+
+    since = case.created_at - timedelta(days=1)
+    before = db.recurrence_count(case.feeder_id, case.service, since)
+
+    db.split_case(case.case_id, ["hh_b"])
+
+    assert db.recurrence_count(case.feeder_id, case.service, since) == before
+
+
+def test_a_split_child_carries_its_lineage():
+    """The provenance that makes the line above possible, and hard rule 6's
+    readable lineage. Both backends must write the same token or
+    recurrence_count diverges between them -- which is exactly how #18 hid."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_a", "hh_b"]
+    case.claim_ids = ["clm_a", "clm_b"]
+    case.merged_from = ["hh_b:clm_b"]
+    db.put_case(case)
+
+    child = db.get_case(db.split_case(case.case_id, ["hh_b"])[0])
+
+    assert child.merged_from == ["split_from:" + case.case_id]
+
+
+def test_two_households_with_no_provenance_are_not_guessed_at():
+    """Returning nothing is wrong; handing one household another's claim is
+    worse. The split must not invent an attribution it does not have."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_one", "hh_two"]
+    case.claim_ids = ["clm_one", "clm_two"]
+    case.merged_from = []
+    db.put_case(case)
+
+    child = db.get_case(db.split_case(case.case_id, ["hh_one"])[0])
+
+    assert child.household_ids == ["hh_one"]
+    assert child.claim_ids == [], "claims were attributed by guesswork"
+
+
+def test_splitting_both_unattributable_households_never_crosses_their_claims():
+    """THE SAME RULE, IN THE CALL THAT BROKE IT. The test above splits ONE
+    household and passes; the bug needed two in one call.
+
+    split_case narrows the parent as it goes, and the attribution rule counts
+    how many households have no provenance. Reading that count off the
+    shrinking parent made it fall by one every pass: the first household got
+    an empty child ("two untagged, cannot attribute") and the second, now the
+    only one left, was handed BOTH claims -- including the first household's.
+
+    That is hard rule 7 pointing the wrong way. Aggregation may be assembled
+    against an institution, never against a person, and one household's claim
+    sitting on another household's case survives into the filing that case
+    produces. Both backends did it, identically, which is why the parity suite
+    could not see it either.
+    """
+    case = fakes.a_case()
+    case.household_ids = ["hh_one", "hh_two"]
+    case.claim_ids = ["clm_one", "clm_two"]
+    case.merged_from = []
+    db.put_case(case)
+
+    children = [db.get_case(c)
+                for c in db.split_case(case.case_id, ["hh_one", "hh_two"])]
+
+    assert len(children) == 2
+    for child in children:
+        assert child.claim_ids == [], (
+            str(child.household_ids) + " was handed claims "
+            + str(child.claim_ids) + " that nothing attributes to it")
+    # Nothing is lost either: the claims nobody can be shown to own stay on
+    # the parent, where the provenance that would settle it can still arrive.
+    assert set(db.get_case(case.case_id).claim_ids) == {"clm_one", "clm_two"}
+
+
+def test_a_founder_leaving_after_a_joiner_still_takes_its_own_claim():
+    """The guard above must not undo issue #13. When the attribution snapshot
+    was added, the risk was that a joiner leaving first would strip its own
+    provenance token from the parent and make the founder look unattributable
+    too -- losing the founding claim all over again, in a new way."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_founder", "hh_joiner"]
+    case.claim_ids = ["clm_founder", "clm_joiner"]
+    case.merged_from = ["hh_joiner:clm_joiner"]
+    db.put_case(case)
+
+    children = [db.get_case(c) for c in
+                db.split_case(case.case_id, ["hh_joiner", "hh_founder"])]
+
+    got = {child.household_ids[0]: child.claim_ids for child in children}
+    assert got["hh_joiner"] == ["clm_joiner"]
+    assert got["hh_founder"] == ["clm_founder"], "the founding claim was lost"
+
+
+# ------------------------------------------------- one street, one spelling
+
+def test_two_spellings_of_one_street_are_the_same_street():
+    """ISSUE #17. The segment key was built from the raw string, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them, and that fix could not reach one layer
+    down -- the two claims were never handed to the scorer together.
+
+    Nothing errored. The cluster simply never formed, which is the same silent
+    shape as the 0.65 ceiling."""
+    a = fakes.a_claim(segment="ward12-4thcross", created_at=fakes.T0)
+    b = fakes.a_claim(segment="Ward12-4thCross", created_at=fakes.T0)
+    c = fakes.a_claim(segment="  ward12-4thcross  ", created_at=fakes.T0)
+    for claim in (a, b, c):
+        db.put_claim(claim)
+
+    since = fakes.T0 - timedelta(hours=1)
+    for spelling in ("ward12-4thcross", "Ward12-4thCross", "WARD12-4THCROSS"):
+        found = db.claims_in_window(spelling, Service.WATER, since)
+        assert len(found) == 3, (spelling, [f.claim_id for f in found])
+
+
+def test_the_stored_segment_keeps_the_spelling_it_arrived_with():
+    """Only the KEY is folded. A filing quotes the street the way the
+    household wrote it, not a lowercased version of it."""
+    claim = fakes.a_claim(segment="Ward12-4thCross", created_at=fakes.T0)
+    db.put_claim(claim)
+
+    back = db.claims_in_window("ward12-4thcross", Service.WATER,
+                               fakes.T0 - timedelta(hours=1))
+    assert [c.segment for c in back] == ["Ward12-4thCross"]
+
+
+def test_the_storage_fold_agrees_with_the_scorer():
+    """The rule is duplicated -- storage must not import the scorer, and
+    memstore must stay importable without numpy -- so the agreement is pinned
+    by a test instead of by a shared constant. Two normalisation rules in two
+    files is precisely how the first one drifted."""
+    from core.scoring import normalise_id
+
+    for raw in ("Ward12-4thCross", "  ward12-4thcross ", "WARD12-9THMAIN",
+                "", "ward12-1stcross"):
+        a = fakes.a_claim(segment=raw, created_at=fakes.T0)
+        db.put_claim(a)
+        found = db.claims_in_window(normalise_id(raw), Service.WATER,
+                                    fakes.T0 - timedelta(hours=1))
+        assert a.claim_id in [c.claim_id for c in found], raw

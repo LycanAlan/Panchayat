@@ -211,6 +211,48 @@ class InstitutionClient:
                          + " using the status tool.")
 
 
+def build_closure_probe(client: InstitutionClient | None = None):
+    """Adapter for the Watchdog's `closed: Callable[[str, str], bool]` seam.
+
+    Same shape and same reason as `build_submit`: the temporal lane must not
+    import this one, so the desk poll crosses as a plain Callable and a
+    handler wires it.
+
+    WHY THE WATCHDOG NEEDS THIS AT ALL. `reconcile_closure()` is documented as
+    "the institution says resolved; live claims from other households say
+    otherwise" -- and nothing in the repo ever asked an institution anything.
+    So the only half it could measure was the second one, and on a street
+    where nobody else has filed that half is unconditional: every case was
+    read as an undisputed closure and written RESOLVED, terminally, by a desk
+    that had not answered. This is the missing half.
+
+    ONLY `CLOSED` COUNTS. `OPEN` is still in the queue, `UNKNOWN` means the
+    desk does not recognise the reference, and `UNREACHABLE` is a portal that
+    is down -- none of them is a closure, and treating the last two as one
+    would put us back to inferring resolution from silence. `send()` collapses
+    every transport failure to UNREACHABLE rather than raising, so a desk that
+    is not running simply reports "not closed" and the pursuit continues.
+
+    A CLOSURE IS A CLAIM, NOT A FACT. By our own calibration a third of this
+    desk's closures are false. Returning True here means "the institution says
+    so", and reconciling that against the street is the Watchdog's job, not
+    this function's.
+    """
+    bound = client or InstitutionClient()
+
+    def closed(authority: str, ref: str) -> bool:
+        if not ref:
+            return False
+        target = desk_for(authority)
+        if not target.is_filable:
+            # Tier 4 is an RTI: drafted, never filed, no desk, no ticket to
+            # poll. Not closed, and not an error either.
+            return False
+        return bound.status(target.desk, ref).outcome is Outcome.CLOSED
+
+    return closed
+
+
 def build_filing_tool(client: InstitutionClient | None = None):
     """A Strands @tool for a graph node or the Watchdog.
 

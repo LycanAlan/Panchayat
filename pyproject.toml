@@ -1,0 +1,17 @@
+# The Python floor, and nothing else.
+#
+# `numpy>=2.5.3` needs 3.12+, and nothing anywhere said so -- a teammate
+# starting on 3.11 was blocked before writing a line (issue #21). The
+# Dockerfile pins python:3.12-slim and explains why; this is the same fact
+# where a human or a tool looks for it.
+#
+# DELIBERATELY MINIMAL. No [tool.ruff] section: ruff.toml is the configuration
+# and ruff.toml wins over pyproject.toml, but two config files that both look
+# authoritative is exactly how the four-different-ruffs problem started. No
+# build backend either -- this package is not installed, it is run from a
+# checkout and copied into an image.
+[project]
+name = "panchayat"
+version = "0.1.0"
+description = "A neighbourhood agent mesh that pursues institutional resolution."
+requires-python = ">=3.12"

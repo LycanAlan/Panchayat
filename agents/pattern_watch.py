@@ -148,27 +148,28 @@ class PatternWatch:
         """
         since = self.clock.now() - timedelta(hours=self.window_hours)
 
-        # Both spellings, when they differ. The de-duplication folds segments
-        # through normalise_id() and then queried with the RAW string, and both
-        # backends match the segment byte-exactly -- memstore with `==`,
-        # core/store.py by building "SEG#" + segment into the GSI key. So a
-        # case carrying "Ward12-4thCross" whose claims were stored as
-        # "ward12-4thcross" retrieved nothing from that street: no error, no
-        # log, and the fan-out that exists so a fault spanning two streets is
-        # fully retrieved silently returned half of it.
+        # ONE query per distinct segment, folded.
         #
-        # core/scoring.py states the premise that makes this reachable --
-        # "casing and stray spaces are the normal condition rather than the
-        # exception" -- and topology_score tolerates it while retrieval did
-        # not. Normalising at WRITE time is the real fix and is a storage
-        # decision, so it is raised rather than taken here; querying both
-        # costs one extra read only when the spellings actually differ.
-        segments, seen_raw = [], set()
+        # This used to query BOTH spellings, because the backends matched the
+        # segment byte-exactly -- memstore with `==`, core/store.py by building
+        # "SEG#" + segment into the GSI key. A case carrying "Ward12-4thCross"
+        # whose claims were stored as "ward12-4thcross" retrieved nothing from
+        # that street: no error, no log, and the fan-out that exists so a fault
+        # spanning two streets is fully retrieved silently returned half of it.
+        #
+        # Both backends now fold the segment AT THE KEY (issue #17), which is
+        # where the fix belongs -- core/scoring.py already says "casing and
+        # stray spaces are the normal condition rather than the exception", and
+        # the scorer's fold could not reach one layer down because the two
+        # claims were never handed to it together. So the workaround is gone
+        # and this is one read per street again, on the path that runs for
+        # every claim insert.
+        segments, seen = [], set()
         for segment in [claim.segment] + [c.segment for c in cases]:
-            for spelling in (segment, normalise_id(segment)):
-                if spelling and spelling not in seen_raw:
-                    seen_raw.add(spelling)
-                    segments.append(spelling)
+            key = normalise_id(segment)
+            if key and key not in seen:
+                seen.add(key)
+                segments.append(segment)
 
         out: dict[str, Claim] = {}
         for segment in segments:
