@@ -89,16 +89,22 @@ def test_an_unsigned_filing_never_advances_the_tier():
     # unambiguous: nothing was filed, and no tier was claimed.
 
 
-def test_a_failed_filing_currently_freezes_the_case_permanently():
-    """KNOWN GAP, pinned so it is visible rather than discovered on Day 4.
+def test_a_failed_filing_now_retries_instead_of_freezing_the_case():
+    """INVERTED. This was a canary, and it fired exactly as written.
 
-    climb() pauses the clock and returns without scheduling any wake, and
-    _check_sla short-circuits on sla_paused, so the case stops for good. This
-    is not live -- Watchdog still defaults to `lambda filing: True` -- but it
-    is the precondition for installing build_submit() as that default.
+    It used to pin the KNOWN GAP -- climb() paused the clock, scheduled
+    nothing, and _check_sla short-circuited on sla_paused, so the case stopped
+    for good. The docstring said "when the pause path learns to schedule a
+    retry wake and surface to the Digest, this test should start failing.
+    That is the signal to delete it."
 
-    When the pause path learns to schedule a retry wake and surface to the
-    Digest, this test should start failing. That is the signal to delete it.
+    It did. Turned around rather than deleted: the gap it guarded is the
+    precondition for installing build_submit() as the Watchdog's default, and
+    that precondition being MET is worth a test of its own.
+
+    The other precondition -- a signature-capture step, so a filing is not
+    NEEDS_HUMAN forever -- still does not exist. Do not install the adapter
+    on the strength of this test alone.
     """
     case = _a_case_ready_to_climb()
     clock = RecordingClock(now=fakes.T0)
@@ -106,15 +112,16 @@ def test_a_failed_filing_currently_freezes_the_case_permanently():
                   submit=build_submit(_Desk(DeskReply(Outcome.ACCEPTED, "X-1"))))
 
     wd.climb(case.case_id, clock)
-    assert clock.scheduled == [], "no wake is scheduled on the pause path"
 
-    # even firing a wake by hand does nothing: the short-circuit sees paused
-    clock.advance(timedelta(days=30))
-    wd.handle(case.case_id, "check_sla", clock)
+    # A retry wake, and no SLA wake: the statutory clock must not run against
+    # a filing that never landed.
+    assert [w for w in clock.scheduled if w[-1] == "retry_submit"], (
+        "the pause path must leave a wake behind or the case stops for good")
+    assert not [w for w in clock.scheduled if w[-1] == "check_sla"]
 
     after = db.get_case(case.case_id)
-    assert after.escalation_tier == 0
-    assert clock.scheduled == []
+    assert after.escalation_tier == 0, "nothing was filed, so no tier is claimed"
+    assert after.sla_paused is True
     assert after.status is not CaseStatus.BREACHED
 
 

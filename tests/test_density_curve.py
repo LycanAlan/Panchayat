@@ -54,13 +54,19 @@ def test_a_case_that_never_filed_never_resolves():
 
 # --------------------------------------- the dispute rule, both versions
 
-def test_the_shipped_rule_disputes_a_case_using_its_own_founding_claims():
-    """The reason the first table is not a finding.
+def test_the_shipped_rule_no_longer_disputes_a_case_on_its_own_claims():
+    """INVERTED. This was a canary, and it fired.
 
-    reconcile_closure counts every claim on the segment in the last seven days,
-    including the ones that OPENED the case. sla_days is 7 and the mean
-    response is 36 hours, so every realistic closure falls inside that window
-    and nothing can ever stand.
+    It used to assert that reconcile_closure disputed a closure using the very
+    claims that OPENED the case -- with a failure message reading "the shipped
+    rule stopped disputing; the first table may now be real". Raghav landed the
+    fix (the rule Kartik wrote here as corrected_dispute, labelled "a PROPOSAL
+    for Raghav's file"), so it stopped, and the message was right.
+
+    Kept rather than deleted, with the assertion turned around, because the
+    behaviour is still worth pinning: this is the difference between a curve
+    that measures corroboration and one that is flat at zero for an
+    instrument reason.
     """
     from agents import watchdog
 
@@ -77,8 +83,8 @@ def test_the_shipped_rule_disputes_a_case_using_its_own_founding_claims():
         db.put_claim(c)
 
     at = _clock(fakes.T0 + timedelta(hours=36))
-    assert watchdog.reconcile_closure(case.case_id, clock=at) is True, (
-        "the shipped rule stopped disputing; the first table may now be real")
+    assert watchdog.reconcile_closure(case.case_id, clock=at) is False, (
+        "a case's own founding claims are not evidence against its closure")
 
 
 def test_the_corrected_rule_lets_that_same_closure_stand():

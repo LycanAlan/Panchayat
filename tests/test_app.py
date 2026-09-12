@@ -211,3 +211,34 @@ def test_a_segment_less_report_degrades_over_http_instead_of_500ing():
 
     assert r.status_code == 200, "a caller error is not a server error"
     assert r.json()["result"]["unrouted_reason"] == "no_segment"
+
+
+def test_a_report_with_no_complaint_in_it_drafts_nothing():
+    """Silence is not a complaint.
+
+    Raghav fixed intake's half -- an empty report yields zero needs. This is
+    the spine's half, and without it his fix changed nothing end to end:
+    `_household` did `(needs or [{}])[0]` and manufactured the need straight
+    back, so a payload with no text produced a tier-1 draft addressed to a
+    named BWSSB officer with an empty body.
+
+    Hard rule 4 held (nothing was submitted), but a draft to a real desk
+    saying nothing is one signature away from being sent.
+    """
+    payload = _payload(text="")
+
+    out = appmod.invoke(payload)["result"]
+
+    assert out["unrouted_reason"] == "no_need"
+    assert out["path"] == ["intake"], "the graph must stop at intake"
+    assert out["filed_to"] is None
+    assert not db.filings_for_case(out["case_id"]), "nothing is drafted from silence"
+
+
+def test_a_real_report_is_unaffected_by_the_empty_report_guard():
+    """The guard must not cost a household with a genuine complaint."""
+    out = appmod.invoke(_payload())["result"]
+
+    assert out["unrouted_reason"] is None
+    assert out["path"] == ["intake", "household", "warden", "remedy", "file"]
+    assert out["filed_to"]

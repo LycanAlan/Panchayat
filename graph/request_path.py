@@ -531,6 +531,30 @@ def is_not_institutional(state, *, invocation_state: dict, **kwargs: Any) -> boo
     return not is_institutional(state, invocation_state=invocation_state)
 
 
+def has_a_need(state, *, invocation_state: dict, **kwargs: Any) -> bool:
+    """Nothing reported, nothing to pursue -- the graph stops at intake.
+
+    Raghav fixed intake's half of this: an empty report now yields zero needs
+    instead of one need with an empty description. This is the other half, and
+    without it his fix changed NOTHING end to end -- measured on his branch, a
+    payload with text="" still produced "0 need(s) from en text" at SIGNAL and
+    then a tier-1 draft addressed to "BWSSB Assistant Engineer, sub-division
+    office" with an empty body, because `_household` did
+    `(needs or [{}])[0]` and manufactured the need straight back.
+
+    Hard rule 4 held throughout -- nothing was submitted -- but a draft
+    addressed to a named officer saying nothing is not a thing to make out of
+    silence, and it is one signature away from being sent.
+
+    An edge condition rather than a guard inside `_household`: the decision is
+    "is there anything here to pursue", which is a routing decision, and the
+    graph is where this file puts those. With no satisfied outgoing edge the
+    run ends after intake, which is exactly the shape we want.
+    """
+    ctx = invocation_state.get("ctx")
+    return bool(ctx and ctx.payload.get("needs"))
+
+
 # Built once. When a node becomes a real Agent this is where its model client
 # is constructed, so it must NOT move inside build_graph().
 NODES = {
@@ -553,7 +577,7 @@ def build_graph():
     for node_id, fn in NODES.items():
         builder.add_node(FunctionNode(node_id, fn), node_id)
 
-    builder.add_edge("intake", "household")
+    builder.add_edge("intake", "household", condition=has_a_need)
     builder.add_edge("household", "warden")
     builder.add_edge("warden", "remedy")
     builder.add_edge("remedy", "file", condition=is_institutional)
@@ -582,6 +606,11 @@ def _unrouted_reason(ctx: RequestContext) -> str | None:
                else str(ctx.payload.get("segment", "")).strip())
     if not segment:
         return "no_segment"
+    if not ctx.payload.get("needs"):
+        # Reached when intake found nothing to pursue, so the graph stopped
+        # after it. Distinct from "no_claim": there is no claim BECAUSE there
+        # was no complaint, which is a different thing to tell a caller.
+        return "no_need"
     if ctx.claim is None:
         return "no_claim"
     # `run_or_stub` hands back (INSTITUTIONAL, None, "") when remedy.resolve
