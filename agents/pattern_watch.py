@@ -212,23 +212,39 @@ class PatternWatch:
         spoken_for = {cid for c in cases if c.case_id != cases[0].case_id
                       for cid in c.claim_ids}
 
+        # THE TRIGGERING CLAIM IS DELIBERATELY NOT SUBJECT TO `spoken_for`,
+        # and a previous version of this guard that made it subject was WRONG
+        # in the most expensive way available: graph/request_path.py mints a
+        # fresh Case per report, so every request-path claim is spoken for by
+        # its own case, `on_new_claim` returned None for all of them, and
+        # ambient clustering could never fire at all. Measured end to end --
+        # two households on one feeder produced no proposal. TAU, the merge
+        # path, Anti-Abuse and the density thesis were all unreachable, and
+        # the eval harness could not see it because it calls apply_upgrade()
+        # directly.
+        #
+        # THE HAZARD IT WAS TRYING TO ADDRESS IS REAL AND IS STILL OPEN.
+        # The claim's own case stays alive with its own deadline and tier
+        # while its household joins cases[0], so the Watchdog can file both
+        # for one fault -- a duplicate under hard rule 5, with provenance
+        # split_case cannot reconcile under hard rule 6.
+        #
+        # The actual fix is for cases[0] to ABSORB the source case, which
+        # needs cross-case merge provenance. This file already says that is a
+        # group call and not to take it unilaterally, and it is right. So the
+        # hazard is made LOUD rather than silently traded for a product that
+        # does not cluster.
         if claim.claim_id in spoken_for:
-            # THE TRIGGERING CLAIM IS NOT EXEMPT. graph/request_path.py mints a
-            # fresh Case per report, so by the time the stream record fires
-            # this claim usually sits on its own open case -- which
-            # _cases_in_flight returns alongside the older ones. It was then
-            # put into candidate_claim_ids unconditionally and its household
-            # joined cases[0] anyway, while its own case stayed alive with its
-            # own deadline and tier. The Watchdog files both for one fault:
-            # the duplicate hard rule 5 exists to prevent, with provenance
-            # split_case cannot reconcile (hard rule 6).
-            #
-            # Same conclusion the comment above reaches for everyone else's
-            # claims: without cross-case merge provenance, the safe move is to
-            # leave it alone.
+            source = next((c.case_id for c in cases
+                           if c.case_id != cases[0].case_id
+                           and claim.claim_id in c.claim_ids), "")
             emit(Tag.PATTERN, "trigger_already_on_a_case",
-                 case_id=cases[0].case_id, claim_id=claim.claim_id)
-            return None
+                 case_id=cases[0].case_id, claim_id=claim.claim_id,
+                 source_case_id=source)
+            _trace("MERGING", "pattern",
+                   "this claim is also on " + (source or "another case")
+                   + "; that case is NOT absorbed and may file separately "
+                     "-- cross-case merge is a group decision, see STATUS.md")
 
         scores, skipped = [], 0
         for other in self._candidates(claim, cases):
