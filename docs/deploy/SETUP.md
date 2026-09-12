@@ -123,6 +123,43 @@ Builds ARM64 in CodeBuild. **No Docker needed or wanted.** First run creates
 the ECR repo, both roles, the CodeBuild project, and the runtime — several
 minutes.
 
+#### Blocked here on 12 Sep — CodeBuild quota is zero
+
+```
+AccountLimitExceededException: Cannot have more than 0 builds in queue
+for the account
+```
+
+Everything up to the build succeeded and **persists**, so a retry resumes from
+here: the ECR repo `bedrock-agentcore-panchayat`, the runtime execution role
+`AmazonBedrockAgentCoreSDKRuntime-us-east-1-f521b6c81b`, the CodeBuild role
+`...SDKCodeBuild-us-east-1-f521b6c81b`, the project
+`bedrock-agentcore-panchayat-builder`, and the uploaded source zip.
+
+The project builds on **`ARM_CONTAINER` / `BUILD_GENERAL1_MEDIUM`**
+(`aws/codebuild/amazonlinux2-aarch64-standard:3.0`) — that is the quota to
+raise. Service Quotas → AWS CodeBuild → the ARM concurrent-builds entry →
+Request increase.
+
+**Treat this as one problem, not three.** Three unrelated AWS services are
+gated on this account and none of the three is IAM:
+
+| Service | Symptom |
+|---|---|
+| Bedrock model data plane | `ValidationException: Operation not allowed` (case 178898467100367) |
+| AgentCore Memory | `AccessDenied ... contact customer support` |
+| CodeBuild | concurrent builds = 0 |
+
+That pattern reads as an account pending validation rather than three
+coincidences. One support conversation naming all three is likelier to fix it
+than three quota forms. **This is a schedule risk, not a code risk** — nothing
+above is a defect in the repo.
+
+If the wait becomes unacceptable, `--deployment-type direct_code_deploy`
+bypasses CodeBuild and ECR entirely and is equally AWS — it just stops applying
+our Dockerfile, so `PANCHAYAT_BACKEND=dynamodb` must be passed with `--env` or
+the runtime silently uses the memory backend.
+
 ### 1.3 Give the runtime its table
 
 The auto-created execution role gets ECR pull, CloudWatch and the AgentCore
