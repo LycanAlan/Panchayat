@@ -252,3 +252,23 @@ def sign_filing(idempotency_key: str, member_id: str,
     filing.signed_by = member_id
     filing.signed_at = now
     return True, filing
+
+
+def record_submission(idempotency_key: str, external_ref: str,
+                      now: datetime, response: str = "") -> Filing | None:
+    """Write back what the desk said. Returns the stored filing, or None.
+
+    The missing half of put_filing_once, which is write-once by design. The
+    desk's ticket number arrives after the write, and until this existed it
+    lived only on whichever Python object was in memory -- which LOOKED fine
+    here, because this store hands back the very object the institution
+    client mutated, and was None on DynamoDB.
+    """
+    filing = _filings.get(idempotency_key)
+    if filing is None:
+        return None
+    filing.external_ref = external_ref
+    filing.submitted_at = now
+    if response:
+        filing.response = response
+    return filing

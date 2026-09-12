@@ -19,7 +19,7 @@ being built.
 |---|---|---|
 | **1. Runtime** | the request path — a household reports, we route and draft | **blocked on one IAM policy** |
 | **2. Scheduler** | the temporal path — the SLA clock, breach, escalation | needs a Lambda that is not packaged yet |
-| **3. Streams** | the ambient path — clustering | **`handlers/ambient.py` does not exist** |
+| **3. Streams** | the ambient path — clustering | handler exists; needs a Lambda + event-source mapping |
 | **4. Desks** | the institution simulators over A2A | runs locally today, no cloud needed |
 
 ---
@@ -211,6 +211,15 @@ filter `AmazonBedrockAgentCore`), then:
       → JSON → paste docs/deploy/runtime-table-policy.json
       → name it `panchayat-table` → Create
 
+**That policy now also carries `scheduler:CreateSchedule` and `iam:PassRole`,
+and it needs to.** `graph/request_path.py` schedules the case's FIRST wake from
+inside the runtime — every later one is created by the Watchdog Lambda, but not
+that one. Without these two the report succeeds, the trace says TRACKING, and
+the `create_schedule` call fails with AccessDenied: the case gets a deadline
+nothing will ever wake it for. `iam:PassRole` is scoped by condition to
+`scheduler.amazonaws.com` so the runtime can hand EventBridge the
+`panchayat-scheduler` role and nothing else.
+
 **`dynamodb:*Item` is not a substitute.** IAM globs match literally: `*Item`
 covers `PutItem`/`GetItem`/`UpdateItem`/`DeleteItem` but **not
 `TransactWriteItems`** — different word, plural. `core/store.py` uses
@@ -310,13 +319,69 @@ fix a trigger that was never written.
 
 ## Stage 3 — streams, for clustering
 
-**Cannot be set up yet: `handlers/ambient.py` does not exist.** The table's
-streams are already on and nothing consumes them. `handlers/temporal.py` is the
-shape to copy. Kartik + Ali.
+**`handlers/ambient.py` now exists** (`handler`, same shape as the temporal
+one). The table's streams were already on; this is what finally reads them.
+Without this stage the request path still works and **clustering never runs** —
+measured before the handler landed: three households reporting one fault on one
+street opened three cases, corroboration 1, 1, 1.
 
-Once it exists: a second Lambda plus an event-source mapping from the table's
-stream ARN. No new IAM beyond the table policy and
-`dynamodb:GetRecords`/`GetShardIterator`/`DescribeStream` on the stream.
+### 3.1 Package and create the Lambda
+
+Same zip as Stage 2, different entry point: `handlers.ambient.handler`.
+
+- Name: `panchayat-ambient`
+- Runtime: Python 3.12, **arm64**
+- Timeout: 60s is ample — the common case does arithmetic and returns
+- Execution role: `AWSLambdaBasicExecutionRole` **plus** the same
+  `runtime-table-policy.json` (it reads claims and writes cases), **plus**
+  `dynamodb:GetRecords`, `dynamodb:GetShardIterator`,
+  `dynamodb:DescribeStream` and `dynamodb:ListStreams` on the table's
+  **stream** ARN — that is a different ARN from the table's.
+
+### 3.2 The event-source mapping, and the one flag that matters
+
+```bash
+STREAM_ARN=$(aws dynamodb describe-table --table-name panchayat \
+  --query 'Table.LatestStreamArn' --output text)
+
+aws lambda create-event-source-mapping \
+  --function-name panchayat-ambient \
+  --event-source-arn "$STREAM_ARN" \
+  --starting-position LATEST \
+  --batch-size 10 \
+  --maximum-retry-attempts 3 \
+  --function-response-types ReportBatchItemFailures \
+  --filter-criteria '{"Filters":[{"Pattern":"{\"eventName\":[\"INSERT\"]}"}]}'
+```
+
+**`--function-response-types ReportBatchItemFailures` is not optional.** The
+handler returns `{"batchItemFailures": [...]}` naming only the records worth
+redelivering. Without this flag AWS ignores that return value entirely and
+treats every invocation as a success — so a claim that failed on a throttle is
+dropped silently instead of retried, and clustering quietly misses households.
+
+Why the handler reports failures rather than raising, unlike the temporal one:
+a DynamoDB stream retries the **whole batch from the same position**, so one
+poison record would block every later claim on that shard until it ages out
+(24h). Clustering would stop for a day — the exact failure the handler exists
+to prevent, recreated by its own error handling.
+
+The `INSERT` filter is belt-and-braces: the handler filters again on
+`eventName` and on a `CLAIM#` partition key, so widening the console filter to
+debug something cannot make it act on case or filing rows.
+
+### 3.3 Check it
+
+Report a fault twice on one curated street, then:
+
+```bash
+aws logs tail /aws/lambda/panchayat-ambient --follow
+```
+
+A merge prints `MERGING     ambient     -> 1 case(s) upgraded from 1 stream
+record(s)`. Nothing at all means the claims did not correlate — check that both
+claims carry a `feeder_id` (the request path fills it from `remedy.lookup`;
+an uncurated segment leaves it empty and those claims cannot corroborate).
 
 ---
 

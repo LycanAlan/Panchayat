@@ -474,6 +474,20 @@ class Watchdog:
                 self._pause_and_retry(case, clock, "endpoint unreachable")
                 return case.escalation_tier
 
+            # WHAT THE DESK SAID, written back to the table.
+            #
+            # build_submit() puts the reference on the Filing object and
+            # put_filing_once is write-once, so without this the ticket number
+            # exists only on this local variable. It LOOKED fine on the memory
+            # backend, which hands back the very object that was mutated, and
+            # was None on DynamoDB -- and a case whose reference we do not
+            # hold can never be polled or escalated against.
+            if filing.external_ref:
+                record = getattr(self.db, "record_submission", None)
+                if record is not None:
+                    record(filing.idempotency_key, filing.external_ref,
+                           clock.now(), filing.response or "")
+
             _trace("ESCALATED", "watchdog",
                    f"tier {step.tier} -> {step.authority}"
                    + ("" if was_written else " (already drafted, not duplicated)"))

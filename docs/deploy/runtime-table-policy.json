@@ -32,6 +32,27 @@
         "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:699073937307:inference-profile/*"
       ]
+    },
+    {
+      "Sid": "TheRuntimeCreatesTheFirstWake",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:CreateSchedule",
+        "scheduler:GetSchedule",
+        "scheduler:DeleteSchedule"
+      ],
+      "Resource": "arn:aws:scheduler:us-east-1:699073937307:schedule/default/panchayat-*"
+    },
+    {
+      "Sid": "AndHandsEventBridgeTheRoleThatInvokesTheWatchdog",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::699073937307:role/panchayat-scheduler",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "scheduler.amazonaws.com"
+        }
+      }
     }
   ]
 }

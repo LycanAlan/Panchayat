@@ -168,12 +168,18 @@ def test_a_signed_filing_that_the_desk_accepts_does_advance():
         "it the case can never be polled or escalated against"
     )
     assert filings[0].response.startswith("ACCEPTED")
-    # The adapter deliberately does NOT stamp submitted_at: the correct value
-    # is climb()'s injected clock, and Callable[[Filing], bool] cannot carry
-    # one. Reaching for the ambient clock instead would put real wall time on
-    # a filing whose case deadline came from a virtual clock -- a submission
-    # recorded as later than its own statutory deadline.
-    assert filings[0].submitted_at is None
+    # The adapter still deliberately does NOT stamp submitted_at: the correct
+    # value is climb()'s injected clock, and Callable[[Filing], bool] cannot
+    # carry one. Reaching for the ambient clock instead would put real wall
+    # time on a filing whose case deadline came from a virtual clock -- a
+    # submission recorded as later than its own statutory deadline.
+    #
+    # climb() stamps it, from that injected clock, via db.record_submission().
+    # This used to assert None because NOTHING wrote it back: put_filing_once
+    # is write-once, so the reply lived on whichever Python object was in
+    # memory. Asserting the clock's value, not merely "not None" -- hard rule
+    # 1 is the whole reason this comment exists.
+    assert filings[0].submitted_at == fakes.T0
 
 
 # ------------------------------------------- the collapse rule, per outcome

@@ -1086,6 +1086,68 @@ def sign_filing(idempotency_key: str, member_id: str,
     return True, filing
 
 
+def record_submission(idempotency_key: str, external_ref: str,
+                      now: datetime, response: str = "") -> Filing | None:
+    """Write back what the desk said. Returns the stored filing, or None.
+
+    THE MISSING HALF OF put_filing_once. That function is write-once by
+    design -- a retrying Watchdog that files twice produces the duplicate that
+    reads as spam and gets both copies closed (hard rule 5). But the desk's
+    ticket number arrives AFTER the write, and `agents/watchdog.py::withdraw`
+    already flags the consequence: `core.db` had no filing-amend function at
+    all, so the reference existed only on whichever Python object happened to
+    be in memory.
+
+    That hid as a passing test. memstore hands back the live object the
+    institution client mutated, so `external_ref` was there; DynamoDB decodes
+    a fresh Filing from the table, so it was None. The same divergence class
+    as every other one this week.
+
+    NOT idempotent-by-refusal like sign_filing. A resubmission that produces a
+    different reference is the institution's answer, not a race between two
+    people, and the latest answer is the right one. `submitted_at` moves with
+    it, because "when did this land" means the landing we have a reference for.
+    """
+    ptr = _t().get_item(
+        Key={"PK": "FILING#" + idempotency_key, "SK": "META"}).get("Item")
+    if not ptr:
+        return None
+
+    case_id = ptr["case_id"]
+    values = {":r": external_ref, ":t": now.isoformat()}
+    # EVERY name aliased, not just the one that broke. `response` is a
+    # DynamoDB RESERVED KEYWORD, so the bare expression raises
+    # ValidationException -- and only against a real engine: memstore is a
+    # dict and could never see it. Aliasing all three costs nothing and means
+    # the next field added here cannot reintroduce it.
+    names = {"#ref": "external_ref", "#at": "submitted_at"}
+    expression = "SET #ref = :r, #at = :t"
+    if response:
+        expression += ", #resp = :resp"
+        names["#resp"] = "response"
+        values[":resp"] = response
+
+    try:
+        _t().update_item(
+            Key={"PK": "CASE#" + case_id, "SK": "FILING#" + idempotency_key},
+            UpdateExpression=expression,
+            # Never UPSERT. Without this the update forges a stub filing when
+            # the row is gone, the way revoke_consent used to forge a consent
+            # nobody granted.
+            ConditionExpression="attribute_exists(SK)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if not _condition_failed(exc):
+            raise
+        return None
+
+    item = _t().get_item(Key={"PK": "CASE#" + case_id,
+                              "SK": "FILING#" + idempotency_key}).get("Item")
+    return _filing_from(item) if item else None
+
+
 def filings_for_case(case_id: str) -> list[Filing]:
     items = _query_all(
         KeyConditionExpression=(

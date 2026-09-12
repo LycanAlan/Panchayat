@@ -219,3 +219,60 @@ def test_the_stalled_queue_is_ordered_by_deadline_with_undated_last():
 
     assert [c.case_id for c in db.stalled_cases()] == [
         early.case_id, late.case_id, undated.case_id]
+
+
+# ------------------------------------------------ the desk's reply, stored
+
+def test_the_desks_reference_survives_the_write():
+    """put_filing_once is write-once by design (hard rule 5), but the ticket
+    number arrives AFTER the write. Until record_submission existed the
+    reference lived only on whichever Python object was in memory -- which
+    looked correct on memstore, because it hands back the very object the
+    institution client mutated, and was None on DynamoDB."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    back = db.record_submission(filing.idempotency_key, "BWSSB-100001",
+                                fakes.T0, "ACCEPTED BWSSB-100001")
+
+    assert back is not None
+    assert back.external_ref == "BWSSB-100001"
+    assert back.submitted_at == fakes.T0
+    assert back.response.startswith("ACCEPTED")
+
+    stored = db.get_filing(filing.idempotency_key)
+    assert stored.external_ref == "BWSSB-100001", "not durable"
+    assert stored.submitted_at == fakes.T0
+
+
+def test_recording_against_an_unknown_key_forges_nothing():
+    """The same rule as revoke_consent: an UPSERT here would invent a filing
+    against a public body that nobody drafted."""
+    assert db.record_submission("no_such_key", "X-1", fakes.T0) is None
+    assert db.get_filing("no_such_key") is None
+
+
+def test_a_later_reply_replaces_the_earlier_one():
+    """Unlike a signature, this is not first-writer-wins. A resubmission that
+    produces a different reference is the institution's answer, not a race
+    between two people, and the latest answer is the right one."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    db.record_submission(filing.idempotency_key, "FIRST-1", fakes.T0)
+    later = fakes.T0 + timedelta(days=1)
+    db.record_submission(filing.idempotency_key, "SECOND-2", later)
+
+    stored = db.get_filing(filing.idempotency_key)
+    assert stored.external_ref == "SECOND-2"
+    assert stored.submitted_at == later
+
+
+def test_recording_a_reply_does_not_forge_a_signature():
+    """Hard rule 4. A desk accepting something is not a person approving it,
+    and these two writes touch the same row."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+    db.record_submission(filing.idempotency_key, "X-1", fakes.T0)
+
+    assert db.get_filing(filing.idempotency_key).signed_by is None
