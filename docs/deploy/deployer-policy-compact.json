@@ -1,0 +1,46 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BuildPushRunAndLog",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:*",
+        "codebuild:*",
+        "logs:*",
+        "bedrock-agentcore:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CodeBuildSourceBucket",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1",
+        "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1/*"
+      ]
+    },
+    {
+      "Sid": "ToolkitRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:TagRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::699073937307:role/AmazonBedrockAgentCore*",
+        "arn:aws:iam::699073937307:role/service-role/AmazonBedrockAgentCore*",
+        "arn:aws:iam::699073937307:role/codebuild-bedrock-agentcore*"
+      ]
+    }
+  ]
+}

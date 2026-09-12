@@ -69,16 +69,37 @@ missing policy on our user. The Bedrock model block is
 `ValidationException: Operation not allowed`, which is account-level and is
 not this.
 
-**Do it in the console** (sign in as root or any admin on `699073937307`):
+**Do it in the console** (sign in as root or any admin on `699073937307`).
+
+**Mind the size limit — this bites immediately.** An **inline** policy on a
+user is capped at **2,048 characters**, and `deployer-policy.json` is 2,377
+(IAM excludes whitespace when it counts, so reformatting will not save you).
+Two ways through, both fine:
+
+**A. Managed policy — takes the full file, 6,144-character cap:**
+
+    IAM → Policies → Create policy → JSON
+      → paste docs/deploy/deployer-policy.json
+      → name it `panchayat-deployer` → Create
+    IAM → Users → ali → Add permissions → Attach policies directly
+      → select `panchayat-deployer` → Add
+
+**B. Inline — paste `docs/deploy/deployer-policy-compact.json` instead** (854
+characters):
 
     IAM → Users → ali → Add permissions → Create inline policy
-      → JSON tab → paste docs/deploy/deployer-policy.json
+      → JSON tab → paste docs/deploy/deployer-policy-compact.json
       → name it `panchayat-deployer` → Create
 
-That policy is scoped on purpose: ECR and CodeBuild broadly, **IAM narrowed to
-the four role-name prefixes the toolkit actually creates**, S3 to the single
-CodeBuild source bucket. `AdministratorAccess` also works and is one click —
-fine for a throwaway hackathon account, just make it a decision.
+The compact version collapses ECR, CodeBuild, logs and AgentCore to
+service-level wildcards. **It deliberately does NOT collapse `iam:`** — those
+stay ten named actions scoped to the toolkit's role-name prefixes, because
+`iam:*` on a user is a privilege-escalation path and worth 300 characters.
+
+Either policy is scoped on purpose: S3 is limited to the single CodeBuild
+source bucket, IAM to the roles the toolkit actually creates.
+`AdministratorAccess` also works and is one click — fine for a throwaway
+hackathon account, just make it a decision.
 
 **Then confirm it landed** before burning a deploy:
 
