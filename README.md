@@ -95,6 +95,6 @@ python -c "from core.types import Claim; from core.clock import get_clock; print
 | Ali | platform + lead | [@LycanAlan](https://github.com/LycanAlan) |
 | Kartik | data + mesh | [@ShipWithKartik](https://github.com/ShipWithKartik) |
 | Alakshendra | institutions | [@AlakshendraB](https://github.com/AlakshendraB) |
-| Raghav | household + time | [@Raghav4509](https://github.com/Raghav4509) |
+| Raghav | household + time | [@Raghav](https://github.com/Ragh234) |
 
 One brief per person in `docs/team/`.
