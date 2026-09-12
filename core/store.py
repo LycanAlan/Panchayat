@@ -191,6 +191,20 @@ def _claim_from(item: dict) -> Claim:
     )
 
 
+def claim_from_item(item: dict) -> Claim:
+    """A stored claim item -> Claim. The public face of the decoder.
+
+    Exists for `handlers/ambient.py`, which reads claims out of the table's
+    own stream rather than through `core.db`. A stream record is DynamoDB by
+    definition, so that handler is allowed to know this module -- but it must
+    not carry its own copy of the decoding rules. Two decoders drift, and the
+    one on the ambient path would drift silently: a claim whose embedding or
+    consent scopes decoded differently there would score differently and
+    nothing would raise.
+    """
+    return _claim_from(item)
+
+
 def put_claim(claim: Claim) -> None:
     """PK=CLAIM#<id> SK=META, GSI1PK=claim.gsi1pk() GSI1SK=claim.gsi1sk().
 
