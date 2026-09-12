@@ -307,13 +307,31 @@ agentcore deploy --agent panchayat \
 Catch `SchedulerNotConfigured` specifically if you handle it anywhere —
 catching broadly hides a real EventBridge outage.
 
-### 2.4 Known gap this stage does NOT close
+### 2.4 Two things this stage used to leave broken — both now closed
 
-**Nothing schedules `check_closure`.** Verified by grepping every
-`clock.schedule()` call. A desk returning `CLOSED` triggers nothing, so the
-disputed-closure moment — the peak of the demo video — can still only fire from
-tests. Raghav proposes the cadence, the group ratifies. Infrastructure cannot
-fix a trigger that was never written.
+**`check_closure` is scheduled.** `climb()` books it at the statutory
+deadline, alongside `check_sla`. This section used to say nothing scheduled
+it and the disputed-closure moment could only fire from tests.
+
+**And it now asks the desk before deciding.** `reconcile_closure` is
+documented as "the institution says resolved; live claims from other
+households say otherwise" — but nothing polled a desk, so only the second
+half was measured, and on a one-household street that half is always "nobody
+contradicts it". Every case was therefore written `RESOLVED`, which is
+terminal, by an office that had answered nothing. The Watchdog now takes a
+`closed(authority, external_ref)` seam, wired in `handlers/temporal.py` from
+`institutions.client.build_closure_probe()`, exactly as `submit` is. **With
+the desks in Stage 4 not running, that probe reports UNREACHABLE and no case
+self-resolves** — which is the correct behaviour, not a regression.
+
+### 2.5 If you are reusing a table that has claims in it from before 13 Sep
+
+`GSI1PK` on a claim used to be built from the raw segment and is now folded
+to lower case (issue #17), so rows written before that land in a partition
+`claims_in_window` no longer queries. **They are invisible to clustering, in
+silence.** For a table with a handful of demo rows the fix is to re-`put_claim`
+them; for a fresh table there is nothing to do. Deleting and recreating the
+table (`scripts/create_table.py`) is the fastest path and the one we took.
 
 ---
 

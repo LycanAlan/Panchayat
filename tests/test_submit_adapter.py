@@ -14,11 +14,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from agents.remedy import lookup as remedy_lookup
 from agents.watchdog import Watchdog
 from core import db, fakes
 from core.types import CaseStatus, Filing
-from institutions.client import InstitutionClient, build_submit
+from institutions.client import (
+    InstitutionClient,
+    build_closure_probe,
+    build_submit,
+)
 from institutions.protocol import DeskReply, Outcome
 
 
@@ -237,6 +243,117 @@ def test_a_refusal_leaves_no_reference_behind():
 
     assert filing.external_ref is None, "no ticket exists; do not record one"
     assert filing.response.startswith("UNKNOWN")
+
+
+# ------------------------------------------- the whole arc, in one test
+
+class _TwoWayDesk(InstitutionClient):
+    """A desk that answers a filing one way and a status poll another.
+
+    `InstitutionClient.status()` and `.file()` both funnel through `send()`,
+    and the instruction text is the only thing that separates them -- which is
+    all this needs, and keeps every line above `send` real.
+    """
+
+    def __init__(self, on_file: DeskReply, on_status: DeskReply):
+        super().__init__()
+        self._on_file = on_file
+        self._on_status = on_status
+
+    def send(self, desk, instruction):
+        return self._on_status if "status tool" in instruction else self._on_file
+
+
+def _drive_the_whole_arc(status_outcome: Outcome, a_neighbour_reports: bool):
+    """SIGNAL -> ... -> ESCALATE -> CLOSE, with only the desk's replies faked.
+
+    A real case, drafted by climb(), signed through the store the way
+    graph/read_api.py's approve endpoint signs it, submitted through
+    build_submit() to a real InstitutionClient, and then reconciled against
+    what that same desk says about its own ticket.
+
+    Nothing in the repo covered this end. Each half was tested against its own
+    contract and the join between them was where both of the worst bugs lived:
+    climb() filing to a no-op, and reconcile_closure deciding a case was over
+    without ever asking anybody.
+    """
+    db.reset()
+    case = fakes.a_case(escalation_tier=0, sla_deadline=None,
+                        status=CaseStatus.OPEN, created_at=fakes.T0)
+    opener = fakes.a_claim(segment=case.segment, service=case.service,
+                           household_id="hh_founder", created_at=fakes.T0)
+    case.claim_ids = [opener.claim_id]
+    case.household_ids = [opener.household_id]
+    db.put_case(case)
+    db.put_claim(opener)
+
+    desk = _TwoWayDesk(DeskReply(Outcome.ACCEPTED, "BWSSB-100001", "sla_days=7"),
+                       DeskReply(status_outcome, "BWSSB-100001", "polled"))
+    wd = Watchdog(store=db, lookup=remedy_lookup, submit=build_submit(desk),
+                  closed=build_closure_probe(desk))
+
+    clock = RecordingClock(now=fakes.T0)
+    wd.climb(case.case_id, clock)                    # drafts; hard rule 4 stops it
+    pending = db.unsigned_filings(case.case_id)
+    assert len(pending) == 1, "nothing was queued for a signature"
+    db.sign_filing(pending[0].idempotency_key, "mem_lakshmi", clock.now())
+    tier = wd.climb(case.case_id, clock)             # signed -> actually filed
+
+    if a_neighbour_reports:
+        db.put_claim(fakes.a_claim(segment=case.segment, service=case.service,
+                                   household_id="hh_neighbour",
+                                   created_at=fakes.T0 + timedelta(days=6)))
+
+    clock.advance(timedelta(days=7))                 # the statutory window
+    disputed = wd.reconcile_closure(case.case_id, clock=clock)
+    return tier, disputed, db.get_case(case.case_id)
+
+
+def test_the_whole_arc_a_genuine_closure_ends_the_case():
+    tier, disputed, case = _drive_the_whole_arc(Outcome.CLOSED,
+                                                a_neighbour_reports=False)
+
+    assert tier == 1, "a signed, accepted filing must advance the tier"
+    assert disputed is False
+    assert case.status is CaseStatus.RESOLVED
+    assert case.sla_paused is False
+    assert db.filings_for_case(case.case_id)[0].external_ref == "BWSSB-100001", (
+        "the desk's ticket number has to survive to the table, or nothing can "
+        "ever be polled about it")
+
+
+def test_the_whole_arc_a_false_closure_is_caught_and_written_down():
+    """THE PEAK OF THE DEMO, driven end to end rather than asserted in pieces.
+
+    The institution says done; a household that is not on the case is still
+    reporting. That is ground truth a citizen could never have -- you know
+    your own tap, not your neighbours'.
+    """
+    _, disputed, case = _drive_the_whole_arc(Outcome.CLOSED,
+                                             a_neighbour_reports=True)
+
+    assert disputed is True
+    assert case.status is CaseStatus.BREACHED, (
+        "the dispute must leave something behind for a person to read")
+    assert case.status is not CaseStatus.RESOLVED
+
+
+@pytest.mark.parametrize("outcome", [Outcome.OPEN, Outcome.UNREACHABLE,
+                                     Outcome.UNKNOWN])
+def test_the_whole_arc_a_desk_that_has_not_closed_it_leaves_it_running(outcome):
+    """NOT RESOLVED, and not disputed either -- there is nothing to dispute.
+
+    UNREACHABLE is the one that matters: `send()` collapses every transport
+    failure onto it, so this is what a portal being down looks like. A pursuit
+    that ends because an office did not pick up the phone is the exact failure
+    this project exists to prevent, and it is what the code did before the
+    closure gate: with no desk poll at all, silence WAS the closure.
+    """
+    _, disputed, case = _drive_the_whole_arc(outcome, a_neighbour_reports=False)
+
+    assert disputed is False
+    assert case.status is CaseStatus.TRACKING
+    assert case.status not in (CaseStatus.RESOLVED, CaseStatus.DORMANT)
 
 
 # ------------------------------------------------------ the lane boundary

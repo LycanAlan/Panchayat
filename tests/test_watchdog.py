@@ -77,6 +77,31 @@ def test_real_ladder_has_rti_at_tier_four():
 
 # ------------------------------------------------------------- reconcile
 
+def _a_desk_that_says_closed(case, closed=None, **kw) -> Watchdog:
+    """A Watchdog whose institution HAS told us this ticket is closed.
+
+    THE PRECONDITION reconcile_closure NEVER USED TO CHECK. Its docstring has
+    always opened "The institution says resolved. Live claims from other
+    households say otherwise" -- and nothing in the repo ever asked an
+    institution anything, so only the second half was measured. On a
+    one-household street the second half is unconditional, and the function
+    wrote RESOLVED, terminally, on the strength of a desk that had said
+    nothing at all.
+
+    So the closure now has to exist before it can be reconciled, which means
+    every test of the reconciliation has to produce one: a filing carrying the
+    desk's own ticket number, and a `closed` probe that answers for it. Both
+    are what `handlers/temporal.py` wires from the real client in production.
+    """
+    filing = Filing(case_id=case.case_id, tier=max(1, case.escalation_tier),
+                    authority="BWSSB", body="the filing that got a ticket",
+                    signed_by="mem_lakshmi", external_ref="BWSSB-100001")
+    filing.idempotency_key = filing.compute_key()
+    db.put_filing_once(filing)
+    return Watchdog(store=db,
+                    closed=closed or (lambda authority, ref: True), **kw)
+
+
 def test_reconcile_closure_disputes_using_other_households_claims(outage):
     """The check must run AFTER the claims it's meant to catch -- the
     realistic order in production (the outage fixture's latest claim lands at
@@ -90,7 +115,7 @@ def test_reconcile_closure_disputes_using_other_households_claims(outage):
         db.put_claim(decoy)
 
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=40))
-    wd = Watchdog(store=db)
+    wd = _a_desk_that_says_closed(case)
 
     disputed = wd.reconcile_closure(case.case_id, clock=clock)
     assert disputed is True
@@ -113,7 +138,7 @@ def test_reconcile_closure_disputes_on_claims_filed_before_the_check():
             created_at=now - timedelta(hours=i + 1)))
 
     clock = RecordingClock(now=now)
-    wd = Watchdog(store=db)
+    wd = _a_desk_that_says_closed(case)
 
     disputed = wd.reconcile_closure(case.case_id, clock=clock)
     assert disputed is True
@@ -130,7 +155,7 @@ def test_reconcile_closure_disputes_on_claims_filed_before_the_check_traces_seve
             created_at=now - timedelta(hours=i + 1)))
 
     clock = RecordingClock(now=now)
-    wd = Watchdog(store=db)
+    wd = _a_desk_that_says_closed(case)
     wd.reconcile_closure(case.case_id, clock=clock)
 
     printed = capsys.readouterr().out
@@ -149,7 +174,7 @@ def test_reconcile_closure_ignores_a_claim_older_than_the_lookback_window():
         created_at=now - timedelta(days=30)))  # older than the 7-day default
 
     clock = RecordingClock(now=now)
-    wd = Watchdog(store=db)  # default closure_lookback_days=7
+    wd = _a_desk_that_says_closed(case)  # default closure_lookback_days=7
 
     assert wd.reconcile_closure(case.case_id, clock=clock) is False
 
@@ -166,7 +191,7 @@ def test_reconcile_closure_custom_lookback_widens_what_counts_as_evidence():
         created_at=now - timedelta(days=30)))
 
     clock = RecordingClock(now=now)
-    wd = Watchdog(store=db, closure_lookback_days=30)
+    wd = _a_desk_that_says_closed(case, closure_lookback_days=30)
 
     assert wd.reconcile_closure(case.case_id, clock=clock) is True
 
@@ -178,7 +203,7 @@ def test_reconcile_closure_stands_when_no_live_claims():
     # no claims seeded at all for this segment/service
 
     clock = RecordingClock(now=fakes.T0 + timedelta(days=1))
-    wd = Watchdog(store=db)
+    wd = _a_desk_that_says_closed(case)
     disputed = wd.reconcile_closure(case.case_id, clock=clock)
     assert disputed is False
 
@@ -202,7 +227,7 @@ def test_reconcile_closure_counts_distinct_households_not_claims(capsys):
     assert len(claims) == 2, "fixture sanity: two claims from the same household"
 
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=2))
-    wd = Watchdog(store=db)
+    wd = _a_desk_that_says_closed(case)
     assert wd.reconcile_closure(case.case_id, clock=clock) is True
 
     printed = capsys.readouterr().out
@@ -241,7 +266,8 @@ def test_a_cases_own_founding_claims_are_not_evidence_against_its_closure():
     case = _case_opened_by(3)
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
 
-    assert Watchdog(store=db).reconcile_closure(case.case_id, clock=clock) is False, (
+    assert _a_desk_that_says_closed(case).reconcile_closure(
+        case.case_id, clock=clock) is False, (
         "only the openers reported; there is nobody else contradicting the desk")
 
 
@@ -254,7 +280,8 @@ def test_one_other_household_is_still_enough_to_dispute(capsys):
                                created_at=fakes.T0 + timedelta(hours=30)))
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
 
-    assert Watchdog(store=db).reconcile_closure(case.case_id, clock=clock) is True
+    assert _a_desk_that_says_closed(case).reconcile_closure(
+        case.case_id, clock=clock) is True
     assert "1 live claim(s)" in capsys.readouterr().out, (
         "the three openers must not be counted alongside the one real contradiction")
 
@@ -845,7 +872,8 @@ def test_an_undisputed_closure_resolves_the_case():
     db.put_claim(own)
 
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
-    disputed = Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+    disputed = _a_desk_that_says_closed(case).reconcile_closure(
+        case.case_id, clock=clock)
 
     assert disputed is False
     assert db.get_case(case.case_id).status is CaseStatus.RESOLVED
@@ -868,10 +896,14 @@ def test_a_disputed_closure_does_not_resolve_anything():
                                created_at=fakes.T0 + timedelta(hours=30)))
 
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
-    disputed = Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+    disputed = _a_desk_that_says_closed(case).reconcile_closure(
+        case.case_id, clock=clock)
 
     assert disputed is True
     assert db.get_case(case.case_id).status is not CaseStatus.RESOLVED
+    assert db.get_case(case.case_id).status is CaseStatus.BREACHED, (
+        "the dispute has to be written down: this branch used to return True "
+        "to handle(), which discards it, and change nothing in the table")
 
 
 def test_a_withdrawn_case_is_not_resolved_on_its_behalf():
@@ -887,6 +919,132 @@ def test_a_withdrawn_case_is_not_resolved_on_its_behalf():
     assert db.get_case(case.case_id).status is CaseStatus.WITHDRAWN
 
 
+# ------------------------------- the closure gate, and what it used to skip
+
+def test_a_desk_that_said_nothing_never_resolves_the_case():
+    """THE ONE THAT MATTERED MOST, and it fired on every case in the product.
+
+    `reconcile_closure` is "the moment the project exists for": the
+    institution says resolved, and live claims from other households say
+    otherwise. Only the second half was ever measured -- nothing in the repo
+    polled a desk -- and on a street where nobody else has filed the second
+    half is unconditionally "nobody contradicts it". So the check_closure wake
+    that climb() books for every case arrived at the deadline, found silence,
+    and wrote RESOLVED, which is terminal and unreachable by any later wake.
+
+    CLAUDE.md: "the spine runs at N=1. The individual path is the product."
+    So this was not an edge case. Every single-household pursuit in the system
+    was ended on deadline day by an office that had answered nothing, which is
+    a more automated version of the BBMP behaviour the project exists to
+    catch. Measured before the fix: status `resolved`.
+    """
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=30))
+    disputed = Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+
+    after = db.get_case(case.case_id)
+    assert disputed is False, "there is no closure to dispute"
+    assert after.status is CaseStatus.TRACKING, (
+        "a desk that has said nothing has not resolved anything")
+    assert after.status not in (CaseStatus.RESOLVED,)
+
+
+def test_a_desk_that_says_the_ticket_is_still_open_resolves_nothing():
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    db.put_case(case)
+    # The desk answers, and says the ticket is still OPEN.
+    wd = _a_desk_that_says_closed(case, closed=lambda authority, ref: False)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=30))
+    assert wd.reconcile_closure(case.case_id, clock=clock) is False
+    assert db.get_case(case.case_id).status is CaseStatus.TRACKING
+
+
+def test_a_desk_that_cannot_be_reached_is_not_read_as_a_closure(capsys):
+    """The failure mode this whole gate exists to refuse: silence taken for
+    agreement. A portal that is down is the most ordinary thing on this path
+    and it must never end a case."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    db.put_case(case)
+
+    def unreachable(authority, ref):
+        raise ConnectionError("portal down")
+
+    wd = _a_desk_that_says_closed(case, closed=unreachable)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=30))
+    assert wd.reconcile_closure(case.case_id, clock=clock) is False
+    assert db.get_case(case.case_id).status is CaseStatus.TRACKING
+    assert "not treating silence as closure" in capsys.readouterr().out
+
+
+def test_an_rti_tier_has_no_ticket_to_poll_and_so_never_self_resolves():
+    """Tier 4 is drafted and never filed, so it has no external_ref. A filing
+    with no ticket must not be read as a ticket the desk has closed."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    db.put_case(case)
+    draft = Filing(case_id=case.case_id, tier=4, authority="RTI (draft only)",
+                   body="DRAFT RTI application")
+    draft.idempotency_key = draft.compute_key()
+    db.put_filing_once(draft)
+
+    wd = Watchdog(store=db, closed=lambda authority, ref: True)
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=30))
+
+    assert wd.reconcile_closure(case.case_id, clock=clock) is False
+    assert db.get_case(case.case_id).status is CaseStatus.TRACKING
+
+
+def test_the_sla_wake_is_dropped_on_a_case_that_has_already_ended():
+    """climb() schedules check_sla and check_closure for the SAME instant, so
+    both arrive together and either order is possible. With closure running
+    first, _check_sla had no TERMINAL guard -- it breached a RESOLVED case,
+    climbed it, and drafted the next tier against a case that was over.
+    Measured: `resolved` -> `drafted`, tier 1.
+
+    _retry_submit has carried this guard since the withdrawal bug; this path
+    never got it."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.RESOLVED, escalation_tier=1,
+                        sla_deadline=fakes.T0 + timedelta(days=7))
+    case.sla_paused = False
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=8))
+    Watchdog(store=db, lookup=_lookup_fixture,
+             submit=lambda f: True).handle(case.case_id, "check_sla", clock=clock)
+
+    after = db.get_case(case.case_id)
+    assert after.status is CaseStatus.RESOLVED
+    assert after.escalation_tier == 1, "a finished case was escalated"
+    assert db.filings_for_case(case.case_id) == [], (
+        "a filing was drafted against a case that had already ended")
+
+
+def test_a_withdrawn_case_is_never_escalated_by_a_late_sla_wake():
+    """The same guard, in the form that is worse: filing against a public body
+    on behalf of a household that pulled out. Hard rule 4 is about a person
+    signing; this is filing for somebody who said no."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.WITHDRAWN, escalation_tier=1,
+                        sla_deadline=fakes.T0 + timedelta(days=7))
+    case.sla_paused = False
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(days=8))
+    Watchdog(store=db, lookup=_lookup_fixture,
+             submit=lambda f: True).handle(case.case_id, "check_sla", clock=clock)
+
+    assert db.get_case(case.case_id).status is CaseStatus.WITHDRAWN
+    assert db.filings_for_case(case.case_id) == []
+
+
 def test_resolution_stops_the_clock():
     """A resolved case still holding sla_paused would sit in stalled_cases()
     asking a person to chase something that is finished."""
@@ -896,7 +1054,7 @@ def test_resolution_stops_the_clock():
     db.put_case(case)
 
     clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
-    Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+    _a_desk_that_says_closed(case).reconcile_closure(case.case_id, clock=clock)
 
     after = db.get_case(case.case_id)
     assert after.status is CaseStatus.RESOLVED

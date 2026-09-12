@@ -73,7 +73,7 @@ from datetime import datetime, timedelta
 from agents import anti_abuse, pattern_watch, remedy
 from agents import watchdog as watchdog_agent
 from core import db
-from core.types import Case, CaseStatus, ConsentScope, Service, Tail
+from core.types import Case, CaseStatus, ConsentScope, Filing, Service, Tail
 from data.corpus.generator import generate_corpus
 from institutions.protocol import DeskReply, Outcome
 from institutions.server import Desk, load_profile
@@ -301,7 +301,26 @@ def run_one(fault, households, n: int, desk: Desk, clock: FixedClock) -> Outcome
     polled = desk.status(ref=reply.ref)
     polled = DeskReply.find(polled) if isinstance(polled, str) else polled
 
-    as_shipped = watchdog_agent.reconcile_closure(case.case_id, clock=clock)
+    # RECONCILE AGAINST THE DESK'S ACTUAL ANSWER, not against the module-level
+    # default. `agents.watchdog.reconcile_closure` delegates to a Watchdog
+    # built with no arguments, whose desk poll is None -- which now means
+    # honestly "we never asked", so it reports no closure and disputes
+    # nothing. Calling it from here would have made this table read every
+    # closure as undisputed, including the false ones the harness exists to
+    # count.
+    #
+    # So the harness wires the same seam handlers/temporal.py wires in
+    # production, from the status it just polled, and records the filing the
+    # ref belongs to so the Watchdog can find it the way it would on a real
+    # case.
+    filing = Filing(case_id=case.case_id, tier=1, authority=entry.ladder[0].authority
+                    if entry.ladder else "BWSSB",
+                    body=body, signed_by="mem_eval", external_ref=reply.ref)
+    filing.idempotency_key = filing.compute_key()
+    db.put_filing_once(filing)
+    as_shipped = watchdog_agent.Watchdog(
+        closed=lambda authority, ref: polled.outcome is Outcome.CLOSED,
+    ).reconcile_closure(case.case_id, clock=clock)
     corrected = corrected_dispute(case.case_id, clock)
 
     # THE ORACLE. The desk decided `will_false_close` at accept() and set

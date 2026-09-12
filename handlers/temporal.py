@@ -66,9 +66,18 @@ def _watchdog() -> Watchdog:
     """
     global _dispatcher
     if _dispatcher is None:
-        from institutions.client import build_submit
+        from institutions.client import build_closure_probe, build_submit
 
-        _dispatcher = Watchdog(submit=build_submit())
+        # BOTH halves of the institutional seam, wired in the same place.
+        # `closed` is the desk-status poll reconcile_closure needs and never
+        # had: without it that function measured only "is any other household
+        # still complaining", which on a one-household street is always no, so
+        # it wrote RESOLVED -- terminal -- for a desk that had said nothing.
+        # Defaulting it to None in the Watchdog makes the unwired case honest
+        # (the pursuit continues); wiring it here makes the deployed case
+        # true.
+        _dispatcher = Watchdog(submit=build_submit(),
+                               closed=build_closure_probe())
     return _dispatcher
 
 
@@ -80,6 +89,23 @@ def _dispatch(case_id: str, action: str) -> None:
     every test know how the cache works.
     """
     _watchdog().handle(case_id, action)
+
+
+def dispatch(case_id: str, action: str) -> None:
+    """The same wake, for a caller that is not Lambda.
+
+    THE DEMO FIRES THROUGH HERE, and that is the point. `VirtualClock._fire`
+    used to call `agents.watchdog.watchdog()`, which delegates to a
+    module-level `Watchdog()` built with no arguments -- so its `submit` was
+    still `lambda filing: True`. Installing the real adapter in `_watchdog()`
+    fixed the Lambda and left the compressed-time path reporting successful
+    filings at named officers that had never left the building, which is the
+    configuration the video is recorded in.
+
+    One composition point, both clocks, per hard rule 1: if the demo needs a
+    different filing path from production, the clock is wrong.
+    """
+    _dispatch(case_id, action)
 
 
 class TransientWakeFailure(RuntimeError):

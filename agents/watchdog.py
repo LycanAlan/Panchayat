@@ -66,6 +66,7 @@ class Watchdog:
 
     def __init__(self, store=db, lookup: Callable | None = None,
                  submit: Callable[[Filing], bool] | None = None,
+                 closed: Callable[[str, str], bool] | None = None,
                  closure_lookback_days: int = 7,
                  submit_attempts: int = 2):
         """`submit_attempts` (default 2) is the retry policy for the
@@ -103,6 +104,21 @@ class Watchdog:
         # specifics. Whoever wires the real client in needs an adapter here or
         # a widened contract, agreed with the group first; do not guess it.
         self._submit = submit or (lambda filing: True)
+        # `closed(authority, external_ref) -> bool`: does the institution
+        # itself say this ticket is done? Same seam shape as `submit` and for
+        # the same reason -- the temporal lane must not import the institutions
+        # lane, so the desk poll arrives as a plain Callable and
+        # `handlers/temporal.py` is the one place allowed to wire it.
+        #
+        # DEFAULTING TO None MEANS "WE HAVE NOT ASKED", NOT "IT IS CLOSED".
+        # reconcile_closure() used to read "no other household is still
+        # complaining" as proof the institution had finished, and write
+        # RESOLVED -- which is terminal. The spine runs at N=1, so there is
+        # never another household, so EVERY single-household case was ended on
+        # deadline day by a desk that had answered nothing. Measured: a
+        # TRACKING case with no desk reply anywhere in the table came back
+        # `resolved`.
+        self._closed = closed
 
     def _resolve_lookup(self) -> Callable:
         if self._lookup is not None:
@@ -136,6 +152,21 @@ class Watchdog:
             self._retry_submit(case, clock)
 
     def _check_sla(self, case: Case, clock: Clock) -> None:
+        if case.status in TERMINAL:
+            # THE CASE IS OVER. _retry_submit has carried this guard since the
+            # withdrawal bug and this path never got it, which mattered the
+            # moment check_closure started writing RESOLVED: climb() schedules
+            # check_sla and check_closure for the SAME instant, so the two
+            # wakes arrive together and either order is possible. Measured, in
+            # the order that fires closure first -- the case came back
+            # `resolved`, and then check_sla breached it, climbed it and
+            # drafted a tier-2 filing against a case that had ended.
+            #
+            # A withdrawn case is the same shape and worse: escalating to a
+            # named officer on behalf of a household that pulled out.
+            _trace("IGNORED", "watchdog",
+                   "SLA wake for a " + case.status.value + " case -- dropped")
+            return
         if case.sla_paused:
             return  # never run a clock against a filing that never landed
         if case.status == CaseStatus.DRAFTED:
@@ -238,6 +269,45 @@ class Watchdog:
 
     # --------------------------------------------------------- reconcile
 
+    def _closure_notice(self, case: Case) -> str | None:
+        """Did the institution actually say this is done? Its ticket id, or None.
+
+        THE QUESTION reconcile_closure USED NOT TO ASK. It is named
+        "reconcile_closure" and its docstring opens "The institution says
+        resolved" -- but nothing in the repo ever read a desk reply, so the
+        precondition was assumed rather than checked, and the only thing it
+        actually measured was the absence of other households. On a street
+        where nobody else has filed that absence is unconditional, so the
+        answer was always "closed, undisputed" and the case was written
+        RESOLVED, which is terminal and unreachable by any later wake.
+
+        The evidence is the desk's own ticket, polled through the injected
+        `closed` seam. Highest tier first: the live filing is the one at the
+        top of the ladder, and a tier-1 ticket closed six weeks ago says
+        nothing about the appeal now outstanding above it.
+
+        A poll that raises is NOT a closure. A portal that will not answer is
+        the most common thing on this path and the one case where guessing is
+        worst -- an unreachable desk would otherwise read as a silent one,
+        and a silent one used to mean resolved.
+        """
+        if self._closed is None:
+            return None
+        filings = self.db.filings_for_case(case.case_id) or []
+        for filing in sorted(filings, key=lambda f: f.tier, reverse=True):
+            if not filing.external_ref:
+                continue
+            try:
+                if self._closed(filing.authority, filing.external_ref):
+                    return filing.external_ref
+            except Exception as exc:  # noqa: BLE001 - the desk is allowed to be down
+                _trace("PAUSED", "watchdog",
+                       "could not reach " + filing.authority
+                       + " for the status of " + filing.external_ref
+                       + " -- not treating silence as closure: " + repr(exc))
+                return None
+        return None
+
     def reconcile_closure(self, case_id: str, clock: Clock | None = None) -> bool:
         """THE moment the project exists for.
 
@@ -282,6 +352,29 @@ class Watchdog:
         if case is None:
             return False
 
+        if case.status in TERMINAL:
+            # A wake arriving after a withdrawal must not resurrect the case,
+            # and one arriving after it already ended must not re-decide it.
+            # Guarded HERE and not only at the write below, so a terminal case
+            # cannot be reported as freshly disputed either.
+            _trace("IGNORED", "watchdog",
+                   "closure wake for a " + case.status.value + " case -- dropped")
+            return False
+
+        # NOTHING TO RECONCILE UNTIL THE INSTITUTION HAS SAID SOMETHING.
+        # This is the guard the function was missing, and its absence was not
+        # a corner case: with no desk poll anywhere in the repo, every
+        # check_closure wake found no contradicting household (the spine runs
+        # at N=1) and wrote RESOLVED. A silent desk closed the case, which is
+        # the precise failure this project exists to catch, produced by the
+        # code that exists to catch it.
+        ref = self._closure_notice(case)
+        if ref is None:
+            _trace("TRACKING", "watchdog",
+                   "no closure notice from the institution -- the case stays "
+                   "open and the pursuit continues")
+            return False
+
         since = clock.now() - timedelta(days=self.closure_lookback_days)
         claims = self.db.claims_in_window(case.segment, case.service, since=since)
         # Two member agents in one household is ONE household.
@@ -290,8 +383,30 @@ class Watchdog:
                            if c.claim_id not in already_on_case}
 
         if live_households:
+            # THE DISPUTE IS WRITTEN DOWN, not merely printed. This branch
+            # used to change nothing and schedule nothing: it returned True to
+            # a caller (handle()) that discards the return value, so the one
+            # moment this project exists for left no trace in the table at
+            # all. A person reading the case afterwards saw TRACKING and no
+            # reason for it.
+            #
+            # BREACHED is the honest status and it is not a new state machine:
+            # it is exactly what _check_sla writes when the statutory window
+            # runs out, and the two wakes are scheduled for the same instant
+            # on purpose. An institution that closed a ticket the street says
+            # is still broken has breached, earlier and more definitively than
+            # the clock would have shown.
+            #
+            # No climb() from here. check_sla is already booked for this same
+            # instant and it escalates; climbing from both would draft the
+            # next tier twice. put_filing_once would refuse the duplicate, but
+            # relying on that to paper over a double escalation is how the
+            # tier ends up ahead of the filings that justify it.
+            case.status = CaseStatus.BREACHED
+            self.db.put_case(case)
             _trace("DISPUTED", "watchdog",
-                   f"{len(live_households)} live claim(s) contradict closure")
+                   f"{len(live_households)} live claim(s) contradict closure "
+                   f"{ref}")
             return True
 
         # THE ONLY PLACE IN THE REPO THAT WRITES RESOLVED (issue #9).
@@ -313,15 +428,16 @@ class Watchdog:
         # Guarded on TERMINAL so a wake arriving after a withdrawal cannot
         # resurrect a case and mark it resolved on behalf of a household that
         # pulled out.
-        if case.status not in TERMINAL:
-            case.status = CaseStatus.RESOLVED
-            # The clock stops with it. A resolved case holding sla_paused
-            # would sit in stalled_cases() asking a person to chase something
-            # that is finished.
-            case.sla_paused = False
-            self.db.put_case(case)
+        # Terminal statuses were already refused at the top of this function.
+        case.status = CaseStatus.RESOLVED
+        # The clock stops with it. A resolved case holding sla_paused would
+        # sit in stalled_cases() asking a person to chase something that is
+        # finished.
+        case.sla_paused = False
+        self.db.put_case(case)
 
-        _trace("CLOSED", "watchdog", "no live claims -- closure stands")
+        _trace("CLOSED", "watchdog",
+               "closure " + ref + " stands -- no live claims contradict it")
         return False
 
     # -------------------------------------------------------------climb
@@ -567,6 +683,8 @@ class Watchdog:
     # -------------------------------------------------------------expiry
 
     def _expire_unsigned_draft(self, case: Case, clock: Clock) -> None:
+        if case.status in TERMINAL:
+            return  # already finished; DORMANT twice is not a second notice
         if case.status != CaseStatus.DRAFTED:
             return  # already signed/progressed -- nothing to expire
 
