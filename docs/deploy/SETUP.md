@@ -38,7 +38,8 @@ Happy side effect: ap-south-2 is in India, so CLAUDE.md's *"our data stays in
 ap-south-1"* claim is now true in spirit — the table and the runtime are both
 in-country. The model calls still are not, and never were.
 
-**Observability is OFF and that is a real cost — see "The otel trap" below.**
+**Observability works** -- AgentCore instruments the runtime itself. See "The
+otel trap" below; an earlier note here claiming otherwise was wrong.
 
 | Stage | Turns on | State |
 |---|---|---|
@@ -293,18 +294,32 @@ produce. Same family as the phantom `zip` check.
 `--disable-otel` makes `build_entrypoint_array()` emit `["app.py"]` and the
 endpoint comes up.
 
-**THE COST IS REAL AND IS NOT PAID.** `graph/observability.py` creates spans
-through the OTEL API, and with no SDK configured they are `NonRecordingSpan` —
-attributes accepted, nothing exported. **So the deployed agent currently emits
-no traces**, and CLAUDE.md puts observability *before* the trace UI precisely
-because the UI is a view of it.
+**AND THE COST TURNED OUT TO BE ZERO — checked, after this was first written
+as a loss.** `--disable-otel` removes the wrapper from the entrypoint. It does
+not remove instrumentation, because **AgentCore instruments the process
+itself**. The runtime's logs carry resource attributes we never configured:
 
-Not yet attempted, roughly in order of promise: ship the console script into
-the zip by hand; call
-`opentelemetry.instrumentation.auto_instrumentation.initialize()` from the top
-of `app.py` so no executable is needed; or move to the container deployment
-(our Dockerfile's `CMD` has the wrapper and a real `pip install`, which does
-create the script) once `maxAgents` is raised somewhere we can build.
+```
+telemetry.auto.version : 0.19.0-aws
+aws.service.type       : gen_ai_agent
+cloud.platform         : aws_bedrock_agentcore
+```
+
+and our own `panchayat`-scope lines from `core/tags.py` arrive with
+`otelTraceID` populated and `otelTraceSampled: true`. Tracing works.
+
+An earlier version of this section claimed the deployed agent "emits no
+traces". That was inferred from the flag name rather than measured, and it was
+wrong.
+
+`app.py::_start_observability()` exists as the in-process equivalent of the
+wrapper — `opentelemetry-instrument`'s `sitecustomize.py` is two lines, import
+`initialize` and call it, so no console script is needed. **Leave it off on
+AgentCore**: running it logs *"Attempting to instrument while already
+instrumented"*, and a `Failed to export span batch code: 400` appeared in the
+same window. It is kept for `handlers/temporal.py` and the ambient handler,
+which run on Lambda where nothing instruments them for us — set
+`PANCHAYAT_OTEL=1` there.
 
 - **`PANCHAYAT_BACKEND`** defaults to `memory`. Omit it and the deploy looks
   perfectly healthy while every case evaporates between invocations and the
