@@ -215,6 +215,50 @@ def test_reconcile_closure_missing_case_returns_false():
     assert wd.reconcile_closure("case_does_not_exist", clock=RecordingClock(fakes.T0)) is False
 
 
+def _case_opened_by(n: int):
+    """A case and the n claims that opened it, all dated T0."""
+    own = [fakes.a_claim(household_id="hh_opener_" + str(i), created_at=fakes.T0)
+           for i in range(n)]
+    for c in own:
+        db.put_claim(c)
+    case = fakes.a_case(claim_ids=[c.claim_id for c in own],
+                        household_ids=[c.household_id for c in own],
+                        created_at=fakes.T0)
+    db.put_case(case)
+    return case
+
+
+def test_a_cases_own_founding_claims_are_not_evidence_against_its_closure():
+    """The claims that OPENED the case cannot be what contradicts closing it.
+
+    Counting them made this dispute every closure it was ever shown: sla_days
+    is 7 and the calibrated desk answers in a mean 36 hours, so the founding
+    claims are always inside the look-back window. Kartik hit this against the
+    density curve, where it flattened the curve at zero for a reason unrelated
+    to corroboration.
+    """
+    db.reset()
+    case = _case_opened_by(3)
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+
+    assert Watchdog(store=db).reconcile_closure(case.case_id, clock=clock) is False, (
+        "only the openers reported; there is nobody else contradicting the desk")
+
+
+def test_one_other_household_is_still_enough_to_dispute(capsys):
+    """The fix must not cost the demo's peak. A household that is NOT on the
+    case is exactly the ground truth a citizen could never have."""
+    db.reset()
+    case = _case_opened_by(3)
+    db.put_claim(fakes.a_claim(household_id="hh_neighbour",
+                               created_at=fakes.T0 + timedelta(hours=30)))
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+
+    assert Watchdog(store=db).reconcile_closure(case.case_id, clock=clock) is True
+    assert "1 live claim(s)" in capsys.readouterr().out, (
+        "the three openers must not be counted alongside the one real contradiction")
+
+
 # ------------------------------------------------------------------ climb
 
 def test_climb_files_tier_one_and_schedules_next_wake():

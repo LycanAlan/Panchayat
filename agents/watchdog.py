@@ -261,6 +261,21 @@ class Watchdog:
         a claim older than the institution's own SLA window isn't evidence
         about *this* closure) and counts claims filed inside that window as
         live contradicting evidence.
+
+        CLAIMS ALREADY ON THE CASE ARE NOT EVIDENCE AGAINST IT.
+        They are what opened it. Counting them made this dispute every
+        closure it was ever shown: `sla_days` is 7 and the calibrated desk
+        answers in a mean 36 hours, so every realistic closure lands inside
+        the look-back window and the founding claims are always in range.
+        Found by Kartik against the density curve, where it mattered most --
+        the curve was flat at zero for a reason that had nothing to do with
+        corroboration, which is the one thing that curve exists to measure.
+        Reproduced before fixing: a case opened by three households at T0,
+        desk closes at T0+36h, no other household reports -> DISPUTED, "3
+        live claim(s)". The docstring above already said "from OTHER
+        households"; the code just did not filter. `eval/density_curve.py`'s
+        `corrected_dispute()` is the same rule, written there as a proposal
+        for this file while the two behaviours were reported side by side.
         """
         clock = clock or get_clock()
         case = self.db.get_case(case_id)
@@ -270,7 +285,9 @@ class Watchdog:
         since = clock.now() - timedelta(days=self.closure_lookback_days)
         claims = self.db.claims_in_window(case.segment, case.service, since=since)
         # Two member agents in one household is ONE household.
-        live_households = {c.household_id for c in claims}
+        already_on_case = set(case.claim_ids)
+        live_households = {c.household_id for c in claims
+                           if c.claim_id not in already_on_case}
 
         if live_households:
             _trace("DISPUTED", "watchdog",
