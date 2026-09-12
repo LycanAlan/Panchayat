@@ -14,3 +14,11 @@ eval/results/
 demo/recordings/
 .idea/
 .vscode/
+
+# agentcore CLI state. NOT committed: `entrypoint` and `source_path` are
+# absolute paths to whoever ran `agentcore configure` last, so committing this
+# hands teammates a config pointing at a directory they do not have. Each
+# person runs `agentcore configure` themselves -- the exact command is in
+# docs/DEPLOY.md. Holds no secrets, just machine-local paths and the agent id.
+.bedrock_agentcore.yaml
+.bedrock_agentcore/

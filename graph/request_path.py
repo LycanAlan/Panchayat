@@ -159,7 +159,41 @@ def _household(ctx: RequestContext) -> str:
     to do, which is why the mesh uses A2A rather than a bigger swarm."""
     from agents import household
 
-    need = (ctx.payload.get("needs") or [{}])[0]
+    need = dict((ctx.payload.get("needs") or [{}])[0])
+
+    # CARRY THE CALLER'S household_id INTO THE NEED.
+    #
+    # `HouseholdCoordinator._single_member_position` reads it as
+    # `need.get("household_id", new_id("hh"))`, and `intake.parse()` emits
+    # only description/member_id/raw_text -- no household_id, ever. So that
+    # `.get` ALWAYS fell through and every case was stamped with a freshly
+    # minted household that existed for one request and was never seen again.
+    #
+    # Measured: one household reporting the same fault twice produced two
+    # different ids. Three things break on that, and only the first is
+    # cosmetic:
+    #
+    #   1. A household can never find its own cases -- `list_cases` returns
+    #      nothing for the id the caller just reported under.
+    #   2. `add_household_to_case` de-duplicates on household_id, so the
+    #      guard that stops one household counting twice toward corroboration
+    #      cannot fire. One house reporting twice reads as two houses
+    #      agreeing, which is the false corroboration Anti-Abuse exists to
+    #      catch, arriving from our own request path.
+    #   3. Anti-Abuse looks the household up in the RWA flat register. A
+    #      generated id is in no register, so every request-path claim would
+    #      be refused as unregistered once ambient clustering runs for real.
+    #
+    # Fixed HERE rather than in agents/household.py: that file belongs to the
+    # household lane, its `.get` default is a reasonable contract on its own,
+    # and this file is the one that already assembles the need. Only set it
+    # when the caller actually sent one -- an empty string would be worse than
+    # the generated id, since it is falsy but present and would collapse every
+    # anonymous household into a single shared identity.
+    caller_household = str(ctx.payload.get("household_id", "")).strip()
+    if caller_household:
+        need["household_id"] = caller_household
+
     position, stub = run_or_stub(
         lambda: household.deliberate(ctx.members, need),
         lambda: fakes.a_household_position(
