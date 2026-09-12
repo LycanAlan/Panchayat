@@ -23,7 +23,18 @@ from core import db
 from core.clock import Clock, get_clock
 from core.types import Case, CaseStatus, EscalationStep, Filing, JurisdictionEntry
 
-ACTIONS = ("check_sla", "check_closure", "expire_draft")
+ACTIONS = ("check_sla", "check_closure", "expire_draft", "retry_submit")
+
+# How long a case waits before another attempt at an institution that would
+# not answer. A day, because that is the timescale an office is down on, and
+# because under the VirtualClock it compresses with everything else -- no
+# `if demo_mode:` anywhere, per hard rule 1.
+RETRY_AFTER_DAYS = 1
+
+# A case in one of these is finished, and a wake that arrives afterwards must
+# not restart it. Same set core/memstore.open_cases() excludes.
+TERMINAL = frozenset({CaseStatus.RESOLVED, CaseStatus.WITHDRAWN,
+                      CaseStatus.DORMANT})
 
 
 def _trace(status: str, agent: str, detail: str) -> str:
@@ -121,14 +132,108 @@ class Watchdog:
             self._check_sla(case, clock)
         elif action == "expire_draft":
             self._expire_unsigned_draft(case, clock)
+        elif action == "retry_submit":
+            self._retry_submit(case, clock)
 
     def _check_sla(self, case: Case, clock: Clock) -> None:
         if case.sla_paused:
             return  # never run a clock against a filing that never landed
+        if case.status == CaseStatus.DRAFTED:
+            # A DRAFTED case has been submitted to nobody: hard rule 4 means
+            # nothing leaves the building until a named person signs. Breaching
+            # it would start a statutory clock against an office that never
+            # received the complaint, then climb() would draft and submit a
+            # tier-2 filing to a named officer -- escalating on the strength of
+            # a deadline nobody was given, with no human in it anywhere.
+            #
+            # The wake that belongs on an unsigned draft is expire_draft, and
+            # _expire_unsigned_draft already guards on exactly this status.
+            # This is the safety net for whoever scheduled the wrong one.
+            return
         if case.sla_deadline is None or clock.now() < case.sla_deadline:
             return
         case.status = CaseStatus.BREACHED
         self.db.put_case(case)
+        self.climb(case.case_id, clock)
+
+    def _pause_and_retry(self, case: Case, clock: Clock, why: str) -> None:
+        """Hold the clock, leave a wake behind, and say so.
+
+        One function for every transient exit from climb(), because the bug
+        this replaces was a path that forgot ONE of the three. A case that
+        pauses without scheduling stops forever: _check_sla() returns
+        immediately while sla_paused is set, and nothing else reschedules.
+
+        ORDER MATTERS. The schedule is created BEFORE the case is persisted.
+        Done the other way, a scheduler failure leaves a durably paused case
+        with no pending wake -- the exact permanent silence, now written to
+        storage. If scheduling fails the exception propagates and the pause is
+        never committed, so the case keeps whatever wake it already had.
+
+        `sla_paused` also carries "have we been here before", so no new field
+        is needed and core/types.py stays frozen (hard rule 10).
+        """
+        # Read off the case we were handed, BEFORE setting the flag -- not via
+        # a second get_case. memstore returns the live object, so re-reading
+        # after any caller had already set sla_paused made `repeat` True on the
+        # very first pause: a one-off blip paged a person with NEEDS_HUMAN.
+        # And DynamoDB's _case_from() rebuilds, so the same input produced
+        # PAUSED there -- a backend divergence on a line a human reads.
+        repeat = bool(case.sla_paused)
+
+        clock.schedule(case.case_id,
+                       clock.now() + timedelta(days=RETRY_AFTER_DAYS),
+                       "retry_submit")
+
+        case.sla_paused = True
+        self.db.put_case(case)
+
+        if repeat:
+            # Day-two downtime is not news -- digest.STAYS_QUIET says so and
+            # it is right. Still stuck a day later is a different fact, and
+            # one nothing in this system can act on, so a person must.
+            _trace("NEEDS_HUMAN", "watchdog",
+                   why + " again after a retry -- a person needs to chase "
+                   "this another way")
+        else:
+            _trace("PAUSED", "watchdog",
+                   why + ", clock held, retry in "
+                   + str(RETRY_AFTER_DAYS) + "d")
+
+    def _retry_submit(self, case: Case, clock: Clock) -> None:
+        """Another attempt at a desk that would not answer.
+
+        Deliberately re-enters climb() rather than re-sending the filing
+        directly. climb() returns BEFORE advancing escalation_tier when submit
+        fails, so the case still sits at the tier below the one it was trying
+        for, and climb() recomputes exactly the same step. Re-sending here
+        instead would mean a second copy of the submit logic, the retry count
+        and the idempotency key -- three things to keep in step with the
+        original, which is how they drift apart.
+
+        Idempotency carries the risk that matters: if the earlier attempt
+        actually landed and only the reply was lost, `put_filing_once` sees
+        the same compute_key() and refuses the duplicate (hard rule 5). A
+        retrying Watchdog that files twice produces the spam that gets both
+        copies closed.
+        """
+        if case.status in TERMINAL:
+            # The reason that matters, and NOT the one the first draft of this
+            # guard gave. `sla_paused` is written in exactly two places in the
+            # repo, both in this file, and nothing clears it on withdrawal or
+            # resolution -- so a case that was paused at tier 2 and then
+            # withdrawn keeps its flag, and the daily wake would climb it and
+            # file against an authority on behalf of a household that pulled
+            # out. Hard rule 4 is about a person signing; filing for someone
+            # who withdrew is worse than filing unsigned.
+            _trace("IGNORED", "watchdog",
+                   "retry wake for a " + case.status.value + " case -- dropped")
+            return
+        if not case.sla_paused:
+            # Not stuck any more. A wake scheduled a day ago can arrive after
+            # a human has intervened, and climbing regardless would escalate a
+            # healthy case a tier for no reason.
+            return
         self.climb(case.case_id, clock)
 
     # --------------------------------------------------------- reconcile
@@ -156,6 +261,21 @@ class Watchdog:
         a claim older than the institution's own SLA window isn't evidence
         about *this* closure) and counts claims filed inside that window as
         live contradicting evidence.
+
+        CLAIMS ALREADY ON THE CASE ARE NOT EVIDENCE AGAINST IT.
+        They are what opened it. Counting them made this dispute every
+        closure it was ever shown: `sla_days` is 7 and the calibrated desk
+        answers in a mean 36 hours, so every realistic closure lands inside
+        the look-back window and the founding claims are always in range.
+        Found by Kartik against the density curve, where it mattered most --
+        the curve was flat at zero for a reason that had nothing to do with
+        corroboration, which is the one thing that curve exists to measure.
+        Reproduced before fixing: a case opened by three households at T0,
+        desk closes at T0+36h, no other household reports -> DISPUTED, "3
+        live claim(s)". The docstring above already said "from OTHER
+        households"; the code just did not filter. `eval/density_curve.py`'s
+        `corrected_dispute()` is the same rule, written there as a proposal
+        for this file while the two behaviours were reported side by side.
         """
         clock = clock or get_clock()
         case = self.db.get_case(case_id)
@@ -165,7 +285,9 @@ class Watchdog:
         since = clock.now() - timedelta(days=self.closure_lookback_days)
         claims = self.db.claims_in_window(case.segment, case.service, since=since)
         # Two member agents in one household is ONE household.
-        live_households = {c.household_id for c in claims}
+        already_on_case = set(case.claim_ids)
+        live_households = {c.household_id for c in claims
+                           if c.claim_id not in already_on_case}
 
         if live_households:
             _trace("DISPUTED", "watchdog",
@@ -200,14 +322,38 @@ class Watchdog:
         lookup = self._resolve_lookup()
         entry: JurisdictionEntry | None = lookup(case.service, case.segment, case.feeder_id)
         if entry is None or not entry.ladder:
-            _trace("STALLED", "watchdog", "no jurisdiction entry -- cannot climb")
+            # Leave a wake behind. This is usually transient -- a case is
+            # opened with feeder_id="" and gains a real one later, and the
+            # curated table is reloaded from disk -- so "cannot climb NOW" is
+            # not "cannot climb". Returning bare, as this did, was the same
+            # permanent silence as the unreachable path: nothing rescheduled
+            # it and nothing said so.
+            self._pause_and_retry(case, clock, "no jurisdiction entry")
             return case.escalation_tier
 
         next_tier = case.escalation_tier + 1
         step: EscalationStep | None = next(
             (s for s in entry.ladder if s.tier == next_tier), None)
         if step is None:
-            _trace("STALLED", "watchdog", f"no tier {next_tier} defined -- top of the ladder")
+            # Top of the ladder. Unlike every other exit here this one is NOT
+            # transient -- no amount of waiting adds a tier 5 -- so it gets a
+            # human instead of a wake. Retrying forever would be the machine
+            # pretending it still has moves.
+            # sla_paused, NOT DORMANT. Marking it dormant excluded it from
+            # open_cases() AND from stalled_cases(), so the case that most
+            # needs a person vanished from every queue -- the same "a log
+            # line nobody queries has not told anyone" failure this branch
+            # exists to fix, one step further along. DORMANT also already
+            # means something else here (_expire_unsigned_draft: nobody
+            # wanted it), and this case is the opposite of unwanted.
+            #
+            # No wake either: unlike every other pause, waiting changes
+            # nothing. No amount of time adds a tier 5.
+            case.sla_paused = True
+            self.db.put_case(case)
+            _trace("NEEDS_HUMAN", "watchdog",
+                   f"tier {next_tier} does not exist -- the ladder is "
+                   "exhausted, a person decides what happens next")
             return case.escalation_tier
 
         is_rti = step.tier == 4  # RTI tier per the ladder; see docs/team/RAGHAV-PLAN.md D1
@@ -258,9 +404,25 @@ class Watchdog:
                     reachable = True
                     break
             if not reachable:
-                case.sla_paused = True
-                self.db.put_case(case)
-                _trace("PAUSED", "watchdog", "endpoint unreachable, clock held")
+                # A PAUSED case used to stop here forever. Nothing on this
+                # path called clock.schedule(), and _check_sla() returns
+                # immediately while sla_paused is set -- so the case went
+                # quiet, permanently, and nobody was told. Alakshendra found
+                # it from the other side while writing build_submit(): it is
+                # survivable only while `submit` defaults to returning True,
+                # and stops being survivable the moment a real client is
+                # wired, because every unsigned filing comes back NEEDS_HUMAN.
+                #
+                # An eleven-week pursuit that silently abandons the case on a
+                # bad afternoon is the exact failure this project exists to
+                # fix. So: keep trying, and tell someone.
+                #
+                # `sla_paused` already distinguishes the two cases, so no new
+                # field is needed -- core/types.py is frozen (hard rule 10)
+                # and this does not need unfreezing. If it was already set,
+                # this is not a blip: an earlier attempt paused it and the
+                # retry wake brought us back here.
+                self._pause_and_retry(case, clock, "endpoint unreachable")
                 return case.escalation_tier
 
             was_written, stored = self.db.put_filing_once(filing)

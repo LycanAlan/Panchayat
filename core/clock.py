@@ -18,9 +18,9 @@ Owner: Raghav.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -37,6 +37,25 @@ def _utcnow() -> datetime:
     raises TypeError the first time it meets one of those. This is also the
     Python 3.13-safe replacement for the deprecated datetime.utcnow()."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class SchedulerNotConfigured(RuntimeError):
+    """No durable timer exists to schedule against.
+
+    Raised by RealClock.schedule() when WATCHDOG_LAMBDA_ARN or
+    SCHEDULER_ROLE_ARN is unset, INSTEAD of calling EventBridge with an empty
+    Arn and getting a ValidationException that names neither variable.
+
+    A specific type, not a bare RuntimeError, because callers must be able to
+    catch exactly this and degrade -- the same discipline as run_or_stub()
+    catching only NotImplementedError. A caller that swallows everything here
+    would hide a real scheduler outage, which is the failure this whole branch
+    is about.
+
+    It is an ERROR and not a silent no-op on purpose: a case with no wake is a
+    case that stops forever, so not scheduling has to be something the system
+    says out loud.
+    """
 
 
 class Clock(Protocol):
@@ -72,20 +91,52 @@ class RealClock:
         return self._scheduler
 
     def schedule(self, case_id: str, at: datetime, action: str) -> str:
+        if not WATCHDOG_LAMBDA_ARN or not SCHEDULER_ROLE_ARN:
+            # Before boto3, deliberately. Reaching AWS here put a live
+            # EventBridge call on the household's request path and in the
+            # offline test suite -- 36 seconds of botocore retries and a
+            # NoRegionError, against a promise that the whole system runs with
+            # PANCHAYAT_BACKEND=memory and no credentials.
+            raise SchedulerNotConfigured(
+                "cannot schedule " + action + " for " + case_id + ": "
+                + "WATCHDOG_LAMBDA_ARN and SCHEDULER_ROLE_ARN must both be "
+                "set. Without a durable timer the case has no wake and the "
+                "statutory clock never runs."
+            )
+
+        # ONE NAME PER (case, action), and a ConflictException treated as
+        # success.
+        #
+        # A previous version put the `at` timestamp in the name to dodge that
+        # conflict, and it traded away the only idempotency the scheduler had:
+        # two wakes for the same case and action then both existed and both
+        # fired, so a redelivered Lambda batch minted another permanent
+        # schedule every time instead of colliding with the one already there.
+        # Two schedules is two climbs.
+        #
+        # The conflict is not an error. It means the wake this call wanted is
+        # already booked, which is the outcome being asked for.
         name = "pnc-" + case_id + "-" + action
-        self._client().create_schedule(
-            Name=name,
-            ScheduleExpression="at(" + at.strftime("%Y-%m-%dT%H:%M:%S") + ")",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            Target={
-                "Arn": WATCHDOG_LAMBDA_ARN,
-                "RoleArn": SCHEDULER_ROLE_ARN,
-                "Input": json.dumps({"case_id": case_id, "action": action}),
-            },
-            # Self-cleaning. Without this you accumulate orphan schedules and
-            # hit the account limit somewhere around Thursday.
-            ActionAfterCompletion="DELETE",
-        )
+        try:
+            self._client().create_schedule(
+                Name=name,
+                ScheduleExpression="at(" + at.strftime("%Y-%m-%dT%H:%M:%S") + ")",
+                FlexibleTimeWindow={"Mode": "OFF"},
+                Target={
+                    "Arn": WATCHDOG_LAMBDA_ARN,
+                    "RoleArn": SCHEDULER_ROLE_ARN,
+                    "Input": json.dumps({"case_id": case_id, "action": action}),
+                },
+                # Self-cleaning. Without this you accumulate orphan schedules
+                # and hit the account limit somewhere around Thursday.
+                ActionAfterCompletion="DELETE",
+            )
+        except Exception as exc:  # noqa: BLE001 -- narrowed on the next line
+            if type(exc).__name__ != "ConflictException" and (
+                    getattr(exc, "response", {})
+                    .get("Error", {}).get("Code") != "ConflictException"):
+                raise
+            # Already booked for this case and action. Idempotent by design.
         return name
 
     def cancel(self, handle: str) -> None:
@@ -107,7 +158,7 @@ class VirtualClock:
         self.scale = scale
         self.epoch = epoch or _utcnow()
         self._t0 = time.monotonic()
-        self._handles: dict[str, asyncio.TimerHandle] = {}
+        self._handles: dict[str, threading.Timer] = {}
         self._n = 0
         # Injected so the harness can run without importing the agents package.
         self._on_fire = on_fire
@@ -128,13 +179,28 @@ class VirtualClock:
         real_delay = max(0.0, virtual_delay / self.scale)
         self._n += 1
         handle = "vclock-" + str(self._n)
-        # get_running_loop(), not get_event_loop(): the latter is deprecated
-        # with no running loop on 3.13, and call_later only ever fires while a
-        # loop is actually running. Callers schedule() from inside one.
-        loop = asyncio.get_running_loop()
-        self._handles[handle] = loop.call_later(
-            real_delay, lambda: self._fire(case_id, action)
-        )
+
+        # threading.Timer, NOT loop.call_later.
+        #
+        # This used to do `loop = asyncio.get_running_loop()` and call_later on
+        # it, with a comment saying callers always schedule from inside a
+        # running loop. They do -- and that was the problem. Strands runs each
+        # graph node under `asyncio.run(...)` on a thread-pool worker, so the
+        # loop a node schedules against is CLOSED the moment the graph
+        # returns. The TimerHandle is dropped with it: no error, no warning,
+        # and the trace still says the wake was scheduled.
+        #
+        # Measured under TIME_SCALE=86400 -- the demo configuration -- a case
+        # filed through the request path never woke at all. The exact
+        # permanent silence the temporal work exists to end, in the one
+        # configuration built to demonstrate it.
+        #
+        # A Timer needs no loop, survives the one that scheduled it, and fires
+        # on its own daemon thread so it can never hold the process open.
+        timer = threading.Timer(real_delay, self._fire, (case_id, action))
+        timer.daemon = True
+        timer.start()
+        self._handles[handle] = timer
         return handle
 
     def cancel(self, handle: str) -> None:

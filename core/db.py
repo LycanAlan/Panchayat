@@ -55,7 +55,8 @@ REQUIRED = (
 # would have returned NEEDS_HUMAN forever. Kartik -- these need a DynamoDB
 # implementation; until then the seam raises by name rather than binding None.
 OPTIONAL = ("get_claim", "open_cases", "revoke_consent", "filings_for_case",
-            "get_filing", "unsigned_filings", "sign_filing", "reset")
+            "get_filing", "unsigned_filings", "sign_filing", "stalled_cases",
+            "reset")
 
 
 def _unavailable(name: str):
@@ -117,6 +118,7 @@ filings_for_case = _bind("filings_for_case")
 get_filing = _bind("get_filing")
 unsigned_filings = _bind("unsigned_filings")
 sign_filing = _bind("sign_filing")
+stalled_cases = _bind("stalled_cases")
 
 # NOT `lambda: None`. A silent no-op reset is worse than a missing one: the
 # autouse fixture believes it cleaned, rows accumulate across tests, and the

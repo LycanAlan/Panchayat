@@ -30,7 +30,7 @@ from typing import Any
 from strands.multiagent import GraphBuilder
 
 from core import db, fakes
-from core.clock import get_clock
+from core.clock import SchedulerNotConfigured, get_clock
 from core.types import (
     Case,
     CaseStatus,
@@ -353,11 +353,59 @@ def _file(ctx: RequestContext) -> str:
                          "case already open at tier " + str(case.escalation_tier)
                          + "; existing state left intact")
     elif case.sla_deadline is not None:
-        ctx.trace.record(
-            "TRACKING", "watchdog",
-            "SLA " + str(_window_days(entry, case.escalation_tier))
-            + "d, breach at " + case.sla_deadline.strftime("%Y-%m-%d %H:%M"),
-            citation=step.statute_ref if step else None)
+        # THE FIRST WAKE. Everything else that schedules lives inside
+        # Watchdog.climb(), which is only ever reached FROM a wake -- so
+        # without this line no case ever got one, the Watchdog never ran in a
+        # deployed system, and the statutory clock this whole product is about
+        # was a datetime in a row that nothing read.
+        #
+        # _window_days' own docstring says it: "no TRACKING line, no Watchdog
+        # wake, and the eleven-week pursuit that is the entire product
+        # silently never starts." The line was there; the wake was not.
+        #
+        # Catching exactly SchedulerNotConfigured, and nothing else. A real
+        # scheduler outage must still raise -- swallowing it would recreate
+        # the silence this is here to end, one layer up.
+        # `expire_draft`, NOT `check_sla`. The case is DRAFTED -- hard rule 4
+        # means nothing has been submitted to anybody, because nobody has
+        # signed. A check_sla wake here breaches a statutory window no office
+        # ever received, and climb() then drafts and submits a tier-2 filing
+        # to a named officer with no human in it anywhere.
+        #
+        # What an unsigned draft actually needs is someone to sign it or for
+        # it to lapse, which is what _expire_unsigned_draft does. The
+        # statutory clock starts where it should: climb() schedules check_sla
+        # once a filing has actually landed.
+        try:
+            get_clock().schedule(case.case_id, case.sla_deadline, "expire_draft")
+            woken = True
+        except SchedulerNotConfigured:
+            woken = False
+
+        window = str(_window_days(entry, case.escalation_tier))
+        breach = case.sla_deadline.strftime("%Y-%m-%d %H:%M")
+        if woken:
+            ctx.trace.record(
+                "TRACKING", "watchdog",
+                "SLA " + window + "d, breach at " + breach
+                + " -- draft expires then unless someone signs it",
+                citation=step.statute_ref if step else None)
+        else:
+            # Said out loud, on the demo surface. "TRACKING" with no timer
+            # behind it is the most expensive lie this system could tell a
+            # household: it promises the eleven-week pursuit and then nothing
+            # ever wakes up.
+            ctx.trace.record(
+                "TRACKING", "watchdog",
+                "SLA " + window + "d, breach at " + breach
+                + " -- NO WAKE SCHEDULED, scheduler not configured",
+                citation=step.statute_ref if step else None)
+            # stubbed=False deliberately, for the same reason the UNCONSENTED
+            # branch above gives: a missing env var is a CONFIG gap, not an
+            # unlanded module. Marking it stubbed put "watchdog" into
+            # trace.stubbed_agents on every offline run, so the integration
+            # dashboard would report that lane as unlanded forever after it
+            # shipped. The NO WAKE SCHEDULED text already says it out loud.
     return "file: " + ("drafted" if written else "duplicate suppressed")
 
 

@@ -61,6 +61,21 @@ class IntakeAgent:
         """
         segments = [s.strip() for s in _SPLIT_ON.split(raw_text) if s.strip()]
 
+        # No text, no need. Returning a need with an empty description let a
+        # report carrying no complaint at all travel the whole spine: routed
+        # to BWSSB, a Case opened, and a tier-1 filing drafted against a named
+        # officer with an empty body. Nothing was submitted (hard rule 4 held),
+        # but a draft addressed to a real desk saying nothing is not a thing to
+        # manufacture out of silence. Say there is nothing here instead.
+        #
+        # NOTE for the spine: graph/request_path.py::_household does
+        # `(ctx.payload.get("needs") or [{}])[0]`, so an empty list still
+        # becomes one empty need downstream. This fixes the half that is
+        # intake's to fix; the short-circuit on zero needs is request_path's
+        # call, raised for Ali rather than reached into from here.
+        if not segments:
+            return []
+
         if len(segments) <= 1:
             return [{"description": raw_text.strip(), "member_id": member.member_id,
                      "raw_text": raw_text}]
