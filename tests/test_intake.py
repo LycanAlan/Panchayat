@@ -33,6 +33,23 @@ def test_parse_splits_a_two_need_sentence_into_two_dicts():
     assert all("description" in n for n in needs)
 
 
+def test_parse_invents_nothing_from_an_empty_report():
+    """A report with no text is not a need with an empty description.
+
+    That fabricated need travelled the whole spine: routed to BWSSB, a Case
+    opened, a tier-1 filing drafted against a named officer with an empty
+    body. Nothing was submitted, but nothing should have been drafted either.
+    """
+    member = _member()
+    agent = IntakeAgent(model=None)  # would raise if a model were consulted
+    for empty in ("", "   ", "\n", "\t  \n"):
+        assert agent.parse(empty, member) == [], repr(empty) + " produced a need"
+
+
+def test_read_back_says_nothing_when_there_is_nothing_to_confirm():
+    assert read_back([], "en") == ""
+
+
 def test_parse_single_need_needs_no_model():
     member = _member()
     agent = IntakeAgent(model=None)  # would raise if ever called
