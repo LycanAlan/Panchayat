@@ -157,3 +157,65 @@ def test_the_seam_declares_the_whole_interface():
     forgets the seam, the DynamoDB backend silently never needs it."""
     for name in db.REQUIRED:
         assert callable(getattr(db, name)), name
+
+
+# --------------------------------------------------- the stalled queue
+#
+# Added when `stalled_cases()` landed in core/store.py. It had lived in
+# memstore alone, so `db.stalled_cases()` raised on DynamoDB -- and the thing
+# it backs is Raghav's fix for "surface it to a human", which until then was a
+# print statement. A queue that works offline and raises on the real backend
+# means the household that most needs a person is the one who disappears.
+#
+# These belong here rather than in test_store_dynamodb.py because the question
+# is agreement, not engine mechanics.
+
+def test_only_a_paused_case_is_stalled():
+    paused = fakes.a_case(sla_paused=True)
+    running = fakes.a_case(sla_paused=False)
+    db.put_case(paused)
+    db.put_case(running)
+
+    assert [c.case_id for c in db.stalled_cases()] == [paused.case_id]
+
+
+def test_a_terminal_case_is_not_waiting_on_anybody():
+    """A withdrawn case that happens to be paused is not stuck -- it is done.
+    Leaving it in would put a household who already left in the queue a human
+    reads, which is the one way to make that queue not worth reading."""
+    from core.types import CaseStatus
+
+    for status in (CaseStatus.RESOLVED, CaseStatus.WITHDRAWN,
+                   CaseStatus.DORMANT):
+        db.put_case(fakes.a_case(status=status, sla_paused=True))
+    live = fakes.a_case(status=CaseStatus.TRACKING, sla_paused=True)
+    db.put_case(live)
+
+    assert [c.case_id for c in db.stalled_cases()] == [live.case_id]
+
+
+def test_the_stalled_queue_narrows_by_service():
+    water = fakes.a_case(service=Service.WATER, sla_paused=True)
+    garbage = fakes.a_case(service=Service.GARBAGE, sla_paused=True)
+    db.put_case(water)
+    db.put_case(garbage)
+
+    assert [c.case_id for c in db.stalled_cases(Service.WATER)] == [water.case_id]
+    assert [c.case_id for c in db.stalled_cases(Service.GARBAGE)] == [garbage.case_id]
+    assert len(db.stalled_cases()) == 2
+
+
+def test_the_stalled_queue_is_ordered_by_deadline_with_undated_last():
+    """Oldest deadline first: the person who has waited longest is read first.
+    An undated case still belongs in the queue -- it is paused, so somebody has
+    to look -- but it cannot claim to be the most overdue."""
+    late = fakes.a_case(sla_deadline=fakes.T0 + timedelta(days=30),
+                        sla_paused=True)
+    early = fakes.a_case(sla_deadline=fakes.T0 + timedelta(days=1),
+                         sla_paused=True)
+    undated = fakes.a_case(sla_deadline=None, sla_paused=True)
+    for case in (late, undated, early):
+        db.put_case(case)
+
+    assert [c.case_id for c in db.stalled_cases()] == [
+        early.case_id, late.case_id, undated.case_id]
