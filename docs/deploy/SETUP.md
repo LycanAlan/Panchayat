@@ -15,9 +15,34 @@ Each stage turns on one execution path. **Stage 1 is the only one standing
 between us and "it is deployed."** The rest can follow while the frontend is
 being built.
 
+## DEPLOYED — 13 Sep, `ap-south-2` (Hyderabad)
+
+```
+arn:aws:bedrock-agentcore:ap-south-2:699073937307:runtime/panchayat-3FFhtr5OfG
+```
+
+**Verified live against the real DynamoDB table**: a report routes to BWSSB with
+its citation, drafts to the Assistant Engineer at tier 1, sets an SLA deadline,
+and writes 5 rows. `list_cases` reads it back, `approve` records a signature,
+and a second approval from another member is refused with the original
+signatory intact.
+
+**THE QUOTA IS PER-REGION, and that is what unblocked us.** Ali found it by
+checking Hyderabad in the console after us-east-1, us-west-2, eu-west-1 and
+ap-south-1 all returned `maxAgents limit exceeded`. ap-south-2 sits at full AWS
+defaults — Total Agents 1,000, image size 2,048 MB, nothing zeroed. An earlier
+note in this file said region switching would not help; that was wrong, and it
+was wrong because four regions were tested and treated as "all".
+
+Happy side effect: ap-south-2 is in India, so CLAUDE.md's *"our data stays in
+ap-south-1"* claim is now true in spirit — the table and the runtime are both
+in-country. The model calls still are not, and never were.
+
+**Observability is OFF and that is a real cost — see "The otel trap" below.**
+
 | Stage | Turns on | State |
 |---|---|---|
-| **1. Runtime** | the request path — a household reports, we route and draft | **blocked on one IAM policy** |
+| **1. Runtime** | the request path — a household reports, we route and draft | **DONE, live in ap-south-2** |
 | **2. Scheduler** | the temporal path — the SLA clock, breach, escalation | needs a Lambda that is not packaged yet |
 | **3. Streams** | the ambient path — clustering | **`handlers/ambient.py` does not exist** |
 | **4. Desks** | the institution simulators over A2A | runs locally today, no cloud needed |
@@ -247,6 +272,39 @@ agentcore deploy --agent panchayat \
   --env DOCKER_CONTAINER=1 \
   --env TIME_SCALE=1
 ```
+
+#### The otel trap — why `--disable-otel` is on the configure line
+
+The agent runtime CREATED fine and then the endpoint refused to start:
+
+```
+Agent endpoint create failed: OpenTelemetry instrumentation executable not
+found. The ZIP file requires open-telemetry dependencies, but none are present.
+```
+
+Both halves of that are the toolkit arguing with itself. `package.py` scans
+`requirements.txt`, finds our `aws-opentelemetry-distro` pin, and sets the
+entrypoint to `["opentelemetry-instrument", "app.py"]`. But it installs
+dependencies with **uv into a target directory**, and a `--target` install does
+not create console-script executables — so `opentelemetry-instrument` is never
+in the zip it just built. It requires a binary its own packaging method cannot
+produce. Same family as the phantom `zip` check.
+
+`--disable-otel` makes `build_entrypoint_array()` emit `["app.py"]` and the
+endpoint comes up.
+
+**THE COST IS REAL AND IS NOT PAID.** `graph/observability.py` creates spans
+through the OTEL API, and with no SDK configured they are `NonRecordingSpan` —
+attributes accepted, nothing exported. **So the deployed agent currently emits
+no traces**, and CLAUDE.md puts observability *before* the trace UI precisely
+because the UI is a view of it.
+
+Not yet attempted, roughly in order of promise: ship the console script into
+the zip by hand; call
+`opentelemetry.instrumentation.auto_instrumentation.initialize()` from the top
+of `app.py` so no executable is needed; or move to the container deployment
+(our Dockerfile's `CMD` has the wrapper and a real `pip install`, which does
+create the script) once `maxAgents` is raised somewhere we can build.
 
 - **`PANCHAYAT_BACKEND`** defaults to `memory`. Omit it and the deploy looks
   perfectly healthy while every case evaporates between invocations and the
