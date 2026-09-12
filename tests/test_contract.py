@@ -349,6 +349,60 @@ def test_two_households_with_no_provenance_are_not_guessed_at():
     assert child.claim_ids == [], "claims were attributed by guesswork"
 
 
+def test_splitting_both_unattributable_households_never_crosses_their_claims():
+    """THE SAME RULE, IN THE CALL THAT BROKE IT. The test above splits ONE
+    household and passes; the bug needed two in one call.
+
+    split_case narrows the parent as it goes, and the attribution rule counts
+    how many households have no provenance. Reading that count off the
+    shrinking parent made it fall by one every pass: the first household got
+    an empty child ("two untagged, cannot attribute") and the second, now the
+    only one left, was handed BOTH claims -- including the first household's.
+
+    That is hard rule 7 pointing the wrong way. Aggregation may be assembled
+    against an institution, never against a person, and one household's claim
+    sitting on another household's case survives into the filing that case
+    produces. Both backends did it, identically, which is why the parity suite
+    could not see it either.
+    """
+    case = fakes.a_case()
+    case.household_ids = ["hh_one", "hh_two"]
+    case.claim_ids = ["clm_one", "clm_two"]
+    case.merged_from = []
+    db.put_case(case)
+
+    children = [db.get_case(c)
+                for c in db.split_case(case.case_id, ["hh_one", "hh_two"])]
+
+    assert len(children) == 2
+    for child in children:
+        assert child.claim_ids == [], (
+            str(child.household_ids) + " was handed claims "
+            + str(child.claim_ids) + " that nothing attributes to it")
+    # Nothing is lost either: the claims nobody can be shown to own stay on
+    # the parent, where the provenance that would settle it can still arrive.
+    assert set(db.get_case(case.case_id).claim_ids) == {"clm_one", "clm_two"}
+
+
+def test_a_founder_leaving_after_a_joiner_still_takes_its_own_claim():
+    """The guard above must not undo issue #13. When the attribution snapshot
+    was added, the risk was that a joiner leaving first would strip its own
+    provenance token from the parent and make the founder look unattributable
+    too -- losing the founding claim all over again, in a new way."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_founder", "hh_joiner"]
+    case.claim_ids = ["clm_founder", "clm_joiner"]
+    case.merged_from = ["hh_joiner:clm_joiner"]
+    db.put_case(case)
+
+    children = [db.get_case(c) for c in
+                db.split_case(case.case_id, ["hh_joiner", "hh_founder"])]
+
+    got = {child.household_ids[0]: child.claim_ids for child in children}
+    assert got["hh_joiner"] == ["clm_joiner"]
+    assert got["hh_founder"] == ["clm_founder"], "the founding claim was lost"
+
+
 # ------------------------------------------------- one street, one spelling
 
 def test_two_spellings_of_one_street_are_the_same_street():

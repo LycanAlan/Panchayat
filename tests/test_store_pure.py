@@ -109,6 +109,32 @@ def test_a_bare_string_service_builds_the_same_key_as_the_enum():
     assert bare["GSI1PK"].endswith("#SVC#water")
 
 
+def test_the_frozen_helper_no_longer_builds_the_key_storage_writes():
+    """A TRAP LEFT BY THE #17 FIX, pinned so it is found here and not in prod.
+
+    `Claim.gsi1pk()` lives in the frozen core/types.py and interpolates
+    `self.segment` raw. Since the segment fold, the key storage actually
+    writes is folded, so for any segment that is not already lower-case the
+    two disagree -- and a caller who builds a Query key from the helper gets a
+    partition with nothing in it. No exception, no rows: the identical silent
+    shape as the bug the fold fixed, one layer up.
+
+    Reconciling them means editing core/types.py, which is hard rule 10 and a
+    group call (raised on the tracker). Until that happens this test is the
+    warning, and it will fail the moment somebody fixes it properly -- which
+    is the signal to delete it, not to re-pin it.
+    """
+    mixed = fakes.a_claim(segment="Ward12-4thCross")
+
+    written = store._claim_item(mixed)["GSI1PK"]
+    helper = mixed.gsi1pk()
+
+    assert written == "SEG#ward12-4thcross#SVC#water"
+    assert helper != written, (
+        "core/types.py now folds the segment too -- delete this test and the "
+        "warning in core/store.py::put_claim, the divergence is gone")
+
+
 def test_a_claim_survives_the_item_round_trip():
     original = fakes.a_claim(embedding=None, priority=Priority.HIGH)
     back = store._claim_from(store._claim_item(original))

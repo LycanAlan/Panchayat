@@ -227,7 +227,19 @@ def claim_from_item(item: dict) -> Claim:
 
 
 def put_claim(claim: Claim) -> None:
-    """PK=CLAIM#<id> SK=META, GSI1PK=claim.gsi1pk() GSI1SK=claim.gsi1sk().
+    """PK=CLAIM#<id> SK=META, GSI1SK=claim.gsi1sk().
+
+    GSI1PK IS NOT `claim.gsi1pk()` ANY MORE, and this docstring said it was.
+    That helper lives in the frozen core/types.py and interpolates
+    `self.segment` raw; since issue #17 the stored key folds the segment
+    (_seg_key), so "Ward12-4thCross" and "ward12-4thcross" land in one
+    partition and Pattern Watch can retrieve the pair to score. The two now
+    disagree by design, and a caller who uses the helper to build a Query key
+    gets a partition with nothing in it -- no error, no rows, the same silent
+    shape as the bug the fold fixed. Reconciling them means editing
+    core/types.py, which is hard rule 10 and a group call, so until then the
+    divergence is pinned by a test in tests/test_store_pure.py rather than
+    left to be discovered.
 
     Packs an embedding that is already on the claim. It never COMPUTES one:
     embedding here would put a Bedrock call on the household's request path and
@@ -501,7 +513,8 @@ def stalled_cases(service: Service | None = None) -> list[Case]:
                                         c.sla_deadline, c.case_id))
 
 
-def _claims_of(case: Case, household_id: str) -> list[str]:
+def _claims_of(case: Case, household_id: str,
+               origin: Case | None = None) -> list[str]:
     """That household's claims on this case, read back out of the provenance.
 
     Skips the _SPLIT_FROM token explicitly. It cannot collide today -- a
@@ -517,17 +530,32 @@ def _claims_of(case: Case, household_id: str) -> list[str]:
 
     So: a household with no provenance entry inherits the claims no other
     household has a claim on -- which is exactly what it arrived with.
+
+    THE ATTRIBUTION IS READ OFF `origin`, NOT OFF THE CASE BEING NARROWED.
+    split_case() removes each household from the parent as it goes and then
+    re-reads it, and the count of households with no provenance is what
+    decides whether the untagged claims can be attributed at all. Counting
+    that on the shrinking parent made it fall by one every pass: splitting two
+    untagged households gave the first an EMPTY child ("two untagged, cannot
+    attribute") and handed the second BOTH claims, because by then it was the
+    only one left. Measured identically on memstore -- the backends agreed,
+    and were both wrong. One household's claim on another household's case is
+    hard rule 7 pointing inward, and it survives into the filing.
+
+    So the caller passes the case as it stood BEFORE the split began, and
+    every household in one call is attributed against the same picture.
     """
-    tagged = [t.split(":", 1)[1] for t in case.merged_from
+    origin = case if origin is None else origin
+    tagged = [t.split(":", 1)[1] for t in origin.merged_from
               if not t.startswith(_SPLIT_FROM)
               and t.startswith(household_id + ":")]
-    if tagged or household_id not in case.household_ids:
+    if tagged or household_id not in origin.household_ids:
         return tagged
 
-    attributed = {t.split(":", 1)[1] for t in case.merged_from
+    attributed = {t.split(":", 1)[1] for t in origin.merged_from
                   if not t.startswith(_SPLIT_FROM) and ":" in t}
-    untagged = [h for h in case.household_ids
-                if not any(t.startswith(h + ":") for t in case.merged_from
+    untagged = [h for h in origin.household_ids
+                if not any(t.startswith(h + ":") for t in origin.merged_from
                            if not t.startswith(_SPLIT_FROM))]
     if len(untagged) > 1:
         # More than one household without provenance: the claims cannot be
@@ -535,7 +563,7 @@ def _claims_of(case: Case, household_id: str) -> list[str]:
         # household. Returning nothing is wrong too, but it is wrong in the
         # direction that loses nothing and invents nothing.
         return []
-    return [c for c in case.claim_ids if c not in attributed]
+    return [c for c in origin.claim_ids if c not in attributed]
 
 
 def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:
@@ -667,6 +695,15 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     add_household_to_case, and for the same reason: split runs while the
     Watchdog may be moving the parent's deadline.
     """
+    # The picture every household in this call is attributed against, read
+    # once. The loop below narrows the parent and re-reads it, so attributing
+    # against `before` made the answer depend on how many households had
+    # already left -- see _claims_of. Deliberately NOT re-read on a retry: the
+    # attribution is as of the split request, not as of the last contention.
+    origin = get_case(case_id)
+    if origin is None:
+        raise KeyError(case_id)
+
     new_ids: list[str] = []
     for hh in household_ids:
         for attempt in range(_MEMBERSHIP_ATTEMPTS):
@@ -676,7 +713,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             if hh not in before.household_ids:
                 break
 
-            claim_ids = _claims_of(before, hh)
+            claim_ids = _claims_of(before, hh, origin=origin)
             child = Case(
                 case_id=new_id("case"), service=before.service,
                 segment=before.segment, feeder_id=before.feeder_id,

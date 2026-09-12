@@ -14,6 +14,7 @@ Owner: shared. Kartik owns the interface; anyone may fix a bug here.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 from core.types import (
@@ -145,7 +146,8 @@ def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
 
 
-def _claims_of(case: Case, household_id: str) -> list[str]:
+def _claims_of(case: Case, household_id: str,
+               origin: Case | None = None) -> list[str]:
     """That household's claims on this case, read out of the provenance.
 
     THE FOUNDING HOUSEHOLD HAS NO PROVENANCE ENTRY, and that is not missing
@@ -153,23 +155,38 @@ def _claims_of(case: Case, household_id: str) -> list[str]:
     returned [] for it, so splitting the founder off produced a child with no
     claims and the claim landed on NO case at all. Hard rule 6 says merges are
     reversible; that made them reversible for joiners only (issue #13).
+
+    THE ATTRIBUTION IS READ OFF `origin`, NOT OFF THE CASE BEING NARROWED.
+    split_case() removes each household from the parent as it goes, and this
+    function decides who owns the untagged claims by counting how many
+    households have no provenance. Reading that off the shrinking parent made
+    the count fall by one on every pass: splitting two untagged households
+    gave the first an EMPTY child (two untagged, cannot attribute) and then
+    handed the second BOTH claims, because by then it was the only one left.
+    Measured on both backends -- child ['hh_one'] -> [], child ['hh_two'] ->
+    ['clm_one', 'clm_two']. One household's claim on another household's case
+    is hard rule 7 going the wrong way, and it survives into the filing.
+
+    So the caller passes the case as it stood BEFORE the split began, and
+    every household in one call is attributed against the same picture.
     """
-    tagged = [t.split(":", 1)[1] for t in case.merged_from
+    origin = case if origin is None else origin
+    tagged = [t.split(":", 1)[1] for t in origin.merged_from
               if not t.startswith(_SPLIT_FROM)
               and t.startswith(household_id + ":")]
-    if tagged or household_id not in case.household_ids:
+    if tagged or household_id not in origin.household_ids:
         return tagged
 
-    attributed = {t.split(":", 1)[1] for t in case.merged_from
+    attributed = {t.split(":", 1)[1] for t in origin.merged_from
                   if not t.startswith(_SPLIT_FROM) and ":" in t}
-    untagged = [h for h in case.household_ids
-                if not any(t.startswith(h + ":") for t in case.merged_from
+    untagged = [h for h in origin.household_ids
+                if not any(t.startswith(h + ":") for t in origin.merged_from
                            if not t.startswith(_SPLIT_FROM))]
     if len(untagged) > 1:
         # Two households with no provenance: the claims cannot be attributed,
         # and guessing would hand one household another's claim.
         return []
-    return [c for c in case.claim_ids if c not in attributed]
+    return [c for c in origin.claim_ids if c not in attributed]
 
 
 def split_case(case_id: str, household_ids: list[str]) -> list[str]:
@@ -179,11 +196,16 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     dismissed and takes the valid individual complaints with it.
     """
     case = _cases[case_id]
+    # The picture every household in this call is attributed against. Taken
+    # once, because the loop below narrows `case` as it goes -- see _claims_of.
+    origin = replace(case, household_ids=list(case.household_ids),
+                     claim_ids=list(case.claim_ids),
+                     merged_from=list(case.merged_from))
     new_ids: list[str] = []
     for hh in household_ids:
         if hh not in case.household_ids:
             continue
-        claim_ids = _claims_of(case, hh)
+        claim_ids = _claims_of(case, hh, origin=origin)
         child = Case(
             case_id=new_id("case"), service=case.service, segment=case.segment,
             feeder_id=case.feeder_id, tail=case.tail, status=case.status,
