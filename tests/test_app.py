@@ -242,3 +242,72 @@ def test_a_real_report_is_unaffected_by_the_empty_report_guard():
     assert out["unrouted_reason"] is None
     assert out["path"] == ["intake", "household", "warden", "remedy", "file"]
     assert out["filed_to"]
+
+
+# ------------------------------------------------- observability bootstrap
+
+
+def _record_initialize(monkeypatch) -> list:
+    """Intercept the real `initialize` so no global provider is installed.
+
+    Deliberately not letting it run. `initialize()` sets
+    `trace._TRACER_PROVIDER` process-wide and OTEL refuses to replace a
+    provider once set, so a test that actually called it would leak into every
+    later test in the session -- which is exactly how an earlier fixture in
+    tests/test_observability.py put a RecursionError into 16 unrelated tests.
+    What needs testing here is the GUARD, not the library.
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        "opentelemetry.instrumentation.auto_instrumentation.initialize",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    return calls
+
+
+def test_observability_stays_off_unless_the_deploy_asks_for_it(monkeypatch):
+    """The offline suite must not load instrumentors or an exporter.
+
+    CLAUDE.md promises `pytest` needs no AWS and runs in hundredths of a
+    second. Auto-instrumentation pulls in every instrumentor it can find and
+    an OTLP exporter, so booting it by default would put a network client into
+    a test run that is supposed to have none.
+    """
+    calls = _record_initialize(monkeypatch)
+    monkeypatch.delenv("PANCHAYAT_OTEL", raising=False)
+
+    appmod._start_observability()
+
+    assert calls == []
+
+
+def test_observability_starts_when_the_deploy_asks_for_it(monkeypatch):
+    """PANCHAYAT_OTEL=1 replaces the `opentelemetry-instrument` wrapper.
+
+    The deployed runtime cannot use that executable: the toolkit installs
+    dependencies with `uv --target`, which creates no console scripts, so the
+    binary it puts in the entrypoint is never in the zip it built. This is the
+    in-process equivalent, and it is what the endpoint actually runs on.
+    """
+    calls = _record_initialize(monkeypatch)
+    monkeypatch.setenv("PANCHAYAT_OTEL", "1")
+
+    appmod._start_observability()
+
+    assert len(calls) == 1
+
+
+def test_a_truthy_spelling_of_the_flag_still_turns_it_on(monkeypatch):
+    """`--env PANCHAYAT_OTEL=true` is the spelling someone will reach for.
+
+    Silently ignoring it would turn tracing off on a deploy that asked for it,
+    and the only symptom is an empty traces tab -- the failure mode this whole
+    function exists to end.
+    """
+    for spelling in ("1", "true", "TRUE", "yes"):
+        calls = _record_initialize(monkeypatch)
+        monkeypatch.setenv("PANCHAYAT_OTEL", spelling)
+
+        appmod._start_observability()
+
+        assert len(calls) == 1, spelling

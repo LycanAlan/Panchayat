@@ -18,6 +18,72 @@ import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+
+def _start_observability() -> None:
+    """Do what `opentelemetry-instrument` would have done, from inside.
+
+    THE WRAPPER IS NOT AVAILABLE TO US ON THE DEPLOYED RUNTIME, and finding
+    that out cost us the endpoint on the first successful deploy:
+
+        Agent endpoint create failed: OpenTelemetry instrumentation
+        executable not found.
+
+    The toolkit scans requirements.txt, sees our `aws-opentelemetry-distro`
+    pin, and sets the runtime entrypoint to
+    `["opentelemetry-instrument", "app.py"]` -- while installing dependencies
+    with `uv` into a target directory. A `--target` install creates no console
+    scripts, so that executable is never in the zip it just built. It demands
+    a binary its own packaging cannot produce.
+
+    But the wrapper is thin. `opentelemetry-instrument` sets a few environment
+    variables and re-execs Python with the distro's `sitecustomize.py` on the
+    path, and that file is two lines: import `initialize` and call it. So we
+    call it here and need no executable at all.
+
+    OFF BY DEFAULT, AND ON AGENTCORE IT SHOULD STAY OFF. Measured on the
+    deployed runtime: AgentCore instruments the process itself. The logs carry
+    resource attributes we never configured (`telemetry.auto.version
+    0.19.0-aws`, `aws.service.type gen_ai_agent`) and our own `panchayat` log
+    lines already arrive with `otelTraceID` set and `otelTraceSampled true`.
+    Calling `initialize()` on top of that logs "Attempting to instrument while
+    already instrumented", and a `Failed to export span batch code: 400`
+    appeared in the same window -- not proven to be caused by the double
+    init, but there is no reason to run a second one to find out.
+
+    So why keep it? The other two execution paths are NOT AgentCore.
+    `handlers/temporal.py` runs on Lambda behind EventBridge, and the ambient
+    handler will too. Nothing instruments those for us, and this is the call
+    that turns tracing on there without needing an executable that a
+    `uv --target` install cannot produce.
+
+    Also deliberately not unconditional because `tests/test_app.py` imports
+    this module: loading every instrumentor plus an exporter would put a
+    network client into a suite CLAUDE.md promises needs no AWS.
+
+    `swallow_exceptions=True` is the library's own default and we keep it: a
+    misconfigured collector should cost us traces, never the household's
+    request. Observability that can take down the thing it observes is worse
+    than none.
+    """
+    if os.environ.get("PANCHAYAT_OTEL", "").lower() not in ("1", "true", "yes"):
+        return
+    try:
+        from opentelemetry.instrumentation.auto_instrumentation import (
+            initialize,
+        )
+    except ImportError:
+        # The distro is pinned in requirements.txt, so this means a broken
+        # image rather than a choice. Still not worth refusing to serve.
+        return
+    initialize()
+
+
+# Before the app, so the provider exists by the first request. Safe to run
+# here rather than at the very top of the file: graph/observability.py
+# resolves its tracer per call instead of caching one at import, precisely so
+# late provider setup still reaches the spans.
+_start_observability()
+
 app = BedrockAgentCoreApp()
 
 
