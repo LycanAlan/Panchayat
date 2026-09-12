@@ -261,6 +261,32 @@ def test_one_other_household_is_still_enough_to_dispute(capsys):
 
 # ------------------------------------------------------------------ climb
 
+# --------------------------------------------------------------------------
+# THE SIGNATURE GATE, added when climb() stopped submitting unsigned filings.
+#
+# Hard rule 4: agents draft, humans sign. climb() now stores the tier's draft,
+# queues it for a person, and returns WITHOUT advancing the tier -- the case
+# has drafted, not escalated. A retry_submit wake re-enters climb(), which
+# recomputes the same step and finds the filing signed.
+#
+# Tests that want to exercise the SUBMIT path have to walk that loop, the way
+# a household would. These two do it.
+
+def _sign_pending(case_id, clock, member_id="mem_signer"):
+    """Sign every queued draft on this case. Returns how many."""
+    pending = [f for f in db.filings_for_case(case_id) if f.signed_by is None]
+    for f in pending:
+        db.sign_filing(f.idempotency_key, member_id, clock.now())
+    return len(pending)
+
+
+def _climb_signed(wd, case_id, clock, member_id="mem_signer"):
+    """climb() -> sign -> climb(). Returns the tier from the second pass."""
+    wd.climb(case_id, clock)
+    _sign_pending(case_id, clock, member_id)
+    return wd.climb(case_id, clock)
+
+
 def test_climb_files_tier_one_and_schedules_next_wake():
     db.reset()
     case = fakes.a_case(escalation_tier=0, sla_deadline=None)
@@ -269,15 +295,17 @@ def test_climb_files_tier_one_and_schedules_next_wake():
     clock = RecordingClock(now=fakes.T0)
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: True)
 
-    new_tier = wd.climb(case.case_id, clock)
+    new_tier = _climb_signed(wd, case.case_id, clock)
 
     assert new_tier == 1
     updated = db.get_case(case.case_id)
     assert updated.escalation_tier == 1
     assert updated.status == CaseStatus.TRACKING
     assert updated.sla_paused is False
-    assert len(clock.scheduled) == 1
-    assert clock.scheduled[0][2] == "check_sla"
+    # TWO wakes now, not one: retry_submit while the draft waited for a
+    # signature, then check_sla once it actually landed.
+    assert [w for w in clock.scheduled if w[2] == "retry_submit"]
+    assert clock.scheduled[-1][2] == "check_sla"
 
     filings = db.filings_for_case(case.case_id)
     assert len(filings) == 1
@@ -308,6 +336,9 @@ def test_climb_does_not_file_twice_on_a_retry():
     pre_existing.idempotency_key = pre_existing.compute_key()
     was_written, _ = db.put_filing_once(pre_existing)
     assert was_written is True
+    # Signed, because climb() will not submit an unsigned draft -- and this
+    # test is about the idempotency key, not the signature gate.
+    db.sign_filing(pre_existing.idempotency_key, "mem_signer", fakes.T0)
 
     clock = RecordingClock(now=fakes.T0)
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: True)
@@ -326,6 +357,12 @@ def test_climb_pauses_the_clock_when_institution_unreachable():
 
     clock = RecordingClock(now=fakes.T0)
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: False)
+    # Pass one drafts and queues; the desk is not consulted at all until a
+    # person signs. Clear the recorder so what follows judges ONLY the
+    # unreachable pass.
+    wd.climb(case.case_id, clock)
+    _sign_pending(case.case_id, clock)
+    clock.scheduled.clear()
     new_tier = wd.climb(case.case_id, clock)
 
     updated = db.get_case(case.case_id)
@@ -343,7 +380,12 @@ def test_climb_pauses_the_clock_when_institution_unreachable():
     retries = [w for w in clock.scheduled if w[-1] == "retry_submit"]
     assert len(retries) == 1, "a paused case must be picked up again"
 
-    assert db.filings_for_case(case.case_id) == []
+    # The DRAFT is stored -- it has to be, or nobody could have signed it.
+    # What must not exist is evidence that it LANDED.
+    drafted = db.filings_for_case(case.case_id)
+    assert len(drafted) == 1
+    assert drafted[0].submitted_at is None
+    assert drafted[0].external_ref is None, "a refused filing recorded a ticket"
 
 
 def test_climb_retries_once_before_pausing():
@@ -359,7 +401,7 @@ def test_climb_retries_once_before_pausing():
 
     clock = RecordingClock(now=fakes.T0)
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=flaky_submit)
-    new_tier = wd.climb(case.case_id, clock)
+    new_tier = _climb_signed(wd, case.case_id, clock)
 
     assert len(attempts) == 2
     assert new_tier == 1
@@ -383,7 +425,13 @@ def test_climb_tier_four_drafts_rti_and_never_submits():
 
     updated = db.get_case(case.case_id)
     assert updated.status == CaseStatus.DRAFTED
-    assert db.filings_for_case(case.case_id) == [], "not a real filing -- draft only, not stored via put_filing_once"
+    # The RTI draft IS stored now, and has to be: _expire_unsigned_draft reads
+    # filings_for_case() to decide whether anybody signed, and agents/digest.py
+    # surfaces unsigned_filings() to a person. A draft that lived only in a
+    # local variable could never be signed, surfaced, or expired.
+    drafts = db.filings_for_case(case.case_id)
+    assert len(drafts) == 1 and drafts[0].tier == 4
+    assert drafts[0].signed_by is None, "an RTI is never signed on our say-so"
 
     assert any(action == "expire_draft" for _, _, action in clock.scheduled)
 
@@ -426,6 +474,12 @@ def test_watchdog_check_sla_climbs_after_breach():
     wd = Watchdog(store=db, lookup=_lookup_fixture, submit=lambda f: True)
 
     wd.handle(case.case_id, "check_sla", clock=clock)
+
+    # The breach drafts tier 2 and asks a person. It does NOT escalate yet --
+    # nothing has been submitted to anybody.
+    assert db.get_case(case.case_id).escalation_tier == 1
+    _sign_pending(case.case_id, clock)
+    wd.handle(case.case_id, "retry_submit", clock)
 
     assert db.get_case(case.case_id).escalation_tier == 2
 
@@ -563,7 +617,9 @@ def test_the_retry_wake_files_when_the_desk_comes_back():
     clock = RecordingClock(now=fakes.T0)
     wd, calls = _stuck_watchdog([False, True])
 
-    wd.climb(case.case_id, clock)
+    wd.climb(case.case_id, clock)          # drafts and queues; no desk call
+    _sign_pending(case.case_id, clock)
+    wd.climb(case.case_id, clock)          # signed -- and the desk is down
     assert db.get_case(case.case_id).sla_paused is True
 
     clock.advance(timedelta(days=1))
@@ -592,7 +648,10 @@ def test_a_desk_still_down_on_the_retry_surfaces_to_a_human(capsys):
     clock = RecordingClock(now=fakes.T0)
     wd, _ = _stuck_watchdog([False])
 
-    wd.climb(case.case_id, clock)
+    wd.climb(case.case_id, clock)          # drafts and queues
+    _sign_pending(case.case_id, clock)
+    capsys.readouterr()                    # discard the drafting trace
+    wd.climb(case.case_id, clock)          # signed -- and the desk is down
     first = capsys.readouterr().out
     assert "PAUSED" in first
     assert "NEEDS_HUMAN" not in first, "one bad afternoon is not worth a person"

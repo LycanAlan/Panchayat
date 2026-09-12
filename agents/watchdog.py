@@ -361,77 +361,122 @@ class Watchdog:
         filing = Filing(case_id=case_id, tier=step.tier, authority=step.authority, body=body)
         filing.idempotency_key = filing.compute_key()
 
+        # THE DRAFT IS STORED BEFORE ANY DECISION ABOUT SENDING IT.
+        #
+        # It has to be: nothing can sign a filing that was never written, and
+        # `unsigned_filings()` -- the queue agents/digest.py surfaces to a
+        # human -- reads what is in the table. The old order submitted first
+        # and stored afterwards, so an escalation draft awaiting a signature
+        # existed only in this function's local variable.
+        #
+        # Safe to redraft. `compute_key()` is sha256(case|authority|tier), so
+        # the same tier always resolves to the same row, and put_filing_once
+        # is a conditional write: a later pass gets back whatever is stored,
+        # INCLUDING a signature captured in between. That is what makes the
+        # draft -> sign -> submit loop below idempotent under a retrying wake.
+        was_written, stored = self.db.put_filing_once(filing)
+        if not was_written:
+            filing = stored
+
         if is_rti:
-            # Draft only -- never handed to submit(). Hard rule: agents
-            # draft, humans sign.
+            # Draft only -- never handed to submit(). Tier 4 needs a citizen
+            # name, address and a Rs 10 fee and the system supplies none of
+            # the three. Hard rule 4: agents draft, humans sign.
             _trace("DRAFTED", "watchdog",
                    f"RTI drafted for {step.authority} -- awaiting signature")
+        elif filing.signed_by is None:
+            # HARD RULE 4, ENFORCED RATHER THAN DOCUMENTED.
+            #
+            # Until now `submit` defaulted to `lambda filing: True`, so climb()
+            # reported a successful filing at a named officer with nobody's
+            # approval on it -- and advanced the tier and started a statutory
+            # clock on the strength of it. Alakshendra's InstitutionClient.file()
+            # already refuses an unsigned filing (NEEDS_HUMAN), so the no-op
+            # default was the only thing hiding it.
+            #
+            # Ali settled the policy question this raised: EVERY TIER NEEDS ITS
+            # OWN SIGNATURE. Tier 1 is a complaint; tier 3 is a statutory appeal
+            # that can dock an officer's pay under Sakala; tier 4 needs a name,
+            # an address and a fee. Consent for the first is not informed
+            # consent for the fourth.
+            #
+            # So: the draft is queued, a person is asked, and the tier does NOT
+            # advance -- the case has not escalated, it has drafted. The wake
+            # re-enters climb(), which recomputes this same step and finds the
+            # filing signed.
+            #
+            # ORDER MATTERS, as in _pause_and_retry: schedule before persisting
+            # the pause. A scheduler failure must not leave a durably paused
+            # case with no pending wake.
+            clock.schedule(case_id,
+                           clock.now() + timedelta(days=RETRY_AFTER_DAYS),
+                           "retry_submit")
+            case.sla_paused = True
+            # DRAFTED is the durable record of WHY this case is paused: it is
+            # waiting on a person, not on a desk. _check_sla already refuses to
+            # breach a DRAFTED case ("submitted to nobody"), and the submit
+            # branch below reads it to tell a signature wait apart from an
+            # outage -- without which the first bad afternoon at the desk
+            # reads as the second and pages somebody for a blip.
+            case.status = CaseStatus.DRAFTED
+            self.db.put_case(case)
+            _trace("NEEDS_HUMAN", "watchdog",
+                   f"tier {step.tier} drafted for {step.authority} -- "
+                   "awaiting a named signature before it is submitted")
+            return case.escalation_tier
         else:
             # institution unreachable -> pause the SLA clock, retry up to
             # self.submit_attempts times (two, synchronously, no backoff, by
-            # default -- see the constructor docstring for why), then
-            # surface. "Surface" is Ali's digest agent's job -- this only
-            # logs and stops.
+            # default -- see the constructor docstring for why), then surface.
             #
-            # KNOWN GAP, confirmed against Alakshendra's institutions/client.py
-            # (branch alakshendra/ladder-and-filing-client, not yet merged):
-            # `filing.signed_by` is never set anywhere in this method, for any
-            # tier. core/types.py's frozen Filing.signed_by is annotated
-            # "REQUIRED before submit", and his InstitutionClient.file() already
-            # enforces exactly that -- an empty signed_by returns
-            # Outcome.NEEDS_HUMAN rather than filing. So once `submit` is wired
-            # to the real client, EVERY tier (not just 1-3) will come back
-            # NEEDS_HUMAN, always, because nothing in this codebase yet captures
-            # a household member's approval and writes it onto the Filing before
-            # this call. This is a missing capability, not a policy choice
-            # between "sign once" and "sign every tier" -- there is currently no
-            # signing step for ANY tier. Needs a group decision on where that
-            # capture happens (likely Ali's agents/digest.py, "pings you when
-            # there's a real decision") before this can file anything for real.
+            # STILL OPEN, and not resolved here: `submit`'s bool cannot carry
+            # the DeskReply outcome space. `should_retry` is true ONLY for
+            # UNREACHABLE, while REJECTED needs a human to supply missing
+            # particulars rather than a blind resend of the same body.
+            # Collapsing those onto one bool and retrying them identically is a
+            # distinct bug, tracked in STATUS.md, and the seam shape affects
+            # Ali's graph wiring too -- so it is not decided unilaterally in
+            # this file.
             #
-            # Separately, `submit`'s bool contract cannot represent his
-            # DeskReply's outcome space: `should_retry` is true ONLY for
-            # UNREACHABLE, while REJECTED sets `should_pause_sla` but NOT
-            # `should_retry` (it needs a human to supply missing particulars,
-            # not a blind resend of the same body) -- collapsing that onto a
-            # bool and retrying it exactly like UNREACHABLE is itself a second,
-            # distinct bug once real replies flow through here. Both items are
-            # tracked in STATUS.md; do not resolve either unilaterally in this
-            # file -- the seam shape affects Ali's graph wiring too.
+            # ALSO STILL OPEN: build_submit() writes the desk's reference back
+            # onto the Filing, and there is no filing-amend function in
+            # core.db -- put_filing_once is write-once by design. The reference
+            # reaches the trace and not the table. Nothing reads it back today;
+            # whoever wires the desk-status poll needs that write to exist.
+            # THE SIGNATURE ARRIVED, so the pause that was waiting for it is
+            # over -- but ONLY that one. _pause_and_retry reads sla_paused to
+            # decide whether an outage is "again after a retry" and worth
+            # paging a person, and digest.STAYS_QUIET holds
+            # endpoint_unreachable deliberately because one blip is not.
+            #
+            # Clearing unconditionally makes EVERY outage look like the first
+            # and a case stuck for days never surfaces. Clearing never makes
+            # the first one look like the second. DRAFTED is what separates
+            # them: set above when the draft was queued for a signature, and
+            # moved to ESCALATING here so the retry wake can tell it is now
+            # the desk that is the problem.
+            if case.status == CaseStatus.DRAFTED:
+                case.sla_paused = False
+                case.status = CaseStatus.ESCALATING
+                self.db.put_case(case)
+
             reachable = False
             for _ in range(self.submit_attempts):
                 if self._submit(filing):
                     reachable = True
                     break
             if not reachable:
-                # A PAUSED case used to stop here forever. Nothing on this
-                # path called clock.schedule(), and _check_sla() returns
-                # immediately while sla_paused is set -- so the case went
-                # quiet, permanently, and nobody was told. Alakshendra found
-                # it from the other side while writing build_submit(): it is
-                # survivable only while `submit` defaults to returning True,
-                # and stops being survivable the moment a real client is
-                # wired, because every unsigned filing comes back NEEDS_HUMAN.
-                #
-                # An eleven-week pursuit that silently abandons the case on a
-                # bad afternoon is the exact failure this project exists to
-                # fix. So: keep trying, and tell someone.
-                #
-                # `sla_paused` already distinguishes the two cases, so no new
-                # field is needed -- core/types.py is frozen (hard rule 10)
-                # and this does not need unfreezing. If it was already set,
-                # this is not a blip: an earlier attempt paused it and the
-                # retry wake brought us back here.
+                # A PAUSED case used to stop here forever: nothing on this path
+                # called clock.schedule(), and _check_sla() returns immediately
+                # while sla_paused is set. An eleven-week pursuit that silently
+                # abandons the case on a bad afternoon is the exact failure
+                # this project exists to fix. So: keep trying, and tell someone.
                 self._pause_and_retry(case, clock, "endpoint unreachable")
                 return case.escalation_tier
 
-            was_written, stored = self.db.put_filing_once(filing)
-            if not was_written:
-                filing = stored
-                _trace("ESCALATED", "watchdog",
-                       f"tier {step.tier} -> {step.authority} (already filed, not duplicated)")
-            else:
-                _trace("ESCALATED", "watchdog", f"tier {step.tier} -> {step.authority}")
+            _trace("ESCALATED", "watchdog",
+                   f"tier {step.tier} -> {step.authority}"
+                   + ("" if was_written else " (already drafted, not duplicated)"))
 
         case.sla_paused = False
         case.escalation_tier = step.tier

@@ -80,7 +80,16 @@ def test_an_unsigned_filing_never_advances_the_tier():
     after = db.get_case(case.case_id)
     assert returned == 0, "an unsigned filing must not report a climb"
     assert after.escalation_tier == 0
-    assert db.filings_for_case(case.case_id) == []
+
+    # The draft IS stored, and must be: nothing can sign a filing that was
+    # never written, and agents/digest.py surfaces unsigned_filings() to a
+    # person. What must not exist is evidence that it reached a desk.
+    drafted = db.filings_for_case(case.case_id)
+    assert len(drafted) == 1 and drafted[0].signed_by is None
+    assert drafted[0].external_ref is None, "a refused filing recorded a ticket"
+    queued = db.unsigned_filings(case.case_id)
+    assert [f.idempotency_key for f in queued] == [drafted[0].idempotency_key], (
+        "the draft never reached the signature queue a person reads")
     # Deliberately not asserting sla_paused here. climb() does set it, but
     # DeskReply.should_pause_sla is false for NEEDS_HUMAN on purpose -- a
     # person has to act, which is not the same as a clock being held. Pinning
@@ -132,13 +141,18 @@ def test_a_signed_filing_that_the_desk_accepts_does_advance():
     inner = build_submit(_Desk(DeskReply(Outcome.ACCEPTED, "BWSSB-100001",
                                          "sla_days=7")))
 
-    def signed(filing: Filing) -> bool:
-        # Stands in for the signature-capture step, which does not exist yet
-        # and is tracked as Ali's digest work.
-        filing.signed_by = "mem_lakshmi"
-        return inner(filing)
+    wd = Watchdog(store=db, lookup=remedy_lookup, submit=inner)
 
-    wd = Watchdog(store=db, lookup=remedy_lookup, submit=signed)
+    # THE REAL LOOP, now that climb() enforces hard rule 4 itself: the first
+    # pass drafts the tier and queues it, a person signs it, and the retry
+    # wake re-enters climb() and sends it. This used to be faked by a submit
+    # wrapper that stamped signed_by on its way out -- which is precisely the
+    # thing climb() is no longer willing to do.
+    wd.climb(case.case_id, clock)
+    pending = db.unsigned_filings(case.case_id)
+    assert len(pending) == 1, "the draft was not queued for a signature"
+    db.sign_filing(pending[0].idempotency_key, "mem_lakshmi", clock.now())
+
     returned = wd.climb(case.case_id, clock)
 
     after = db.get_case(case.case_id)
