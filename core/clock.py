@@ -18,9 +18,9 @@ Owner: Raghav.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -158,7 +158,7 @@ class VirtualClock:
         self.scale = scale
         self.epoch = epoch or _utcnow()
         self._t0 = time.monotonic()
-        self._handles: dict[str, asyncio.TimerHandle] = {}
+        self._handles: dict[str, threading.Timer] = {}
         self._n = 0
         # Injected so the harness can run without importing the agents package.
         self._on_fire = on_fire
@@ -179,13 +179,28 @@ class VirtualClock:
         real_delay = max(0.0, virtual_delay / self.scale)
         self._n += 1
         handle = "vclock-" + str(self._n)
-        # get_running_loop(), not get_event_loop(): the latter is deprecated
-        # with no running loop on 3.13, and call_later only ever fires while a
-        # loop is actually running. Callers schedule() from inside one.
-        loop = asyncio.get_running_loop()
-        self._handles[handle] = loop.call_later(
-            real_delay, lambda: self._fire(case_id, action)
-        )
+
+        # threading.Timer, NOT loop.call_later.
+        #
+        # This used to do `loop = asyncio.get_running_loop()` and call_later on
+        # it, with a comment saying callers always schedule from inside a
+        # running loop. They do -- and that was the problem. Strands runs each
+        # graph node under `asyncio.run(...)` on a thread-pool worker, so the
+        # loop a node schedules against is CLOSED the moment the graph
+        # returns. The TimerHandle is dropped with it: no error, no warning,
+        # and the trace still says the wake was scheduled.
+        #
+        # Measured under TIME_SCALE=86400 -- the demo configuration -- a case
+        # filed through the request path never woke at all. The exact
+        # permanent silence the temporal work exists to end, in the one
+        # configuration built to demonstrate it.
+        #
+        # A Timer needs no loop, survives the one that scheduled it, and fires
+        # on its own daemon thread so it can never hold the process open.
+        timer = threading.Timer(real_delay, self._fire, (case_id, action))
+        timer.daemon = True
+        timer.start()
+        self._handles[handle] = timer
         return handle
 
     def cancel(self, handle: str) -> None:
