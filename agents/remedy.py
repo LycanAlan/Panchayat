@@ -19,6 +19,7 @@ next_step() -- so nothing outside this file has to know the classes exist.
 
 from __future__ import annotations
 
+import copy
 import pathlib
 
 import yaml
@@ -122,6 +123,17 @@ class JurisdictionTable:
 
     @property
     def entries(self) -> dict[tuple[str, str], JurisdictionEntry]:
+        """A COPY of the curated table. See `lookup()` for why.
+
+        Internal callers that only read take `_live_entries` and skip the
+        copy; everything that hands the table outward comes through here, so
+        there is one boundary to get right rather than three consumers to
+        remember.
+        """
+        return copy.deepcopy(self._live_entries)
+
+    @property
+    def _live_entries(self) -> dict[tuple[str, str], JurisdictionEntry]:
         if self._entries is None:
             entries: dict[tuple[str, str], JurisdictionEntry] = {}
             aliases: dict[str, str] = {}
@@ -145,15 +157,22 @@ class JurisdictionTable:
         return self._entries
 
     def aliases(self) -> dict[str, str]:
-        self.entries  # noqa: B018  -- forces the load
+        self._live_entries  # noqa: B018  -- forces the load
         return dict(self._aliases)
 
     # ---------------------------------------------------------------- query
 
     def lookup(self, service, segment: str,
                feeder_id: str = "") -> JurisdictionEntry | None:
+        """Returns a COPY. The curated table is process-wide state, and a
+        caller that mutates what it was handed would corrupt it for everyone
+        else -- an emptied ladder stalls climb() on every later case, and the
+        failure is invisible because the next lookup() succeeds and simply
+        returns the corrupted row. This cost 7 Watchdog tests in a merged tree
+        while passing in isolation. 24 microseconds is the right price.
+        """
         key = (Service(service).value, (segment or "").strip().lower())
-        entry = self.entries.get(key)
+        entry = self._live_entries.get(key)
         if entry is None:
             emit(Tag.JURISDICTION, "miss", service=key[0], segment=key[1])
             return None
@@ -165,7 +184,7 @@ class JurisdictionTable:
                  claimed=feeder_id, curated=entry.feeder_id)
             return None
         emit(Tag.JURISDICTION, "hit", segment=key[1], authority=entry.authority)
-        return entry
+        return copy.deepcopy(entry)
 
     def ladder_for(self, entry: JurisdictionEntry) -> EscalationLadder:
         return EscalationLadder(entry.ladder)
@@ -291,7 +310,12 @@ _default = JurisdictionTable()
 # ---------------------------------------------------------------------------
 
 def load_table(directory: pathlib.Path | None = None) -> dict[tuple[str, str], JurisdictionEntry]:
-    """Read every jurisdiction YAML. Cached -- pass a directory to bypass the cache."""
+    """Read every jurisdiction YAML. Cached -- pass a directory to bypass the cache.
+
+    Also returns copies, for the same reason lookup() does. A caller iterating
+    the table to inspect it is exactly as able to mutate a row as one that
+    looked a single row up, and the corruption is just as process-wide.
+    """
     if directory is None:
         return _default.entries
     return JurisdictionTable(directory).entries

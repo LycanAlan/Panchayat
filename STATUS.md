@@ -7,7 +7,7 @@ session that cannot see the others. When Raghav's Claude reads this file it
 learns that `store.py` is real and what shape it landed in, instead of guessing
 or rebuilding it. That is the whole point.
 
-Last updated: **11 Sep, 02:30** by Alakshendra
+Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 
 ---
@@ -19,7 +19,8 @@ Last updated: **11 Sep, 04:15** by Kartik
 | **Bedrock MODEL calls not authorised** (account flag, support case 178898467100367) | anything invoking a model | `core/models.py` seam: `PANCHAYAT_MODEL=anthropic` + an API key swaps provider in one env var. **AgentCore itself is LIVE** — the deploy target was never blocked. | Ali |
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
 | ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
-| `Watchdog.climb()`'s `submit` seam and `institutions.client`'s filer have different shapes | Raghav / Ali, at the moment `submit` gets wired to the real filer | Not started — flagged now so the fix is a two-line adapter, not a Day-4 debugging session. See note below. | Alakshendra + Raghav |
+| ~~`Watchdog.climb()`'s `submit` seam and `institutions.client`'s filer have different shapes~~ | — | **CLOSED Day 3.** `institutions.client.build_submit()`. See the note below — the collapse rule I originally proposed in this file was wrong and would have defeated hard rule 4. | Alakshendra |
+| **A failed filing freezes the case permanently — blocks installing `build_submit()`** — `climb()` answers a falsey `submit` by setting `sla_paused=True` and returning early, and schedules **no wake** on that path; the only two `clock.schedule()` calls are on the success path, and `_check_sla()` short-circuits on `sla_paused`. So the case stops, for good, silently, and nobody is told. Harmless today only because `submit` still defaults to `lambda filing: True`. It becomes live the moment the real adapter is installed, and since nothing captures a signature yet, **every** filing returns NEEDS_HUMAN — so every case would freeze at its first escalation. Reproduced: `tests/test_submit_adapter.py::test_a_failed_filing_currently_freezes_the_case_permanently` (delete that test when it starts failing, that is the fix landing). Needs either the signature-capture step ahead of it, or a pause path that schedules a retry wake and surfaces to the Digest. | installing the institutions adapter; the eleven-week pursuit | `build_submit()` exists and is tested but is deliberately **not** wired as the default | Raghav (pause path) + Ali (capture/Digest) |
 | **`case.escalation_tier` has two potential writers, no locking** -- Kartik's ambient `apply_upgrade()` and Raghav's `climb()` both read-modify-write it, and `put_case()` is a blind overwrite. Lost update or a double-escalation (files at the wrong tier/authority) are both real. Needs a decision: `climb()` as sole writer with `apply_upgrade` requesting rather than performing, or a conditional write on a version attribute. Same shape as the `put_case` stale-write hazard in Kartik's review -- likely one fix for both. | escalation correctness | none yet -- `climb()` writes the tier it read, does not attempt to resolve the race | Raghav + Kartik |
 | **No signing mechanism exists for ANY escalation tier, not just 1-3** -- Alakshendra asked whether tiers 1-3 auto-filing with no signature is intentional (sign once at intake) or a gap. Checked: `climb()` never sets `Filing.signed_by` for any tier, including tier 1. His `institutions/client.py` (branch `alakshendra/ladder-and-filing-client`, unmerged) already enforces hard rule 4 in `file()` -- an empty `signed_by` returns `Outcome.NEEDS_HUMAN` rather than filing. So once wired, every tier fails NEEDS_HUMAN forever, always, until something captures a household member's approval onto the `Filing` before `climb()` submits. Not a policy question (per-tier vs once) -- the capture step doesn't exist anywhere yet. Likely lands in Ali's `agents/digest.py` ("pings you when there's a real decision"). Separately: `submit`'s `bool` contract can't represent `DeskReply`'s outcome space -- `should_retry` is true only for `UNREACHABLE`, while `REJECTED` sets `should_pause_sla` but needs a human to supply missing particulars, not a blind resend. `climb()`'s current retry-twice logic would mishandle `REJECTED` once real replies flow through. Documented in code at the call site in `agents/watchdog.py::climb()`. | filing correctness once institutions/ merges | none -- `climb()` submits with `signed_by=None` always; harmless today only because the default `submit` stub is unconditional `True` | Raghav + Alakshendra + Ali |
 
@@ -53,6 +54,32 @@ correctly against their own contract, they just haven't met yet:
    as the bool, with the full `DeskReply` still available to whoever wires it
    for the richer branching. Whoever lands the wiring, ping the other first —
    five-minute conversation, not a blocker.
+
+   > **CORRECTION, Day 3 — the rule proposed above is wrong. Do not use it.**
+   > `should_pause_sla is False` returns **True for NEEDS_HUMAN**, and
+   > NEEDS_HUMAN is what hard rule 4 returns for an unsigned filing, which
+   > today is *every* filing. The adapter would have reported each one as
+   > successfully filed, advanced the tier and started a statutory clock
+   > against a submission that never left the building — defeating rule 4
+   > at the exact seam built to enforce it. It also diverges wrongly on
+   > CLOSED, OPEN and UNKNOWN. **The shipped rule is `reply.filed`**, true
+   > only when a ticket exists on the other side. Ali caught this; the table
+   > of all eight outcomes is in `build_submit()`'s docstring.
+   >
+   > Nothing is lost to the bool: the adapter writes the desk's reference and
+   > rendered reply onto the `Filing` (`external_ref`, `response`,
+   > `submitted_at`), and `climb()` persists it with `put_filing_once()` on
+   > the next line.
+   >
+   > **One thing for Raghav, flagged not edited.** With the real adapter
+   > wired, an unsigned filing now traces as
+   > `PAUSED watchdog -> endpoint unreachable, clock held`. The pause is
+   > correct; the wording is not — nothing was unreachable, the filing was
+   > refused for having no signer and never left the process. The structured
+   > tag beside it is accurate (`tag=filing event=submitted outcome=NEEDS_HUMAN
+   > needs_human=True`), so the information is there, but the human-readable
+   > line in `climb()` will send someone hunting a network problem on Day 4.
+   > Your file, your call.
 2. **`signed_by`.** `file()` now refuses anything with an empty `signed_by`
    (hard rule 4, from Ali's review — see `docs/review/inst-ladder-filing.md`
    B1). `climb()`'s `Filing(...)` for tiers 1-3 doesn't set one. Genuine
@@ -122,7 +149,9 @@ are tested and which are not.
 | Alakshendra | escalation ladder API | **DONE** | **Raghav: `climb()` is unblocked.** `remedy.next_step(entry, tier)` -> the next `EscalationStep`, or `None` when exhausted. `institutions.routing.desk_for(step.authority)` -> which desk, or why there is none. |
 | Alakshendra | `institutions/client.py` | **DONE, reviewed** | **Ali: filing is unblocked.** `build_filing_tool()` gives you a Strands `@tool` for a graph node. Works offline — no desk listening returns UNREACHABLE, never raises. Two blockers from Ali's review (unsigned filings, household text in instruction position) fixed — see `docs/review/inst-ladder-filing.md`. **Not yet wired to `Watchdog.climb()`'s `submit` seam — see blocker row above.** |
 | Alakshendra | `institutions/protocol.py` | **DONE** | Shared wire grammar `OUTCOME [ref][: detail]`. Use `DeskReply.filed` / `.should_pause_sla` / `.needs_human` instead of string matching. |
-| Alakshendra | `core/tags.py` | **DONE, proposed** | Structured tags: `emit(Tag.LADDER, "climbed", case_id=...)`. **Ali — if the trace UI wants a different shape, say so and it moves.** |
+| ~~Alakshendra~~ → **Ali** | `core/tags.py` | **HANDED OVER, Day 3** | Ownership moved to platform as agreed. Four lanes emit through it; the OTEL span work and the trace UI are what decide its shape, and both are yours. Change it here, not at the call sites. |
+| Alakshendra | `remedy.lookup()` cache | **FIXED, Day 3** | **Was the blocking item.** `lookup()` and `load_table()` returned the cached objects themselves, so one caller emptying a ladder stalled `climb()` process-wide — invisibly, because the next lookup still succeeded and returned the corrupted row. Both now deep-copy (24µs). 4 regression tests, including one level down: mutating a `ladder[0]` step. |
+| Alakshendra | `institutions.client.build_submit()` | **DONE, Day 3** | **The Watchdog seam is wired.** `build_submit(client=None, service="water") -> Callable[[Filing], bool]`. Lives in institutions/ so the temporal lane never imports it — there is a test asserting that. `tests/test_submit_adapter.py` drives a real `climb()` against a real client with only the desk's reply faked. |
 | Alakshendra | `agents/remedy.compose_filing()` | **DONE** | `(case, entry, facts, step=None) -> (body, missing_fields)`. Turns `required_fields` + what we know into filing text, or refuses with what is missing rather than filing something the desk will bounce. `affected_count` auto-fills from `case.corroboration`. Tested end to end against `Desk.accept()`'s own completeness check, not just against expectations. |
 | Raghav | `agents/intake.py` | not started | |
 | Raghav | `agents/household.py` | not started | |

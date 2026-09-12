@@ -245,3 +245,97 @@ def build_filing_tool(client: InstitutionClient | None = None):
                                         idempotency_key, signed_by).render()
 
     return file_with_authority
+
+
+def build_submit(client: InstitutionClient | None = None,
+                 service: str = "water"):
+    """Adapter for the Watchdog's `submit: Callable[[Filing], bool]` seam.
+
+    It lives in this file and not in `agents/watchdog.py` on purpose: the
+    temporal lane must not import the institutions lane. The A2A boundary is
+    also the lane boundary, and an import across it is the first step to the
+    Watchdog knowing what a DeskReply is.
+
+    WHY IT COLLAPSES ON `reply.filed`
+    The obvious alternative, `should_pause_sla is False`, is wrong, and wrong
+    in the one direction that matters. The two agree on ACCEPTED, DUPLICATE,
+    REJECTED and UNREACHABLE, and disagree on the rest -- including
+    NEEDS_HUMAN, where it yields True. NEEDS_HUMAN is exactly what an unsigned
+    filing returns under hard rule 4, which today is every filing, because
+    nothing captures a signature yet. So that rule would report every unsigned
+    filing as successfully filed, advance the tier, and start a statutory
+    clock against a submission that never left the building. `filed` is true
+    only when a ticket exists on the other side.
+
+    NOTHING IS LOST TO THE BOOL
+    The reply's reference and rendered text are written back onto the Filing,
+    which `climb()` persists with `put_filing_once()` on the next line. The
+    bool is the control signal; the Filing keeps the detail.
+
+    `service` is a parameter because a Filing does not carry one and reading
+    the Case for it would mean importing our storage into this lane. The
+    institutional tail is water-only in this build, so the default is honest
+    rather than a guess; pass it explicitly when that stops being true. Note
+    the Watchdog holds exactly one `submit`, so this is one value for every
+    case it handles -- a second curated service needs a different seam, not a
+    different default.
+
+    READ BEFORE INSTALLING THIS AS THE WATCHDOG'S DEFAULT
+    `climb()` responds to a falsey submit by setting `sla_paused = True` and
+    returning early, and it schedules no wake on that path -- the only two
+    `clock.schedule()` calls are on the success path. `_check_sla()` then
+    short-circuits on `sla_paused`. So a case that fails to file is not
+    retried later; it stops, permanently and silently, and nobody is told.
+
+    That is survivable while `submit` defaults to `lambda filing: True`, which
+    is why it has not bitten yet. It stops being survivable the moment this
+    adapter is installed, because until a signature-capture step exists every
+    filing returns NEEDS_HUMAN -- so every case would freeze at its first
+    escalation, which is the eleven-week pursuit this project is for.
+
+    Installing this needs one of: a signature-capture step ahead of it, or a
+    pause path in `climb()` that schedules a retry wake and surfaces to the
+    Digest. Both live outside this lane. See `tests/test_submit_adapter.py`.
+    """
+    from core.types import Filing
+
+    bound = client or InstitutionClient()
+
+    def submit(filing: Filing) -> bool:
+        reply = bound.file_for_authority(
+            authority=filing.authority,
+            case_id=filing.case_id,
+            service=service,
+            body=filing.body,
+            idempotency_key=filing.idempotency_key or filing.compute_key(),
+            signed_by=filing.signed_by or "",
+        )
+
+        # Guarded on `filed`, not on `reply.ref`. find() deliberately keeps a
+        # stray reference on a reply it could not classify, so an
+        # "UNKNOWN BWSSB-100001" would otherwise stamp a ticket id onto a
+        # filing that never landed -- and external_ref is documented as "the
+        # institution's own ticket id", which a consumer may reasonably read
+        # as proof one exists.
+        if reply.filed and reply.ref:
+            filing.external_ref = reply.ref
+        filing.response = reply.render()
+
+        # submitted_at is NOT set here. The correct value is climb()'s
+        # injected clock, and `Callable[[Filing], bool]` cannot carry one --
+        # reaching for the ambient get_clock() instead would stamp real wall
+        # time onto a filing whose case deadline came from a virtual clock,
+        # recording a submission as later than its own statutory deadline.
+        # Whoever owns the call site sets it, from the clock it already has.
+
+        emit(Tag.FILING, "submitted" if reply.filed else "not_filed",
+             case_id=filing.case_id, tier=filing.tier,
+             authority=filing.authority, outcome=reply.outcome.value,
+             ref=reply.ref or None,
+             # Surfaced so a retry that can never succeed is diagnosable
+             # rather than looking like portal downtime in the trace.
+             needs_human=reply.needs_human or None,
+             retryable=reply.should_retry or None)
+        return reply.filed
+
+    return submit

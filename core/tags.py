@@ -16,8 +16,11 @@ case_id=, so one grep reconstructs the whole eleven-week story.
 
 Values containing spaces are quoted, so key=value parsing stays trivial.
 
-Owner: proposed by Alakshendra for the institutions lane. Shared -- Ali, if the
-trace UI wants a different shape, say so and this moves.
+Owner: Ali (platform), per the Day 3 brief ("Take core/tags.py into platform").
+Written in the institutions lane and handed over on that instruction rather
+than by self-assertion -- the trace UI and the OTEL span work decide what
+shape these records want, and both live in platform. Four lanes already emit
+through it, so change the shape here rather than at the call sites.
 """
 from __future__ import annotations
 
