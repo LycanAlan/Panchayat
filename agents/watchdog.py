@@ -294,6 +294,33 @@ class Watchdog:
                    f"{len(live_households)} live claim(s) contradict closure")
             return True
 
+        # THE ONLY PLACE IN THE REPO THAT WRITES RESOLVED (issue #9).
+        #
+        # Until now CaseStatus.RESOLVED appeared exactly twice outside its own
+        # enum: in this module's TERMINAL set, and in two comments in
+        # eval/density_curve.py saying nothing writes it. So a case could be
+        # closed by the institution, survive the dispute check, and stay
+        # TRACKING forever -- the pursuit never ended, the household was never
+        # told it was over, and the density curve had to INFER resolution from
+        # the desk reply because the system did not record it.
+        #
+        # Undisputed closure is what resolution MEANS here: the institution
+        # says it is done and no household on that street contradicts it. Not
+        # "the desk closed it" -- a third of this desk's closures are false by
+        # calibration, and counting those would reproduce the exact failure
+        # this project exists to catch.
+        #
+        # Guarded on TERMINAL so a wake arriving after a withdrawal cannot
+        # resurrect a case and mark it resolved on behalf of a household that
+        # pulled out.
+        if case.status not in TERMINAL:
+            case.status = CaseStatus.RESOLVED
+            # The clock stops with it. A resolved case holding sla_paused
+            # would sit in stalled_cases() asking a person to chase something
+            # that is finished.
+            case.sla_paused = False
+            self.db.put_case(case)
+
         _trace("CLOSED", "watchdog", "no live claims -- closure stands")
         return False
 
@@ -504,6 +531,17 @@ class Watchdog:
             clock.schedule(case_id, clock.now() + timedelta(days=7), "expire_draft")
         else:
             clock.schedule(case_id, deadline, "check_sla")
+            # AND the closure check, which nothing scheduled anywhere in the
+            # repo. reconcile_closure is "THE moment the project exists for"
+            # and it could only ever be reached from a test or the eval
+            # harness -- 25 passing tests and no way to run in production.
+            #
+            # Timed at the statutory window, not before it: a desk that has
+            # not answered yet has not closed anything, and asking earlier
+            # just burns a wake. Same instant as check_sla on purpose -- one
+            # of the two will find something, and which one is exactly the
+            # question (did they answer, and was the answer true).
+            clock.schedule(case_id, deadline, "check_closure")
             _trace("TRACKING", "watchdog", f"SLA {step.window_days}d, wake scheduled")
 
         return step.tier

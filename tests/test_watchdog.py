@@ -302,10 +302,16 @@ def test_climb_files_tier_one_and_schedules_next_wake():
     assert updated.escalation_tier == 1
     assert updated.status == CaseStatus.TRACKING
     assert updated.sla_paused is False
-    # TWO wakes now, not one: retry_submit while the draft waited for a
-    # signature, then check_sla once it actually landed.
-    assert [w for w in clock.scheduled if w[2] == "retry_submit"]
-    assert clock.scheduled[-1][2] == "check_sla"
+    # THREE wakes now, not one: retry_submit while the draft waited for a
+    # signature, then -- once it actually landed -- check_sla for the statutory
+    # deadline and check_closure for whether the answer, when it comes, is
+    # true. Asserted by presence, not position: which of the last two is
+    # scheduled first is not a fact worth pinning.
+    actions = [w[2] for w in clock.scheduled]
+    assert "retry_submit" in actions
+    assert "check_sla" in actions
+    assert "check_closure" in actions, (
+        "nothing would ever run the closure check")
 
     filings = db.filings_for_case(case.case_id)
     assert len(filings) == 1
@@ -819,3 +825,80 @@ def test_splitting_a_paused_case_does_not_hand_the_child_a_live_clock():
 
     assert children, "nothing was split"
     assert db.get_case(children[0]).sla_paused is True
+
+
+# ---------------------------------------------------- resolution, issue #9
+
+def test_an_undisputed_closure_resolves_the_case():
+    """ISSUE #9. Until now CaseStatus.RESOLVED appeared exactly twice outside
+    its own enum -- in this module's TERMINAL set, and in two comments in
+    eval/density_curve.py saying nothing writes it. A case could be closed by
+    the institution, survive the dispute check, and stay TRACKING forever: the
+    pursuit never ended and the household was never told it was over."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    own = fakes.a_claim(segment=case.segment, service=case.service,
+                        household_id="hh_founder", created_at=fakes.T0)
+    case.claim_ids = [own.claim_id]
+    case.household_ids = [own.household_id]
+    db.put_case(case)
+    db.put_claim(own)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+    disputed = Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+
+    assert disputed is False
+    assert db.get_case(case.case_id).status is CaseStatus.RESOLVED
+
+
+def test_a_disputed_closure_does_not_resolve_anything():
+    """The demo's peak moment. A household NOT on the case still reporting
+    after the institution said resolved is exactly the evidence this exists
+    for -- and it must leave the case open."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    own = fakes.a_claim(segment=case.segment, service=case.service,
+                        household_id="hh_founder", created_at=fakes.T0)
+    case.claim_ids = [own.claim_id]
+    case.household_ids = [own.household_id]
+    db.put_case(case)
+    db.put_claim(own)
+    db.put_claim(fakes.a_claim(segment=case.segment, service=case.service,
+                               household_id="hh_neighbour",
+                               created_at=fakes.T0 + timedelta(hours=30)))
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+    disputed = Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+
+    assert disputed is True
+    assert db.get_case(case.case_id).status is not CaseStatus.RESOLVED
+
+
+def test_a_withdrawn_case_is_not_resolved_on_its_behalf():
+    """A wake arriving after a withdrawal must not resurrect the case and mark
+    it resolved for a household that pulled out."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.WITHDRAWN, created_at=fakes.T0)
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+    Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+
+    assert db.get_case(case.case_id).status is CaseStatus.WITHDRAWN
+
+
+def test_resolution_stops_the_clock():
+    """A resolved case still holding sla_paused would sit in stalled_cases()
+    asking a person to chase something that is finished."""
+    db.reset()
+    case = fakes.a_case(status=CaseStatus.TRACKING, created_at=fakes.T0)
+    case.sla_paused = True
+    db.put_case(case)
+
+    clock = RecordingClock(now=fakes.T0 + timedelta(hours=36))
+    Watchdog(store=db).reconcile_closure(case.case_id, clock=clock)
+
+    after = db.get_case(case.case_id)
+    assert after.status is CaseStatus.RESOLVED
+    assert after.sla_paused is False
+    assert after.case_id not in [c.case_id for c in db.stalled_cases()]
