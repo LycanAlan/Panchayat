@@ -37,16 +37,7 @@
     {
       "Sid": "CodeBuildSourceBucket",
       "Effect": "Allow",
-      "Action": [
-        "s3:CreateBucket",
-        "s3:GetBucketLocation",
-        "s3:ListBucket",
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:PutBucketPolicy",
-        "s3:PutEncryptionConfiguration"
-      ],
+      "Action": "s3:*",
       "Resource": [
         "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1",
         "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1/*"
