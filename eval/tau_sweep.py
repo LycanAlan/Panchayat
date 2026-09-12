@@ -45,10 +45,8 @@ from __future__ import annotations
 import argparse
 import random
 from dataclasses import dataclass
-from datetime import timedelta
 from itertools import combinations
 
-from core import fakes
 from core.scoring import (
     TAU,
     W_RECENCY,
@@ -58,103 +56,27 @@ from core.scoring import (
     recency_score,
     topology_score,
 )
-from core.types import Claim, Service
+from core.types import Claim
+from data.corpus.generator import generate_corpus
 
 # --------------------------------------------------------------- the corpus
+#
+# THERE IS ONE CORPUS AND IT LIVES IN data/corpus/generator.py.
+#
+# This module used to carry its own build_corpus(), written when the sweep
+# needed one before the Day 2 generator existed. Two generators means two
+# failure models, and the one that drifts is always the one fewer people read.
+# It also lacked the reporting funnel -- it picked reporters directly, so the
+# sweep was pricing a world in which everybody complains.
 
-WARD = "ward12"
-STREET_KINDS = ("cross", "main")
-FEEDERS = tuple(f"bwssb-tm-{n:02d}" for n in range(10, 26))
-
-
-@dataclass
-class Incident:
-    """One real fault. The ground truth the sweep is scored against.
-
-    Deliberately phrased in the language of the world -- a main breaks, the
-    households on it notice over the next few hours -- and not in the language
-    of the scorer. Nothing in here knows that topology is worth 0.40.
-    """
-    incident_id: int
-    feeder: str
-    segment: str
-    service: Service
-    started: object
-    claims: list[Claim]
-
-
-def _ordinal(n: int) -> str:
-    """English ordinal suffix. DERIVED from the number, never drawn.
-
-    Drawn independently it produced ward12-10ndcross and ward12-1thcross, and
-    worse, it split ONE physical street across several spellings -- 47 strings
-    for 22 streets. Topology compares normalised strings, so those spellings
-    are different places: pairs genuinely on one street scored 0.0 instead of
-    0.3, and the corpus quietly under-represented the shape it exists to
-    price -- two unrelated faults on one street, which is what a naive
-    same-street-same-day rule merges wrongly.
-    """
-    if 11 <= n % 100 <= 13:
-        return "th"
-    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-
-
-def _segment(rng: random.Random) -> str:
-    n = rng.randint(1, 12)
-    return f"{WARD}-{n}{_ordinal(n)}{rng.choice(STREET_KINDS)}"
-
-
-def build_corpus(n_incidents: int = 40, seed: int = 12) -> list[Incident]:
-    """A ward's worth of faults, each reported by the households it hit.
-
-    The shapes that make the problem hard are all in here on purpose:
-
-      * a fault on one trunk main reported from SEVERAL streets, so topology
-        has to beat distance rather than agree with it;
-      * two unrelated faults on one street at the same hour, which is what a
-        naive same-street-same-day rule merges wrongly;
-      * single-household faults, because the spine runs at N=1 and a lone
-        report must not be forced into somebody else's cluster;
-      * different services on one feeder, which must never corroborate.
-    """
-    rng = random.Random(seed)
-    incidents: list[Incident] = []
-
-    for i in range(n_incidents):
-        feeder = rng.choice(FEEDERS)
-        service = rng.choices(
-            (Service.WATER, Service.GARBAGE, Service.ROADS, Service.SEWAGE),
-            weights=(5, 2, 2, 2))[0]
-        started = fakes.T0 + timedelta(hours=rng.uniform(-720, 0))
-        # One fault can span several streets on the same main.
-        streets = [_segment(rng) for _ in range(rng.randint(1, 3))]
-        n_households = rng.choices((1, 2, 3, 5, 8, 12),
-                                   weights=(30, 20, 15, 15, 12, 8))[0]
-
-        claims = []
-        for h in range(n_households):
-            # Households notice at their own pace: some within minutes, some
-            # the next morning when the tank is still empty.
-            lag = rng.expovariate(1 / 6.0)
-            claims.append(fakes.a_claim(
-                household_id=f"hh_{i}_{h}",
-                segment=rng.choice(streets),
-                feeder_id=feeder,
-                service=service,
-                created_at=started + timedelta(hours=min(lag, 60)),
-                embedding=None,
-            ))
-        incidents.append(Incident(i, feeder, streets[0], service, started,
-                                  claims))
-    return incidents
-
-
-def labelled_pairs(incidents: list[Incident]) -> list[tuple[Claim, Claim, bool]]:
+def labelled_pairs(faults) -> list[tuple[Claim, Claim, bool]]:
     """Every pair of claims in the corpus, with the ground truth attached.
 
-    True means the two reports are the same real fault and SHOULD cluster.
+    True means the two reports are the same real fault and SHOULD cluster. The
+    label comes from the generator's own `fault_id`, which is the world's fact
+    -- nothing here consults a score to decide what the right answer was.
     """
-    tagged = [(c, inc.incident_id) for inc in incidents for c in inc.claims]
+    tagged = [(c, f.fault_id) for f in faults for c in f.claims]
     return [(a, b, ia == ib) for (a, ia), (b, ib) in combinations(tagged, 2)]
 
 
@@ -267,7 +189,10 @@ def _table(title: str, rows: list[Row], mark: float | None = None) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--incidents", type=int, default=40)
+    ap.add_argument("--households", type=int, default=400,
+                    help="ward size. NOT the number of reporters -- most "
+                         "households on a failed main never file anything.")
+    ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--seed", type=int, default=12)
     ap.add_argument("--ceiling", type=float, default=0.01,
                     help="the false-merge rate we refuse to go above")
@@ -278,14 +203,25 @@ def main() -> None:
                          "this and nothing has measured it.")
     args = ap.parse_args()
 
-    incidents = build_corpus(args.incidents, args.seed)
-    pairs = labelled_pairs(incidents)
+    corpus = generate_corpus(n_households=args.households, days=args.days,
+                             seed=args.seed)
+    faults = [f for f in corpus.faults if f.claims]
+    pairs = labelled_pairs(faults)
     rng = random.Random(args.seed + 1)
 
-    n_claims = sum(len(i.claims) for i in incidents)
+    affected = sum(len(f.affected) for f in corpus.faults)
+    reported = sum(len(f.claims) for f in corpus.faults)
     n_true = sum(1 for *_, truth in pairs if truth)
-    print(f"corpus: {len(incidents)} incidents, {n_claims} claims, "
-          f"{len(pairs)} pairs ({n_true} same fault)")
+    print(f"corpus: {len(corpus.faults)} faults over {args.days} days in a ward "
+          f"of {args.households}")
+    # Guarded: fault counts are Poisson, so a short run (--days 1) readily
+    # produces a corpus with no faults at all, and `reported / affected` then
+    # raised ZeroDivisionError after building the corpus and before the sweep
+    # ran -- a crash instead of the honest "this run found nothing".
+    share = f"({reported / affected:.0%})" if affected else "(no faults in this corpus)"
+    print(f"        {reported} of {affected} affected households reported "
+          f"{share} -- the rest stayed silent")
+    print(f"        {len(pairs)} pairs, {n_true} of them the same fault")
 
     renorm, full, transfer = [], [], []
     for a, b, truth in pairs:

@@ -527,3 +527,162 @@ def test_revoking_against_a_missing_row_does_not_forge_one():
 
     rows = [r for r in _rows("HH#hh_orphan") if r["SK"].startswith("CONSENT#")]
     assert rows == [], "revoke forged a consent row that was never granted"
+
+
+# ------------------------------------------------- filings and signatures
+
+def test_a_filing_is_reachable_by_its_idempotency_key_alone():
+    """sign_filing and get_filing are handed a key; the filing's PK is its
+    case. Same problem as revoke_consent, same answer: a pointer row, written
+    in the same transaction so the two cannot drift."""
+    filing = fakes.a_filing(body="Zero supply since 6 Sep")
+    written, _ = db.put_filing_once(filing)
+    assert written is True
+
+    back = db.get_filing(filing.idempotency_key)
+    assert back is not None
+    assert back.case_id == filing.case_id
+    assert back.body == "Zero supply since 6 Sep"
+    assert db.get_filing("idem_never_existed") is None
+
+
+def test_an_unsigned_draft_appears_in_the_queue_and_a_signed_one_does_not():
+    """Hard rule 4's queue. A draft nobody can see is how one sits for eleven
+    weeks."""
+    draft = fakes.a_filing(tier=1)
+    db.put_filing_once(draft)
+
+    already = fakes.a_filing(tier=2)
+    already.signed_by = "mem_a1b2c3"
+    db.put_filing_once(already)
+
+    queued = [f.idempotency_key for f in db.unsigned_filings()]
+    assert draft.idempotency_key in queued
+    assert already.idempotency_key not in queued, (
+        "a filing that arrived signed was queued for signature")
+
+
+def test_signing_removes_it_from_the_queue():
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+    assert db.unsigned_filings() != []
+
+    signed, back = db.sign_filing(filing.idempotency_key, "mem_a1b2c3",
+                                  fakes.T0)
+    assert signed is True
+    assert back.signed_by == "mem_a1b2c3"
+    assert back.signed_at == fakes.T0
+    assert db.unsigned_filings() == []
+
+
+def test_the_first_signature_wins_under_a_race():
+    """Who approved a filing against a public body is the fact the whole
+    liability argument rests on. Enforced by a condition rather than by
+    reading first, so two people signing at once cannot both win."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    first, _ = db.sign_filing(filing.idempotency_key, "mem_first", fakes.T0)
+    second, stored = db.sign_filing(filing.idempotency_key, "mem_second",
+                                    fakes.T0 + timedelta(hours=1))
+
+    assert first is True
+    assert second is False
+    assert stored.signed_by == "mem_first", "the second signature overwrote"
+    assert stored.signed_at == fakes.T0
+
+
+def test_signing_an_unknown_key_says_so_rather_than_forging_one():
+    """update_item upserts. Without the condition this would CREATE a filing
+    nobody drafted, carrying a signature nobody gave -- the same forging bug
+    revoke_consent had."""
+    signed, back = db.sign_filing("idem_never_existed", "mem_a1b2c3", fakes.T0)
+    assert signed is False
+    assert back is None
+
+    rows = _rows("FILING#idem_never_existed")
+    assert rows == []
+
+
+def test_the_queue_is_ordered_by_case_then_tier():
+    """memstore sorts by (case_id, tier). Here it falls out of the UNSIGNED
+    partition's sort key, and the two must still agree.
+
+    THIS TEST USED TO EXERCISE THE WRONG BRANCH. Scoped to a case_id,
+    unsigned_filings() answers from filings_for_case(), which sorts in Python
+    -- so _unsigned_sk and its zero-padding were never read. Breaking the
+    padding (tier 10 sorting before tier 2) left the suite green while the
+    unscoped Digest queue, the one with no case_id to key on, came back out of
+    order. It has to be the UNSCOPED call, across more than one case, with a
+    tier that exposes lexicographic sorting.
+    """
+    for case_id in ("case_aaa", "case_bbb"):
+        for tier in (3, 10, 1, 2):
+            db.put_filing_once(fakes.a_filing(case_id=case_id, tier=tier))
+
+    queued = db.unsigned_filings()
+    ordered = [(f.case_id, f.tier) for f in queued]
+    assert ordered == sorted(ordered), f"queue out of order: {ordered}"
+    # Tier 10 after tier 2 is the assertion the padding actually buys: without
+    # zfill, "10" sorts before "2" as a string.
+    aaa = [t for c, t in ordered if c == "case_aaa"]
+    assert aaa == [1, 2, 3, 10], aaa
+
+
+def test_the_queue_can_still_be_read_per_case():
+    case_id = "case_scoped"
+    for tier in (3, 1, 2):
+        db.put_filing_once(fakes.a_filing(case_id=case_id, tier=tier))
+    tiers = [f.tier for f in db.unsigned_filings(case_id)]
+    assert tiers == [1, 2, 3], tiers
+
+
+def test_the_queue_can_be_scoped_to_one_case():
+    mine = fakes.a_filing(case_id="case_mine")
+    theirs = fakes.a_filing(case_id="case_theirs")
+    db.put_filing_once(mine)
+    db.put_filing_once(theirs)
+
+    scoped = [f.case_id for f in db.unsigned_filings("case_mine")]
+    assert scoped == ["case_mine"]
+
+
+def test_a_refiled_duplicate_does_not_queue_a_second_draft():
+    """Hard rule 5. A retrying Watchdog must not put the same draft in front
+    of a human twice."""
+    filing = fakes.a_filing()
+    db.put_filing_once(filing)
+
+    retry = fakes.a_filing(case_id=filing.case_id, tier=filing.tier,
+                           authority=filing.authority, body="RETRY TEXT")
+    retry.idempotency_key = filing.idempotency_key
+    written, stored = db.put_filing_once(retry)
+
+    assert written is False
+    assert stored.body == filing.body
+    assert len(db.unsigned_filings(filing.case_id)) == 1
+
+
+def test_a_reused_key_across_two_cases_cannot_hijack_the_pointer():
+    """idempotency_key is a settable field and callers set it. The filing's own
+    Put is conditional on its SK but keyed PK=CASE#<case_id>, so the same key
+    on a DIFFERENT case passes that check. An unconditional pointer Put would
+    repoint FILING#<key> at the new case -- and the original draft would become
+    unreachable through get_filing and unsignable through sign_filing, which
+    hard rule 4 says must happen before anything is submitted."""
+    first = fakes.a_filing(case_id="case_one", body="THE REAL DRAFT")
+    db.put_filing_once(first)
+
+    hijack = fakes.a_filing(case_id="case_two", body="SOMEBODY ELSE")
+    hijack.idempotency_key = first.idempotency_key
+    written, _ = db.put_filing_once(hijack)
+
+    assert written is False, "a cross-case key collision was accepted"
+    back = db.get_filing(first.idempotency_key)
+    assert back is not None
+    assert back.case_id == "case_one", "the pointer was hijacked"
+    assert back.body == "THE REAL DRAFT"
+
+    signed, stored = db.sign_filing(first.idempotency_key, "mem_a1b2c3",
+                                    fakes.T0)
+    assert signed is True and stored.case_id == "case_one"
