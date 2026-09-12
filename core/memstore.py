@@ -111,6 +111,45 @@ def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> Non
         case.merged_from.append(token)
 
 
+#: Provenance for a case created BY a split, so recurrence_count() does not
+#: count a reversed merge as a second incident on the feeder. Matches the token
+#: core/store.py writes; the contract tests pin that they agree rather than
+#: sharing a constant, because core/types.py is frozen and memstore must not
+#: import the DynamoDB module.
+_SPLIT_FROM = "split_from:"
+
+
+def _is_split_child(case: Case) -> bool:
+    return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def _claims_of(case: Case, household_id: str) -> list[str]:
+    """That household's claims on this case, read out of the provenance.
+
+    THE FOUNDING HOUSEHOLD HAS NO PROVENANCE ENTRY, and that is not missing
+    data -- nothing merged it, it opened the case. Reading merged_from alone
+    returned [] for it, so splitting the founder off produced a child with no
+    claims and the claim landed on NO case at all. Hard rule 6 says merges are
+    reversible; that made them reversible for joiners only (issue #13).
+    """
+    tagged = [t.split(":", 1)[1] for t in case.merged_from
+              if not t.startswith(_SPLIT_FROM)
+              and t.startswith(household_id + ":")]
+    if tagged or household_id not in case.household_ids:
+        return tagged
+
+    attributed = {t.split(":", 1)[1] for t in case.merged_from
+                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+    untagged = [h for h in case.household_ids
+                if not any(t.startswith(h + ":") for t in case.merged_from
+                           if not t.startswith(_SPLIT_FROM))]
+    if len(untagged) > 1:
+        # Two households with no provenance: the claims cannot be attributed,
+        # and guessing would hand one household another's claim.
+        return []
+    return [c for c in case.claim_ids if c not in attributed]
+
+
 def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     """Reverse a merge. Originals must survive intact.
 
@@ -122,8 +161,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
     for hh in household_ids:
         if hh not in case.household_ids:
             continue
-        claim_ids = [t.split(":", 1)[1] for t in case.merged_from
-                     if t.startswith(hh + ":")]
+        claim_ids = _claims_of(case, hh)
         child = Case(
             case_id=new_id("case"), service=case.service, segment=case.segment,
             feeder_id=case.feeder_id, tail=case.tail, status=case.status,
@@ -137,6 +175,12 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             # BREACHED and climb, escalating on the strength of a deadline the
             # institution never received.
             sla_paused=case.sla_paused,
+            # Hard rule 6, and the reason recurrence_count can tell a reversed
+            # merge from a second incident. core/store.py writes the same
+            # token; without it here, a split child counted as a NEW case on
+            # the feeder on this backend and not on the other -- a +1 on the
+            # number the escalation argument rests on (issue #18).
+            merged_from=[_SPLIT_FROM + case_id],
         )
         _cases[child.case_id] = child
         new_ids.append(child.case_id)
@@ -153,7 +197,13 @@ def recurrence_count(feeder_id: str, service: Service, since: datetime) -> int:
     """Prior cases on the same feeder. The thing a single complaint can never show."""
     return sum(1 for c in _cases.values()
                if c.feeder_id == feeder_id and c.service == service
-               and c.created_at >= since)
+               and c.created_at >= since
+               # A case created by undoing a merge is the SAME incident coming
+               # back apart, not a second one. Counting it inflates the number
+               # in the direction that manufactures a pattern, which is the one
+               # direction it must never drift. core/store.py achieves this by
+               # writing no feeder index row for a split child.
+               and not _is_split_child(c))
 
 
 # --------------------------------------------------------------- consent

@@ -487,10 +487,34 @@ def _claims_of(case: Case, household_id: str) -> list[str]:
     household id is "hh_..." and never "split_from" -- but merged_from now
     carries two namespaces and a reader that only works by luck is a trap for
     whoever adds the third.
+
+    THE FOUNDING HOUSEHOLD HAS NO PROVENANCE, and that is not a gap in the
+    data -- nothing merged it, it opened the case. Reading merged_from alone
+    returned [] for it, so splitting the founder off produced a child with no
+    claims and the claim ended up on NO case at all. Hard rule 6 says merges
+    are reversible; that made them reversible only for joiners (issue #13).
+
+    So: a household with no provenance entry inherits the claims no other
+    household has a claim on -- which is exactly what it arrived with.
     """
-    return [t.split(":", 1)[1] for t in case.merged_from
-            if not t.startswith(_SPLIT_FROM)
-            and t.startswith(household_id + ":")]
+    tagged = [t.split(":", 1)[1] for t in case.merged_from
+              if not t.startswith(_SPLIT_FROM)
+              and t.startswith(household_id + ":")]
+    if tagged or household_id not in case.household_ids:
+        return tagged
+
+    attributed = {t.split(":", 1)[1] for t in case.merged_from
+                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+    untagged = [h for h in case.household_ids
+                if not any(t.startswith(h + ":") for t in case.merged_from
+                           if not t.startswith(_SPLIT_FROM))]
+    if len(untagged) > 1:
+        # More than one household without provenance: the claims cannot be
+        # attributed and GUESSING would hand somebody else's claim to this
+        # household. Returning nothing is wrong too, but it is wrong in the
+        # direction that loses nothing and invents nothing.
+        return []
+    return [c for c in case.claim_ids if c not in attributed]
 
 
 def _member_item(case_id: str, household_id: str, claim_ids: list[str]) -> dict:

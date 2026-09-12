@@ -276,3 +276,74 @@ def test_recording_a_reply_does_not_forge_a_signature():
     db.record_submission(filing.idempotency_key, "X-1", fakes.T0)
 
     assert db.get_filing(filing.idempotency_key).signed_by is None
+
+
+# ------------------------------------------- undoing a merge, both halves
+
+def test_splitting_off_the_founding_household_keeps_its_claim():
+    """ISSUE #13. The founder is in household_ids and never in merged_from --
+    nothing merged it, it opened the case. Reading provenance alone gave it no
+    claims, so the split produced an empty child and the claim ended up on NO
+    case at all. Hard rule 6 says merges are reversible; that made them
+    reversible for joiners only."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_founder", "hh_joiner"]
+    case.claim_ids = ["clm_founder", "clm_joiner"]
+    case.merged_from = ["hh_joiner:clm_joiner"]
+    db.put_case(case)
+
+    children = db.split_case(case.case_id, ["hh_founder"])
+
+    assert len(children) == 1
+    child = db.get_case(children[0])
+    assert child.household_ids == ["hh_founder"]
+    assert child.claim_ids == ["clm_founder"], "the founding claim was lost"
+
+
+def test_a_split_child_is_not_a_second_incident_on_the_feeder():
+    """ISSUE #18. recurrence_count is the number most of the escalation
+    argument rests on. A case created by undoing a merge is the same incident
+    coming back apart -- counting it inflates the number in the direction that
+    manufactures a pattern."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_a", "hh_b"]
+    case.claim_ids = ["clm_a", "clm_b"]
+    case.merged_from = ["hh_b:clm_b"]
+    db.put_case(case)
+
+    since = case.created_at - timedelta(days=1)
+    before = db.recurrence_count(case.feeder_id, case.service, since)
+
+    db.split_case(case.case_id, ["hh_b"])
+
+    assert db.recurrence_count(case.feeder_id, case.service, since) == before
+
+
+def test_a_split_child_carries_its_lineage():
+    """The provenance that makes the line above possible, and hard rule 6's
+    readable lineage. Both backends must write the same token or
+    recurrence_count diverges between them -- which is exactly how #18 hid."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_a", "hh_b"]
+    case.claim_ids = ["clm_a", "clm_b"]
+    case.merged_from = ["hh_b:clm_b"]
+    db.put_case(case)
+
+    child = db.get_case(db.split_case(case.case_id, ["hh_b"])[0])
+
+    assert child.merged_from == ["split_from:" + case.case_id]
+
+
+def test_two_households_with_no_provenance_are_not_guessed_at():
+    """Returning nothing is wrong; handing one household another's claim is
+    worse. The split must not invent an attribution it does not have."""
+    case = fakes.a_case()
+    case.household_ids = ["hh_one", "hh_two"]
+    case.claim_ids = ["clm_one", "clm_two"]
+    case.merged_from = []
+    db.put_case(case)
+
+    child = db.get_case(db.split_case(case.case_id, ["hh_one"])[0])
+
+    assert child.household_ids == ["hh_one"]
+    assert child.claim_ids == [], "claims were attributed by guesswork"
