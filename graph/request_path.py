@@ -45,6 +45,7 @@ from core.types import (
     new_id,
 )
 from graph.nodes import FunctionNode
+from graph.observability import annotate, span
 from graph.trace import CaseTrace, use_trace
 
 # ---------------------------------------------------------------- context
@@ -224,7 +225,11 @@ def _claim_stub(ctx: RequestContext) -> Claim:
     pos = ctx.position
     return fakes.a_claim(
         household_id=pos.household_id,
-        segment=ctx.payload.get("segment", fakes.SEGMENT),
+        # NOT fakes.SEGMENT. Defaulting here is what hid the routing bug for
+        # two days: a household we cannot place was born in ward12 and got a
+        # real filing addressed to a real officer for a ward it may not live
+        # in. Hard rule 3 -- an invented location is an invented authority.
+        segment=ctx.payload.get("segment", ""),
         feeder_id=ctx.payload.get("feeder_id", ""),
         service=Service(ctx.payload.get("service", "water")),
         created_at=get_clock().now(),
@@ -258,6 +263,13 @@ def _apply_request_context(ctx: RequestContext, claim: Claim) -> None:
         claim.service = Service(requested)
 
 
+_NO_SEGMENT = (
+    "no segment supplied -- routing needs to know which segment this household "
+    "is in, and there is no household registry to look it up from. Pass "
+    "`segment` in the payload."
+)
+
+
 def _remedy(ctx: RequestContext) -> str:
     """Grounded lookup. A hallucinated authority reproduces the exact failure
     we claim to fix, so an unknown segment must say so rather than guess."""
@@ -271,9 +283,18 @@ def _remedy(ctx: RequestContext) -> str:
     ctx.tail, ctx.entry = tail, entry
 
     if entry is None:
-        ctx.trace.record("UNROUTED", "remedy",
-                         "no jurisdiction entry for " + ctx.claim.segment
-                         + " -- asking, not guessing", stubbed=stub)
+        # Two different failures used to print the same line, and the one that
+        # actually happens in production read as the other. An absent segment
+        # is a CALLER problem -- nobody told us where this household is -- and
+        # an unknown segment is a DATA problem. "no jurisdiction entry for "
+        # with an empty string on the end looked like a missing curation row,
+        # and cost a debugging session that should have been one glance.
+        if not ctx.claim.segment:
+            ctx.trace.record("UNROUTED", "remedy", _NO_SEGMENT, stubbed=stub)
+        else:
+            ctx.trace.record("UNROUTED", "remedy",
+                             "no jurisdiction entry for " + ctx.claim.segment
+                             + " -- asking, not guessing", stubbed=stub)
     else:
         wrong = ", ".join(entry.not_authority) or "n/a"
         ctx.trace.record("ROUTED", "remedy",
@@ -497,35 +518,125 @@ def build_graph():
     return builder.build()
 
 
+def _unrouted_reason(ctx: RequestContext) -> str | None:
+    """Why routing produced nothing, in a form code can branch on.
+
+    `None` when it routed. "no_segment" is ours to fix at the caller;
+    "unknown_segment" is a curation gap and belongs to the institutions lane.
+    Telling them apart is the whole point -- see the note in `_remedy`.
+    """
+    if ctx.entry is not None:
+        return None
+    # No claim means the graph never got that far -- including the refusal
+    # before it starts. Read the segment off the payload there, so this stays
+    # DERIVED rather than taking a reason its caller had to know.
+    segment = (ctx.claim.segment if ctx.claim
+               else str(ctx.payload.get("segment", "")).strip())
+    if not segment:
+        return "no_segment"
+    if ctx.claim is None:
+        return "no_claim"
+    # `run_or_stub` hands back (INSTITUTIONAL, None, "") when remedy.resolve
+    # raises, so a perfectly good segment can arrive here with no entry. Saying
+    # "unknown_segment" there blames the institutions lane's curated data for
+    # our own stub -- the exact misattribution this function exists to end.
+    if "remedy" in ctx.trace.stubbed_agents:
+        return "remedy_stubbed"
+    if ctx.tail is not None and ctx.tail is not Tail.INSTITUTIONAL:
+        return "not_institutional"
+    return "unknown_segment"
+
+
+def _response(ctx: RequestContext, result=None) -> dict:
+    """THE response shape. One builder, deliberately.
+
+    There were briefly two -- this one and a `_held_response` for the request
+    that never reaches the graph -- and that is the same defect this file
+    warns about everywhere else: two copies of a fact, drifting. Add a field
+    to one and a caller branching on it gets a KeyError from the other, on the
+    path that only fires when something already went wrong.
+
+    `result` is None when the graph never ran. Everything else is read off the
+    context, which is empty in exactly the way that says so.
+    """
+    usage = getattr(result, "accumulated_usage", None) if result else None
+    return {
+        "case_id": ctx.case_id,
+        # .value, not str(): Strands' Status is a bare Enum, so str() renders
+        # "Status.COMPLETED" and nothing matching on "completed" ever matches.
+        "status": (getattr(result.status, "value", str(result.status))
+                   if result else "completed"),
+        "path": [n.node_id for n in result.execution_order] if result else [],
+        "claim_id": ctx.claim.claim_id if ctx.claim else None,
+        "case_status": ctx.case.status.value if ctx.case else None,
+        # `authority` and `citation` are ONE fact: the routing decision, and
+        # hard rule 3's requirement that it carries a citation. They both come
+        # from the entry and must keep describing the same thing.
+        "authority": ctx.entry.authority if ctx.entry else None,
+        "citation": ctx.entry.statute_ref if ctx.entry else None,
+        # Who the draft is actually ADDRESSED to, which is a different fact --
+        # the tier's named officer, "BWSSB Assistant Engineer, sub-division
+        # office" rather than "BWSSB". Addressing a person is most of what
+        # makes a filing land, so the demo surface should not have to dig it
+        # out of the trace. A separate field, because overloading `authority`
+        # would have quietly decoupled it from `citation`.
+        "filed_to": ctx.filing.authority if ctx.filing else None,
+        "filed_tier": ctx.filing.tier if ctx.filing else None,
+        # DERIVED, not stored, for the same reason this function is one
+        # function: computed from the state the trace rendered.
+        "unrouted_reason": _unrouted_reason(ctx),
+        "sla_deadline": (ctx.case.sla_deadline.isoformat()
+                         if ctx.case and ctx.case.sla_deadline else None),
+        # Free evidence for the cost argument. Log it from day one.
+        "usage": dict(usage) if usage else {},
+        "stubbed_agents": ctx.trace.stubbed_agents,
+        "trace": ctx.trace.to_dict(),
+        "trace_text": ctx.trace.render(),
+    }
+
+
 def run_request_path(payload: dict) -> dict:
     case_id = payload.get("case_id") or new_id("case")
     ctx = RequestContext(
         payload=dict(payload), case_id=case_id,
         trace=CaseTrace(case_id, get_clock()),
     )
+    # Refuse BEFORE the graph runs, not five nodes into it.
+    #
+    # Without this the Warden pass still happens and `db.put_claim()` still
+    # writes -- a claim with segment="" that can never be routed, found or
+    # closed. Under the dynamodb backend every such row lands in the SAME
+    # index partition (GSI1PK "SEG##SVC#water"), so every segment-less report
+    # from every household piles into one partition that claims_in_window("")
+    # reads back. Patching the trace line downstream left that intact; this is
+    # the actual root cause, and it is ours, not the storage lane's.
+    if not str(payload.get("segment", "")).strip():
+        # Traced too. A request refused before the graph is still a request,
+        # and a dashboard that only shows the ones that got through cannot
+        # answer "how many are we turning away, and why".
+        with span("panchayat.request", case_id=case_id, refused="no_segment"),                 use_trace(ctx.trace):
+            ctx.trace.record("HELD", "intake", _NO_SEGMENT)
+        return _response(ctx)
+
     # Bind the trace for this request so any lane reached from here --
     # including code that was never handed the CaseTrace object -- records
     # into this case's story rather than printing into the void.
-    with use_trace(ctx.trace):
+    with span("panchayat.request",
+              case_id=case_id,
+              segment=str(payload.get("segment", "")),
+              service=str(payload.get("service", "water"))) as sp,             use_trace(ctx.trace):
         result = build_graph()(payload.get("text", ""),
                                invocation_state={"ctx": ctx})
 
-    usage = getattr(result, "accumulated_usage", None)
-    return {
-        "case_id": case_id,
-        # .value, not str(): Strands' Status is a bare Enum, so str() renders
-        # "Status.COMPLETED" and nothing matching on "completed" ever matches.
-        "status": getattr(result.status, "value", str(result.status)),
-        "path": [n.node_id for n in result.execution_order],
-        "claim_id": ctx.claim.claim_id if ctx.claim else None,
-        "case_status": ctx.case.status.value if ctx.case else None,
-        "authority": ctx.entry.authority if ctx.entry else None,
-        "citation": ctx.entry.statute_ref if ctx.entry else None,
-        "sla_deadline": (ctx.case.sla_deadline.isoformat()
-                         if ctx.case and ctx.case.sla_deadline else None),
-        # Free evidence for the cost argument. Log it from day one.
-        "usage": dict(usage) if usage else {},
-        "stubbed_agents": ctx.stubbed,
-        "trace": ctx.trace.to_dict(),
-        "trace_text": ctx.trace.render(),
-    }
+        # After the work, not before: which authority and whether it routed at
+        # all are the attributes worth querying on, and neither is known until
+        # the graph has run. A closed span cannot be annotated.
+        annotate(sp,
+                 authority=ctx.entry.authority if ctx.entry else None,
+                 filed_to=ctx.filing.authority if ctx.filing else None,
+                 filed_tier=ctx.filing.tier if ctx.filing else None,
+                 unrouted_reason=_unrouted_reason(ctx),
+                 stubbed=",".join(ctx.trace.stubbed_agents) or None,
+                 path=",".join(n.node_id for n in result.execution_order))
+
+    return _response(ctx, result)

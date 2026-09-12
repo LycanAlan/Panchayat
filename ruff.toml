@@ -16,7 +16,10 @@ line-length = 120       # we actually write to ~79 (p99 = 86). This is a
                         # ceiling for genuinely unreadable lines, not a
                         # style target: 0 violations today, so it costs
                         # nobody a reformat and still catches a monster.
-target-version = "py311"
+# 3.12, not 3.11: numpy>=2.5.3 needs 3.12+, which is the floor docs/SETUP.md
+# documents and scripts/verify-setup.ps1 enforces. A linter targeting an older
+# version silently permits syntax the project's own floor already allows.
+target-version = "py312"
 
 [lint]
 select = [

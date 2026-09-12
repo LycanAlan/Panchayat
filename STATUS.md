@@ -65,6 +65,37 @@ correctly against their own contract, they just haven't met yet:
 
 ---
 
+## Platform — 11 Sep, deploy readiness (branch `feat/plat-deploy-readiness`)
+
+**The merged spine routed nothing, and nothing tested it.** Found by starting
+`app.py` and POSTing a real report: it answered `completed` with a `case_id`
+and produced zero filings, while 279 tests were green.
+
+The happy path only ever worked because the Warden was stubbed —
+`_claim_stub` defaulted `segment=fakes.SEGMENT`. Raghav's real `minimise()`
+correctly emits no segment (`HouseholdPosition` is frozen and carries none),
+and nothing supplied one. `app.py`'s documented payload omitted `segment`
+entirely.
+
+**`segment` is REQUIRED in the request payload.** There is no household
+registry to resolve it from — nothing in the repo writes a Household row.
+Building one is a new entity plus store work, so it is **raised here, not
+invented**: if we want households to carry their own segment, that is a
+`core/types.py` + `core/store.py` conversation, and it needs the group.
+
+Missing it now returns `unrouted_reason: "no_segment"` and refuses **before**
+the graph runs — it used to write an unroutable claim with `segment=""`, which
+under DynamoDB all land in one GSI1 partition (`SEG##SVC#water`).
+
+Also landed: `Dockerfile` + `.dockerignore` + `docs/DEPLOY.md`, and
+observability (`graph/observability.py`) — `panchayat.request` and
+`panchayat.node.<id>` spans, every one carrying `case_id`, no-op with no SDK
+configured.
+
+**293 passed, 27 skipped, ruff clean.** The image has NOT been built — no
+Docker on this machine — and nothing is deployed. DEPLOY.md says which rows
+are tested and which are not.
+
 ## Lane status
 
 | Lane | Module | State | Notes |
