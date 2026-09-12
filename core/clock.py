@@ -29,6 +29,16 @@ from typing import Protocol
 WATCHDOG_LAMBDA_ARN = os.environ.get("WATCHDOG_LAMBDA_ARN", "")
 SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN", "")
 
+#: Every EventBridge schedule this system creates is named
+#: SCHEDULE_PREFIX + case_id + "-" + action. It is a named constant because
+#: the IAM policy that lets the Runtime create them scopes on this prefix, and
+#: the two were written apart: the policy said `panchayat-*` while the code
+#: said `pnc-`, so every create_schedule would have come back AccessDenied and
+#: the case would have had no wake at all -- the entire temporal path, dead in
+#: the one environment it has to run in. tests/test_deploy_policy.py pins the
+#: two together so they cannot drift again.
+SCHEDULE_PREFIX = "pnc-"
+
 
 def _utcnow() -> datetime:
     """Naive UTC, always. core/types.py's defaults (Claim.created_at,
@@ -116,7 +126,7 @@ class RealClock:
         #
         # The conflict is not an error. It means the wake this call wanted is
         # already booked, which is the outcome being asked for.
-        name = "pnc-" + case_id + "-" + action
+        name = SCHEDULE_PREFIX + case_id + "-" + action
         try:
             self._client().create_schedule(
                 Name=name,
@@ -171,8 +181,19 @@ class VirtualClock:
         if self._on_fire is not None:
             self._on_fire(case_id, action)
             return
-        from agents.watchdog import watchdog  # late import, avoids a cycle
-        watchdog(case_id, action)
+        # THE SAME COMPOSITION POINT THE LAMBDA USES, not the module-level
+        # `agents.watchdog.watchdog()`. That one delegates to a `Watchdog()`
+        # built with no arguments, whose `submit` is still `lambda filing:
+        # True` -- so under compressed time every escalation reported a
+        # successful filing at a named officer and started a statutory clock,
+        # having sent nothing to anybody. The real adapter was installed in
+        # handlers/temporal.py and this path was left behind, which is the
+        # path the demo and the eval harness run on.
+        #
+        # Late import, and it stays late: handlers.temporal imports
+        # agents.watchdog, which imports this module.
+        from handlers.temporal import dispatch
+        dispatch(case_id, action)
 
     def schedule(self, case_id: str, at: datetime, action: str) -> str:
         virtual_delay = (at - self.now()).total_seconds()

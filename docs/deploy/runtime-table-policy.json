@@ -41,7 +41,7 @@
         "scheduler:GetSchedule",
         "scheduler:DeleteSchedule"
       ],
-      "Resource": "arn:aws:scheduler:us-east-1:699073937307:schedule/default/panchayat-*"
+      "Resource": "arn:aws:scheduler:us-east-1:699073937307:schedule/default/pnc-*"
     },
     {
       "Sid": "AndHandsEventBridgeTheRoleThatInvokesTheWatchdog",
