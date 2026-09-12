@@ -347,3 +347,53 @@ def test_two_households_with_no_provenance_are_not_guessed_at():
 
     assert child.household_ids == ["hh_one"]
     assert child.claim_ids == [], "claims were attributed by guesswork"
+
+
+# ------------------------------------------------- one street, one spelling
+
+def test_two_spellings_of_one_street_are_the_same_street():
+    """ISSUE #17. The segment key was built from the raw string, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them, and that fix could not reach one layer
+    down -- the two claims were never handed to the scorer together.
+
+    Nothing errored. The cluster simply never formed, which is the same silent
+    shape as the 0.65 ceiling."""
+    a = fakes.a_claim(segment="ward12-4thcross", created_at=fakes.T0)
+    b = fakes.a_claim(segment="Ward12-4thCross", created_at=fakes.T0)
+    c = fakes.a_claim(segment="  ward12-4thcross  ", created_at=fakes.T0)
+    for claim in (a, b, c):
+        db.put_claim(claim)
+
+    since = fakes.T0 - timedelta(hours=1)
+    for spelling in ("ward12-4thcross", "Ward12-4thCross", "WARD12-4THCROSS"):
+        found = db.claims_in_window(spelling, Service.WATER, since)
+        assert len(found) == 3, (spelling, [f.claim_id for f in found])
+
+
+def test_the_stored_segment_keeps_the_spelling_it_arrived_with():
+    """Only the KEY is folded. A filing quotes the street the way the
+    household wrote it, not a lowercased version of it."""
+    claim = fakes.a_claim(segment="Ward12-4thCross", created_at=fakes.T0)
+    db.put_claim(claim)
+
+    back = db.claims_in_window("ward12-4thcross", Service.WATER,
+                               fakes.T0 - timedelta(hours=1))
+    assert [c.segment for c in back] == ["Ward12-4thCross"]
+
+
+def test_the_storage_fold_agrees_with_the_scorer():
+    """The rule is duplicated -- storage must not import the scorer, and
+    memstore must stay importable without numpy -- so the agreement is pinned
+    by a test instead of by a shared constant. Two normalisation rules in two
+    files is precisely how the first one drifted."""
+    from core.scoring import normalise_id
+
+    for raw in ("Ward12-4thCross", "  ward12-4thcross ", "WARD12-9THMAIN",
+                "", "ward12-1stcross"):
+        a = fakes.a_claim(segment=raw, created_at=fakes.T0)
+        db.put_claim(a)
+        found = db.claims_in_window(normalise_id(raw), Service.WATER,
+                                    fakes.T0 - timedelta(hours=1))
+        assert a.claim_id in [c.claim_id for c in found], raw

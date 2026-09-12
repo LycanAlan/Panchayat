@@ -54,11 +54,33 @@ def get_claim(claim_id: str) -> Claim | None:
     return _claims.get(claim_id)
 
 
+def _seg_key(segment: str) -> str:
+    """The segment as it goes INTO a key, folded.
+
+    ISSUE #17. `GSI1PK` was built from the raw `claim.segment`, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them -- and that fix could not reach one layer
+    down, because the two claims were never handed to the scorer together.
+    Nothing errors; the cluster simply never forms, which is the same silent
+    shape as the 0.65 ceiling.
+
+    THE STORED ATTRIBUTE KEEPS ITS ORIGINAL SPELLING. Only the key is folded,
+    so a filing still quotes the street the way the household wrote it.
+
+    Same fold as core.scoring.normalise_id, deliberately duplicated rather
+    than imported: storage must not depend on the scorer, and memstore must
+    stay importable without numpy. The contract tests pin that the two agree.
+    """
+    return segment.strip().lower() if segment else ""
+
+
 def claims_in_window(segment: str, service: Service, since: datetime) -> list[Claim]:
     """The Pattern Watch query. In DynamoDB this is a GSI1 query, never a scan."""
     return sorted(
         (c for c in _claims.values()
-         if c.segment == segment and c.service == service and c.created_at >= since),
+         if _seg_key(c.segment) == _seg_key(segment)
+         and c.service == service and c.created_at >= since),
         key=lambda c: c.created_at,
     )
 

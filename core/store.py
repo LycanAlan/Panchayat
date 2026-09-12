@@ -155,6 +155,27 @@ def _query_all(**kwargs) -> list[dict]:
 
 # ----------------------------------------------------------------- claims
 
+def _seg_key(segment: str) -> str:
+    """The segment as it goes INTO a key, folded.
+
+    ISSUE #17. `GSI1PK` was built from the raw `claim.segment`, so
+    "Ward12-4thCross" and "ward12-4thcross" landed in different partitions and
+    Pattern Watch never retrieved the pair to score. core/scoring.py folds both
+    identifiers before comparing them -- and that fix could not reach one layer
+    down, because the two claims were never handed to the scorer together.
+    Nothing errors; the cluster simply never forms, which is the same silent
+    shape as the 0.65 ceiling.
+
+    THE STORED ATTRIBUTE KEEPS ITS ORIGINAL SPELLING. Only the key is folded,
+    so a filing still quotes the street the way the household wrote it.
+
+    Same fold as core.scoring.normalise_id, deliberately duplicated rather
+    than imported: storage must not depend on the scorer, and memstore must
+    stay importable without numpy. The contract tests pin that the two agree.
+    """
+    return segment.strip().lower() if segment else ""
+
+
 def _claim_item(claim: Claim) -> dict:
     d = to_dict(claim)
     d["embedding"] = pack_embedding(claim.embedding)
@@ -165,7 +186,7 @@ def _claim_item(claim: Claim) -> dict:
         # does `self.service.value`, which raises AttributeError on the bare
         # string memstore accepts happily -- the seam's whole job is to catch
         # that, and this is the write path of the busiest entity we have.
-        GSI1PK="SEG#" + claim.segment + "#SVC#" + _svc(claim.service),
+        GSI1PK="SEG#" + _seg_key(claim.segment) + "#SVC#" + _svc(claim.service),
         GSI1SK=claim.gsi1sk(),
         _type="claim",
     )
@@ -232,7 +253,7 @@ def claims_in_window(segment: str, service: Service, since: datetime) -> list[Cl
     items = _query_all(
         IndexName="GSI1",
         KeyConditionExpression=(
-            Key("GSI1PK").eq("SEG#" + segment + "#SVC#" + _svc(service))
+            Key("GSI1PK").eq("SEG#" + _seg_key(segment) + "#SVC#" + _svc(service))
             & Key("GSI1SK").gte("TS#" + since.isoformat())
         ),
     )
