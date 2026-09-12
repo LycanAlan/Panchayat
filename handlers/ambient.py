@@ -209,15 +209,34 @@ def handler(event: dict[str, Any], context: Any = None) -> dict:
 
     results = [_process(r) for r in records]
 
-    failures = [
-        {"itemIdentifier": _sequence(rec)}
-        # strict=True, not the default. These are 1:1 by construction, and if
-        # they ever stop being, the silent failure is that a retry gets asked
-        # for under ANOTHER record's sequence number -- redelivering a claim
-        # that succeeded while dropping the one that failed.
-        for rec, res in zip(records, results, strict=True)
-        if not res["ok"] and res.get("retryable") and _sequence(rec)
-    ]
+    failures = []
+    # strict=True, not the default. These are 1:1 by construction, and if they
+    # ever stop being, the silent failure is that a retry gets asked for under
+    # ANOTHER record's sequence number -- redelivering a claim that succeeded
+    # while dropping the one that failed.
+    for rec, res in zip(records, results, strict=True):
+        if res["ok"] or not res.get("retryable"):
+            continue
+        sequence = _sequence(rec)
+        if sequence:
+            failures.append({"itemIdentifier": sequence})
+            continue
+        # A RETRYABLE FAILURE WE CANNOT ASK FOR BACK. A partial batch response
+        # is addressed by SequenceNumber and there is nothing else to name the
+        # record by, so this claim is lost: it failed for a reason a retry
+        # would have fixed, and AWS is being told the batch succeeded.
+        #
+        # It used to fall out of a filter at the end of a comprehension and
+        # leave nothing behind at all. Every real stream record carries a
+        # SequenceNumber, so reaching here means the event shape is not what
+        # this handler was written against -- which is worth knowing loudly,
+        # once per record, rather than discovering from a corroboration count
+        # that is quietly one short.
+        trace_record("FAILED", "ambient",
+                     "dropped a retryable failure with no SequenceNumber: "
+                     + str(res.get("claim_id") or "unknown claim"))
+        emit(Tag.PATTERN, "stream_record_undeliverable",
+             claim_id=res.get("claim_id"), detail=str(res.get("error"))[:120])
 
     merged = sum(1 for r in results if r.get("merged"))
     if merged:
