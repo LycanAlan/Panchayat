@@ -411,6 +411,61 @@ def open_cases(service: Service | None = None) -> list[Case]:
     return sorted(cases, key=lambda c: (c.created_at, c.case_id))
 
 
+def stalled_cases(service: Service | None = None) -> list[Case]:
+    """Cases the Watchdog could not move, oldest deadline first.
+
+    The Digest's second queue, beside `unsigned_filings()`. It exists because
+    "surface it to a human" was a print statement: the Watchdog paused a case,
+    logged NEEDS_HUMAN, and nothing durable recorded it. A trace line nobody
+    queries is not telling anybody.
+
+    `sla_paused` means exactly "the clock is held because the filing did not
+    land". Terminal cases are excluded -- a withdrawn case that happens to be
+    paused is not waiting on a person.
+
+    THE SAME FAN-OUT AS open_cases, narrowed, rather than a STALLED partition
+    like the one behind unsigned_filings(). Worth saying why, because the other
+    shape is right there in this file:
+
+    * a pointer partition needs put_case to add a row on pause and delete it on
+      resume, and a stale row there is a case that looks stuck forever. That
+      drifts toward false alarms in a queue whose entire value is that somebody
+      reads it. The UNSIGNED partition is worth that risk because NO index
+      answers "drafts across all cases"; this question is already answered by
+      the index open_cases uses.
+    * it would also need a backfill for every case paused before it existed.
+
+    So: same rows open_cases already reads, one more FilterExpression, no new
+    derived state to go stale. Still no Scan.
+
+    SORTED with case_id as the final tiebreaker, which memstore does not have.
+    Same note as open_cases: two cases sharing a deadline come back in a
+    different order from each backend, no test would catch it because both
+    answers are "a case", and the fix belongs in the shared file. Raised, not
+    reached into.
+    """
+    conditions = ["sla_paused = :paused"]
+    values: dict[str, Any] = {":paused": True}
+    if service is not None:
+        conditions.append("service = :svc")
+        values[":svc"] = _svc(service)
+
+    cases: list[Case] = []
+    for status in CaseStatus:
+        if status in _DONE:
+            continue
+        cases.extend(_case_from(i) for i in _query_all(
+            IndexName="GSI1",
+            KeyConditionExpression=Key("GSI1PK").eq("STATUS#" + _val(status)),
+            FilterExpression=" AND ".join(conditions),
+            ExpressionAttributeValues=values,
+        ))
+    # `sla_deadline is None` first, so undated cases sort last without ever
+    # comparing None against a datetime.
+    return sorted(cases, key=lambda c: (c.sla_deadline is None,
+                                        c.sla_deadline, c.case_id))
+
+
 def _claims_of(case: Case, household_id: str) -> list[str]:
     """That household's claims on this case, read back out of the provenance.
 
@@ -571,6 +626,18 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
                 authority=before.authority,
                 escalation_tier=before.escalation_tier,
                 sla_deadline=before.sla_deadline, created_at=before.created_at,
+                # sla_paused travels with the split, and it is not cosmetic.
+                # It was omitted here while it was an advisory flag; it is now
+                # the retry state machine, so a child that loses it carries a
+                # LIVE statutory clock against a filing that never landed --
+                # _check_sla() runs it to BREACHED and climb() escalates to a
+                # named officer on a deadline the institution never received.
+                #
+                # memstore has carried this since Raghav's pause-path fix. The
+                # two backends disagreeing on it is exactly the divergence
+                # core/db.py exists to forbid, and the test that catches it
+                # passed on memory and failed here.
+                sla_paused=before.sla_paused,
                 # Hard rule 6: provenance, so the lineage is readable and the
                 # feeder index knows this incident is already counted under
                 # the parent. Durable, so a later put_case cannot lose it.
