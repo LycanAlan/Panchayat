@@ -85,12 +85,24 @@ def stalled_cases(service: Service | None = None) -> list[Case]:
     `sla_paused` is the flag, and it means exactly "the clock is held because
     the filing did not land". Terminal cases are excluded -- a withdrawn case
     that happened to be paused is not waiting on anybody.
+
+    SORTED with case_id as the final tiebreaker, to match core/store.py. This
+    used to be a two-element key, `(sla_deadline is None, sla_deadline)`, and
+    Python's sort is stable, so two cases sharing a deadline fell back to
+    whichever order `_cases.values()` happened to yield -- insertion order,
+    not case_id, not anything a caller could reason about. store.py has
+    always sorted with case_id third; measured, seeding the same two cases in
+    reverse case_id order returned them in OPPOSITE orders from the two
+    backends for an identical set of rows. Both answers are "a case", so
+    nothing that only checked set membership would ever have noticed the two
+    backends disagreeing about which one comes first.
     """
     done = {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}
     stalled = [c for c in _cases.values()
                if c.sla_paused and c.status not in done
                and (service is None or c.service == service)]
-    return sorted(stalled, key=lambda c: (c.sla_deadline is None, c.sla_deadline))
+    return sorted(stalled,
+                 key=lambda c: (c.sla_deadline is None, c.sla_deadline, c.case_id))
 
 
 def open_cases(service: Service | None = None) -> list[Case]:
