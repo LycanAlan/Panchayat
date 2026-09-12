@@ -77,10 +77,30 @@ def _case_public(case: Any) -> dict:
         "created_at": _iso(case.created_at),
         "corroboration": case.corroboration,
         "recurrence_count": case.recurrence_count,
-        # Provenance, not identity: case ids this one absorbed. Hard rule 6
-        # says merges stay reversible, and a merge nobody can see is not
-        # auditable. These are case ids, never household ids.
-        "merged_from": list(case.merged_from),
+        # `split_from`, NOT `merged_from`.
+        #
+        # An earlier version of this function returned `merged_from` whole,
+        # with a comment asserting it held "case ids, never household ids".
+        # That was simply false. `add_household_to_case` writes
+        # `household_id + ":" + claim_id` into it (memstore.py:109,
+        # store.py:521), so a merged case carried a roster of exactly which
+        # neighbours had joined and which claim each filed -- handed to any
+        # caller. Hard rule 7 forbids precisely this: aggregation points
+        # outward at an institution, never at a person.
+        #
+        # Measured before the fix: a case with one neighbour merged in
+        # returned `["hh_NEIGHBOUR:clm_..."]`. It survived review once because
+        # the check searched responses for the KEY "household_ids" rather than
+        # for an id VALUE, which is the same mistake as scoring a missing
+        # embedding as zero -- verifying the thing named instead of the thing
+        # meant.
+        #
+        # Split provenance is the one part safe to publish: `_SPLIT_FROM`
+        # tokens are `split_from:<case_id>` and hold no household. Hard rule 6
+        # wants merges auditable, and this keeps the case-level half of that
+        # without the roster.
+        "split_from": [t.split(":", 1)[1] for t in case.merged_from
+                       if t.startswith("split_from:")],
     }
 
 
@@ -104,7 +124,7 @@ def _filing_public(filing: Any) -> dict:
     }
 
 
-def _awaiting(case: Any) -> list[dict]:
+def _awaiting(case: Any, viewer: str = "") -> list[dict]:
     """The signature queue for one case, each entry carrying its draft text.
 
     `digest.signature_requests()` already builds who-to-ask and what-to-say.
@@ -130,19 +150,40 @@ def _awaiting(case: Any) -> list[dict]:
     except NotImplementedError:
         pass
 
+    out = []
     for r in requests:
-        r["body"] = bodies.get(r["idempotency_key"], "")
-    return requests
+        # `digest.signature_requests` puts the chosen household's id in "ask"
+        # -- choose_recipient() returns a household_id and says so in its own
+        # docstring. Returning that told every caller which specific
+        # neighbour had been picked to carry the filing. Dropped here rather
+        # than narrowed in digest.py, because the digest's other caller reads
+        # the message aloud to that household and legitimately needs to know
+        # who it is talking to; it is publishing it to a client that is wrong.
+        entry = {k: v for k, v in r.items() if k != "ask"}
+        entry["body"] = bodies.get(r["idempotency_key"], "")
+        if viewer:
+            # The useful half of "ask", without the identity: not WHO was
+            # chosen, only whether it was you. A caller who already knows its
+            # own household id learns nothing new about anyone else.
+            entry["yours"] = r.get("ask") == viewer
+        out.append(entry)
+    return out
 
 
 # ------------------------------------------------------------------ actions
 
 
 def get_case(payload: dict) -> dict:
-    """One case, its filings, and anything waiting on a signature."""
+    """One case, its filings, and anything waiting on a signature.
+
+    Takes an OPTIONAL `household_id`. Supply it and each pending signature is
+    marked `yours: true|false`, which is what a client actually wanted from
+    the recipient field. Omit it and no one is named at all.
+    """
     case_id = str(payload.get("case_id", "")).strip()
     if not case_id:
         return {"error": "case_id_required"}
+    viewer = str(payload.get("household_id", "")).strip()
 
     with span("panchayat.read.get_case", case_id=case_id):
         case = db.get_case(case_id)
@@ -157,7 +198,7 @@ def get_case(payload: dict) -> dict:
         return {
             "case": _case_public(case),
             "filings": filings,
-            "awaiting_signature": _awaiting(case),
+            "awaiting_signature": _awaiting(case, viewer),
         }
 
 
@@ -195,7 +236,7 @@ def list_cases(payload: dict) -> dict:
             # The count, not the queue: a list screen needs a badge, and the
             # bodies belong on the detail screen where they can be read
             # properly before anyone signs.
-            summary["awaiting_signature"] = len(_awaiting(case))
+            summary["awaiting_signature"] = len(_awaiting(case, household_id))
             cases.append(summary)
 
         return {"cases": cases, "count": len(cases)}
