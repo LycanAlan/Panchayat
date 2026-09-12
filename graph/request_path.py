@@ -35,6 +35,8 @@ from core.types import (
     Case,
     CaseStatus,
     Claim,
+    ConsentGrant,
+    ConsentScope,
     Filing,
     HouseholdPosition,
     JurisdictionEntry,
@@ -228,6 +230,7 @@ def _warden(ctx: RequestContext) -> str:
         lambda: _claim_stub(ctx),
     )
     _apply_request_context(ctx, claim)
+    _record_consent(ctx, claim)
     ctx.claim = claim
     db.put_claim(claim)
 
@@ -295,6 +298,117 @@ def _apply_request_context(ctx: RequestContext, claim: Claim) -> None:
     requested = ctx.payload.get("service")
     if requested and claim.service != Service(requested):
         claim.service = Service(requested)
+
+    if not claim.feeder_id:
+        # THE CLAIM'S TOPOLOGY, LOOKED UP -- and without it clustering cannot
+        # happen at all.
+        #
+        # core/scoring.py weights topology at 0.40 and scores "same segment,
+        # different feeder" at 0.3. An EMPTY feeder falls into that same
+        # branch, so two households on one trunk main reporting one fault five
+        # minutes apart scored 0.569 against TAU 0.72 and never clustered.
+        # Measured through app.py: three reports, three cases, corroboration
+        # 1, 1, 1. Nothing errors -- exactly the silent shape of the 0.65
+        # ceiling CLAUDE.md warns about.
+        #
+        # The case gets its feeder from routing a few nodes later, but the
+        # CLAIM is written before that and is what the ambient path scores.
+        #
+        # LOOKED UP, NEVER GUESSED (hard rule 3): this is the same curated
+        # table remedy routes from, so an uncurated segment leaves the feeder
+        # empty and the claim simply does not corroborate. Inferring a trunk
+        # main from a street name would be inventing topology, and topology is
+        # what the whole correlation rests on.
+        from agents import remedy
+
+        entry = remedy.lookup(claim.service, claim.segment)
+        if entry is not None:
+            claim.feeder_id = entry.feeder_id
+
+
+def _consent_of(ctx: RequestContext) -> tuple[list[ConsentScope], list[str]]:
+    """The scopes this household actually granted, from the payload.
+
+    NOTHING IS IMPLIED. Reporting a fault is not consent to file, and consent
+    to file for you is not consent to be counted in a filing made in your
+    name -- hard rule 7 says aggregation points outward, and only with the
+    household's say-so. An unrecognised scope is REPORTED and dropped, never
+    guessed at: a typo'd "join-collective" quietly becoming JOIN_COLLECTIVE
+    would manufacture agreement, which is the one thing this field exists to
+    prove was given.
+    """
+    raw = ctx.payload.get("consent") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return [], [str(raw)[:40]]
+
+    scopes: list[ConsentScope] = []
+    unknown: list[str] = []
+    for entry in raw:
+        try:
+            scope = ConsentScope(str(entry).strip().lower())
+        except ValueError:
+            unknown.append(str(entry)[:40])
+            continue
+        if scope not in scopes:
+            scopes.append(scope)
+    return scopes, unknown
+
+
+def _record_consent(ctx: RequestContext, claim: Claim) -> None:
+    """Put the granted scopes on the claim AND write the durable grant.
+
+    WHY BOTH. `agents/anti_abuse.py` gates a merge on `claim.consent_scopes`,
+    so without the first the household cannot be counted. But the claim is a
+    snapshot and the grant is the evidence: `append_consent` is append-only
+    precisely so that "what did this household agree to, eleven weeks ago"
+    has an answer, and Raghav's scope-drift check reads that log. Writing one
+    without the other gives you either a gate with no audit trail or an audit
+    trail the gate ignores.
+
+    Until now NOTHING in the repo called `append_consent` on any application
+    path. `core/store.py` and `core/memstore.py` both implemented it, the
+    contract tests exercised it, and no household ever granted anything --
+    so every merge Anti-Abuse ever saw was refused for want of a consent
+    nobody could give (issue #12).
+
+    `granted_text` is left EMPTY when the caller supplies none. It is
+    documented as "verbatim what the human agreed to", and filling it with a
+    sentence this function composed would put words in a household's mouth in
+    the one record meant to prove what they actually said.
+    """
+    scopes, unknown = _consent_of(ctx)
+
+    if unknown:
+        ctx.trace.record("UNCONSENTED", "warden",
+                         "ignored unrecognised consent scope(s): "
+                         + ", ".join(repr(u) for u in unknown))
+
+    if not scopes:
+        return          # the UNCONSENTED hold downstream still applies
+
+    claim.consent_scopes = scopes
+
+    text = str(ctx.payload.get("consent_text", "") or "").strip()
+    now = get_clock().now()
+    for scope in scopes:
+        # service=claim.service, not None. A blanket grant (service=None) is
+        # documented in core/types.py as triggering a drift check, and this
+        # household consented about THIS service -- recording it as blanket
+        # would widen the grant while recording it.
+        db.append_consent(ConsentGrant(
+            household_id=claim.household_id,
+            scope=scope,
+            service=claim.service,
+            granted_at=now,
+            granted_text=text,
+        ))
+
+    ctx.trace.record(
+        "CONSENTED", "warden",
+        "granted " + ", ".join(s.value for s in scopes)
+        + (" (no verbatim text captured)" if not text else ""))
 
 
 _NO_SEGMENT = (
