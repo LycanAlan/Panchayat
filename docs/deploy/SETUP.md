@@ -141,25 +141,64 @@ The project builds on **`ARM_CONTAINER` / `BUILD_GENERAL1_MEDIUM`**
 raise. Service Quotas → AWS CodeBuild → the ARM concurrent-builds entry →
 Request increase.
 
-**Treat this as one problem, not three.** Three unrelated AWS services are
-gated on this account and none of the three is IAM:
+**CodeBuild was never the real blocker.** Proven on 12 Sep by going around it:
+`direct_code_deploy` needs neither CodeBuild nor ECR, ran the entire pipeline
+successfully, and died on the LAST call:
+
+```
+ServiceQuotaExceededException: CreateAgentRuntime
+maxAgents limit exceeded for account 699073937307
+```
+
+**With zero agent runtimes in existence** — `list-agent-runtimes` returns 0 in
+us-east-1, us-west-2 and ap-south-1. The account's agent quota is zero, so the
+container path would have hit this same wall after a successful build.
+
+**Treat this as one problem, not four.** Four unrelated AWS services are gated
+on this account and not one of them is IAM:
 
 | Service | Symptom |
 |---|---|
 | Bedrock model data plane | `ValidationException: Operation not allowed` (case 178898467100367) |
 | AgentCore Memory | `AccessDenied ... contact customer support` |
 | CodeBuild | concurrent builds = 0 |
+| **AgentCore Runtime** | **`maxAgents` = 0, with 0 agents existing** |
 
-That pattern reads as an account pending validation rather than three
-coincidences. One support conversation naming all three is likelier to fix it
-than three quota forms. **This is a schedule risk, not a code risk** — nothing
-above is a defect in the repo.
+That is an account pending validation, not four coincidences. **No engineering
+workaround exists** — the last one is the create call itself, and every deploy
+path ends there. This is a support conversation, not a quota form and not a
+code change.
 
-#### The fallback if the account does not clear: `direct_code_deploy`
+**Ask support to validate the account**, naming all four. Raising `maxAgents`
+alone is the minimum that unblocks a deploy; the Bedrock data plane is what
+unblocks the model calls.
+
+**Nothing above is a defect in the repo**, and the pipeline is proven up to
+that wall — see below.
+
+#### `direct_code_deploy` — RUN 12 Sep, and everything worked but the last call
 
 Equally AWS — same Bedrock AgentCore Runtime, same `/invocations` contract.
 AWS runs our source on a managed Python runtime instead of building a
-container, so it **needs neither CodeBuild nor ECR** and sidesteps the quota.
+container, so it **needs neither CodeBuild nor ECR**.
+
+**The entire pipeline is proven.** Measured, in order:
+
+```
+✓ Reusing existing execution role      AmazonBedrockAgentCoreSDKRuntime-...
+✓ Dependencies installed with uv       aarch64-manylinux2014 (cross-compiled)
+✓ Deployment package ready             88.31 MB
+✓ Uploaded to S3                       .../panchayat/deployment.zip
+✓ OpenTelemetry instrumentation enabled (aws-opentelemetry-distro detected)
+✗ CreateAgentRuntime                   maxAgents limit exceeded
+```
+
+So: **uv cross-compiles our dependencies for Linux ARM64 from an amd64 Windows
+box**, the package builds and uploads, and the toolkit auto-detects our otel
+pin. Only the create call fails, and it fails on account quota.
+
+When the account clears this is one command. Nothing needs rebuilding — the
+dependency zip is cached locally and the package is already in S3.
 
 Checked against the installed toolkit rather than assumed:
 
@@ -171,6 +210,31 @@ Checked against the installed toolkit rather than assumed:
 
 **What IS lost is the Dockerfile's `ENV` block**, and two of those are
 load-bearing enough to fail silently:
+
+**Two prerequisites on Windows, both discovered the hard way:**
+
+```bash
+pip install uv        # direct_code_deploy resolves deps with uv, hard requirement
+export PATH="$PWD/scripts:$PATH"    # puts our `zip` shim on PATH
+```
+
+`uv` is real — the toolkit shells out to it to cross-compile dependencies for
+Linux ARM64. `zip` is **not**: `agentcore` refuses to start without a `zip` on
+PATH (`shutil.which("zip")`, two places) and then never executes one, because
+`utils/runtime/package.py` builds every archive with Python's `zipfile` module.
+Stock Windows has no `zip`, so that spurious check makes the toolkit's own
+recommended path unreachable. `scripts/zip.cmd` + `scripts/zip_shim.py` satisfy
+it with a real working implementation rather than an empty stub — an empty one
+would upload nothing the day the toolkit does call it.
+
+**Changing deployment type needs the local config cleared first.** The CLI
+refuses (`Cannot change deployment type from 'container' to ...`) based purely
+on `deployment_type` in `.bedrock_agentcore.yaml` — it is a client-side guard,
+not an AWS constraint; `UpdateAgentRuntime` swaps the artifact on the same
+agent id happily. **Do not run `agentcore destroy` to get around it**: that
+deletes the ECR repository and IAM roles you want to keep. Delete
+`.bedrock_agentcore.yaml` and `.bedrock_agentcore/` instead, which is local
+state only.
 
 ```bash
 agentcore configure --entrypoint app.py --name panchayat \
