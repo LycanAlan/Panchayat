@@ -214,8 +214,13 @@ def main() -> None:
     n_true = sum(1 for *_, truth in pairs if truth)
     print(f"corpus: {len(corpus.faults)} faults over {args.days} days in a ward "
           f"of {args.households}")
+    # Guarded: fault counts are Poisson, so a short run (--days 1) readily
+    # produces a corpus with no faults at all, and `reported / affected` then
+    # raised ZeroDivisionError after building the corpus and before the sweep
+    # ran -- a crash instead of the honest "this run found nothing".
+    share = f"({reported / affected:.0%})" if affected else "(no faults in this corpus)"
     print(f"        {reported} of {affected} affected households reported "
-          f"({reported / affected:.0%}) -- the rest stayed silent")
+          f"{share} -- the rest stayed silent")
     print(f"        {len(pairs)} pairs, {n_true} of them the same fault")
 
     renorm, full, transfer = [], [], []

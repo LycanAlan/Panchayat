@@ -147,12 +147,28 @@ class PatternWatch:
         taken unilaterally.
         """
         since = self.clock.now() - timedelta(hours=self.window_hours)
-        segments, seen_segments = [], set()
+
+        # Both spellings, when they differ. The de-duplication folds segments
+        # through normalise_id() and then queried with the RAW string, and both
+        # backends match the segment byte-exactly -- memstore with `==`,
+        # core/store.py by building "SEG#" + segment into the GSI key. So a
+        # case carrying "Ward12-4thCross" whose claims were stored as
+        # "ward12-4thcross" retrieved nothing from that street: no error, no
+        # log, and the fan-out that exists so a fault spanning two streets is
+        # fully retrieved silently returned half of it.
+        #
+        # core/scoring.py states the premise that makes this reachable --
+        # "casing and stray spaces are the normal condition rather than the
+        # exception" -- and topology_score tolerates it while retrieval did
+        # not. Normalising at WRITE time is the real fix and is a storage
+        # decision, so it is raised rather than taken here; querying both
+        # costs one extra read only when the spellings actually differ.
+        segments, seen_raw = [], set()
         for segment in [claim.segment] + [c.segment for c in cases]:
-            key = normalise_id(segment)
-            if key and key not in seen_segments:
-                seen_segments.add(key)
-                segments.append(segment)
+            for spelling in (segment, normalise_id(segment)):
+                if spelling and spelling not in seen_raw:
+                    seen_raw.add(spelling)
+                    segments.append(spelling)
 
         out: dict[str, Claim] = {}
         for segment in segments:
@@ -195,6 +211,24 @@ class PatternWatch:
         # Until then the safe move is to leave them alone. Raised on STATUS.md.
         spoken_for = {cid for c in cases if c.case_id != cases[0].case_id
                       for cid in c.claim_ids}
+
+        if claim.claim_id in spoken_for:
+            # THE TRIGGERING CLAIM IS NOT EXEMPT. graph/request_path.py mints a
+            # fresh Case per report, so by the time the stream record fires
+            # this claim usually sits on its own open case -- which
+            # _cases_in_flight returns alongside the older ones. It was then
+            # put into candidate_claim_ids unconditionally and its household
+            # joined cases[0] anyway, while its own case stayed alive with its
+            # own deadline and tier. The Watchdog files both for one fault:
+            # the duplicate hard rule 5 exists to prevent, with provenance
+            # split_case cannot reconcile (hard rule 6).
+            #
+            # Same conclusion the comment above reaches for everyone else's
+            # claims: without cross-case merge provenance, the safe move is to
+            # leave it alone.
+            emit(Tag.PATTERN, "trigger_already_on_a_case",
+                 case_id=cases[0].case_id, claim_id=claim.claim_id)
+            return None
 
         scores, skipped = [], 0
         for other in self._candidates(claim, cases):
@@ -371,6 +405,20 @@ class PatternWatch:
 
         get_claim = getattr(self.store, "get_claim", None)
         rejected = set(proposal.rejected_claim_ids)
+        # SNAPSHOT BEFORE THE WRITES, not a second read after them.
+        #
+        # `after = get_case(...)` was compared against `case`, but memstore
+        # hands back the LIVE object -- verified, `get_case(id) is case` -- and
+        # add_household_to_case mutates it in place. So `after is case`, the
+        # comparison is a value against itself, and `escalation_requested`
+        # could never fire on the memory backend. On DynamoDB _case_from()
+        # rebuilds a fresh Case, so the same line DOES emit there.
+        #
+        # That is a backend divergence the contract tests cannot see, on the
+        # event STATUS.md and the cross-lane handoff both name as the agreed
+        # escalation hand-off to Raghav's climb(). Offline, it silently never
+        # arrived. An int copied before the writes cannot alias anything.
+        corroboration_before = case.corroboration
         joined = 0
         for claim_id in proposal.candidate_claim_ids:
             if claim_id in rejected:
@@ -405,7 +453,7 @@ class PatternWatch:
             f"{after.corroboration} household(s) corroborate, "
             f"{recurrence} prior case(s) on {case.feeder_id}"))
 
-        if after.corroboration > case.corroboration:
+        if after.corroboration > corroboration_before:
             # A request, not a write. See the docstring.
             emit(Tag.PATTERN, "escalation_requested", case_id=case.case_id,
                  current_tier=case.escalation_tier,

@@ -14,6 +14,8 @@ from __future__ import annotations
 import pathlib
 from datetime import datetime, timedelta
 
+import pytest
+
 from agents import remedy
 from core import db, fakes
 from core.types import CaseStatus, Service
@@ -166,7 +168,7 @@ def test_a_built_case_carries_the_corroboration_it_claims():
     big = [f for f in corpus.faults
            if len(f.claims) >= 5 and f.service == Service.WATER]
     if not big:
-        return          # this seed produced no large water fault; not a failure
+        pytest.skip("this seed produced no large water fault")
 
     case = dc._build_case(big[0], corpus.households, 5, clock)
     assert case is not None
@@ -221,4 +223,120 @@ def test_resolution_should_agree_with_case_status_once_the_watchdog_writes_it():
         assert stored.status is not CaseStatus.RESOLVED, (
             "RESOLVED is being written now -- delete this branch and assert "
             "agreement instead")
+    db.reset()
+
+
+# --------------------------------------------- the three harness defects
+#
+# Fixed by Ali, covering Kartik's lane at his request. Each of these pins a
+# defect that made the harness report a number rather than measure one.
+
+
+def test_a_short_case_is_discarded_rather_than_counted_at_the_wrong_N():
+    """N is the x-axis -- the independent variable the whole density thesis is
+    read against.
+
+    The joiners go through Pattern Watch's real merge path, which runs
+    Anti-Abuse, which can reject them. The old guard read
+    `return back if back and back.corroboration == n else back` -- the same
+    value on both branches, so a rejected joiner put a 12-household case in
+    the N=20 column.
+    """
+    from unittest.mock import patch
+
+    from data.corpus.generator import generate_corpus
+
+    db.reset()
+    clock = _clock()
+    corpus = generate_corpus(n_households=900, days=20, seed=311,
+                             households_per_feeder=60,
+                             geography=dc.curated_geography())
+    big = [f for f in corpus.faults
+           if len(f.claims) >= 5 and f.service == Service.WATER]
+    if not big:
+        pytest.skip("this seed produced no large water fault")
+
+    # Make the merge admit nobody, which is what a rejecting Anti-Abuse does.
+    with patch.object(dc.pattern_watch.PatternWatch, "apply_upgrade",
+                      lambda self, proposal: None):
+        case = dc._build_case(big[0], corpus.households, 5, clock)
+
+    assert case is None, "a case short of its N must be discarded, not counted"
+    db.reset()
+
+
+def test_every_household_that_reported_the_fault_reaches_the_table():
+    """Only the first N join the case. The rest are real reports from real
+    households on the same segment, and in the deployed system every one
+    arrives through put_claim and sits there unmerged.
+
+    Writing only the joiners was an artifact of how the harness builds a case,
+    not a property of the world -- and every closure check reads the segment,
+    so all of them were reading a table missing most of its claims.
+    """
+    from data.corpus.generator import generate_corpus
+
+    db.reset()
+    clock = _clock()
+    corpus = generate_corpus(n_households=900, days=20, seed=311,
+                             households_per_feeder=60,
+                             geography=dc.curated_geography())
+    big = [f for f in corpus.faults
+           if len(f.claims) >= 8 and f.service == Service.WATER]
+    if not big:
+        pytest.skip("this seed produced no large water fault")
+
+    fault = big[0]
+    case = dc._build_case(fault, corpus.households, 3, clock)
+    assert case is not None
+
+    missing = [c.claim_id for c in fault.claims
+               if db.get_claim(c.claim_id) is None]
+    assert not missing, (
+        str(len(missing)) + " of " + str(len(fault.claims))
+        + " claims never reached the table")
+
+    # ...and the non-joiners are on the segment WITHOUT being on the case.
+    assert len(case.claim_ids) == 3
+    db.reset()
+
+
+def test_a_non_joining_household_is_not_granted_consent_it_never_gave():
+    """Consent is the one thing this harness asserts about households it did
+    not measure, and it asserts it only for the ones joining a collective
+    filing. A household that merely reported has been asked for nothing."""
+    from data.corpus.generator import generate_corpus
+
+    db.reset()
+    clock = _clock()
+    corpus = generate_corpus(n_households=900, days=20, seed=311,
+                             households_per_feeder=60,
+                             geography=dc.curated_geography())
+    big = [f for f in corpus.faults
+           if len(f.claims) >= 8 and f.service == Service.WATER]
+    if not big:
+        pytest.skip("this seed produced no large water fault")
+
+    fault = big[0]
+    dc._build_case(fault, corpus.households, 3, clock)
+
+    for claim in fault.claims[3:]:
+        stored = db.get_claim(claim.claim_id)
+        assert stored is not None
+        assert not stored.consent_scopes, (
+            "a household that only reported was granted a consent scope")
+    db.reset()
+
+
+def test_the_sweep_reports_what_it_threw_away():
+    """Silent discarding thins the right-hand end of the curve, and three
+    samples at N=20 read exactly like twenty-five."""
+    run = dc.curve(repeats=2, n_values=(1, 3))
+
+    assert set(run.results) == {1, 3}
+    for n in (1, 3):
+        assert run.attempts[n] >= len(run.results[n]), (
+            "attempts must account for every kept sample")
+        assert n in run.no_fault
+        assert n in run.short
     db.reset()

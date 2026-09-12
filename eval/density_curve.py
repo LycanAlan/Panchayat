@@ -135,6 +135,9 @@ class Outcome_:
     desk_outcome: str
     disputed_as_shipped: bool
     disputed_corrected: bool
+    # GROUND TRUTH, read from the desk's own ticket -- not inferred by us.
+    # None when nothing was filed or the desk never closed it.
+    desk_false_closed: bool | None = None
 
     def resolved(self, corrected: bool) -> bool:
         """Closed by the institution AND the closure survived the check.
@@ -189,6 +192,26 @@ def _build_case(fault, households, n: int, clock: FixedClock) -> Case | None:
                                 ConsentScope.JOIN_COLLECTIVE]
         db.put_claim(claim)
 
+    # EVERY OTHER HOUSEHOLD THAT REPORTED THIS FAULT ALSO REACHES THE TABLE.
+    #
+    # Only the first N join the case; the rest are real reports from real
+    # households on the same segment that Pattern Watch did not merge. In the
+    # deployed system every one of them arrives through put_claim() and simply
+    # sits there, unmerged. Writing only the joiners was an artifact of how
+    # this harness builds a case, not a property of the world it models --
+    # measured, a fault with 39 claims put 3 in the table, so ~92% of the
+    # street did not exist as far as any closure check could tell.
+    #
+    # Every dispute check reads the segment. All of them have been reading a
+    # table missing most of its claims.
+    #
+    # No consent scopes on these: consent is the one thing this harness
+    # asserts about households it did not measure, and it asserts it only for
+    # the ones actually joining a collective filing. A household that merely
+    # reported has been asked for nothing.
+    for claim in fault.claims[n:]:
+        db.put_claim(claim)
+
     first = joining[0]
     case = Case(
         service=fault.service, segment=first.segment, feeder_id=first.feeder_id,
@@ -207,7 +230,27 @@ def _build_case(fault, households, n: int, clock: FixedClock) -> Case | None:
         watch.apply_upgrade(proposal)
 
     back = db.get_case(case.case_id)
-    return back if back and back.corroboration == n else back
+    if back is None or back.corroboration != n:
+        # RETURN NONE, not the short case. This line used to read
+        # `return back if back and back.corroboration == n else back` --
+        # a guard that returns the same value on both branches, so there was
+        # no guard.
+        #
+        # It matters because the joiners go through Pattern Watch's real merge
+        # path, which runs Anti-Abuse, which can reject them (same household
+        # twice, wrong feeder, unregistered address). A rejected joiner gives a
+        # case with fewer than N households that still lands in results[N] --
+        # so the N=20 column could hold 12- and 15-household cases. N is the
+        # x-axis. It is the independent variable the entire density thesis is
+        # read against.
+        #
+        # `run_one` propagates None and curve()'s loop increments `attempt`
+        # without `made`, so the sample is discarded and retried. No new
+        # control flow -- but see the discard counting in curve(): silently
+        # dropping samples thins the right-hand end of the curve, which is the
+        # same defect wearing a different hat.
+        return None
+    return back
 
 
 def run_one(fault, households, n: int, desk: Desk, clock: FixedClock) -> Outcome_ | None:
@@ -261,16 +304,53 @@ def run_one(fault, households, n: int, desk: Desk, clock: FixedClock) -> Outcome
     as_shipped = watchdog_agent.reconcile_closure(case.case_id, clock=clock)
     corrected = corrected_dispute(case.case_id, clock)
 
+    # THE ORACLE. The desk decided `will_false_close` at accept() and set
+    # `actually_resolved` at close(), so whether a closure was genuine is a
+    # fact it already holds -- we read it instead of inferring it.
+    #
+    # This reaches into Desk's internal ticket state, which is the
+    # institutions lane's. That is legitimate for an eval harness reading an
+    # oracle and WRONG for anything on a live path: the whole premise of the
+    # A2A boundary is that our side cannot see inside theirs. Nothing outside
+    # eval/ may do this. Flagged on #10, where reconcile_closure's look-back
+    # lives.
+    ticket = desk.tickets.get(reply.ref)
+    false_closed = None
+    if ticket is not None and ticket.status == "closed":
+        false_closed = bool(ticket.will_false_close)
+
     return Outcome_(n=n, case_id=case.case_id, filed=True,
                     desk_outcome=polled.outcome.value,
                     disputed_as_shipped=as_shipped,
-                    disputed_corrected=corrected)
+                    disputed_corrected=corrected,
+                    desk_false_closed=false_closed)
+
+
+@dataclass
+class CurveRun:
+    """What a sweep produced, and what it threw away getting there.
+
+    `discards` is not diagnostics. A sample that cannot be built is dropped and
+    retried, and dropping silently thins the right-hand end of the curve --
+    the end the entire thesis is about. Three samples at N=20 read exactly
+    like twenty-five unless the count is on the page, so reporting the
+    attrition IS the finding, not a footnote to it.
+    """
+    results: dict[int, list[Outcome_]]
+    # per N: how many attempts found no fault big enough, and how many built a
+    # case that came back with the wrong corroboration.
+    no_fault: dict[int, int]
+    short: dict[int, int]
+    attempts: dict[int, int]
 
 
 def curve(profile_name: str = "bwssb", seed: int = 7,
-          n_values=N_VALUES, repeats: int = 25) -> dict[int, list[Outcome_]]:
+          n_values=N_VALUES, repeats: int = 25) -> CurveRun:
     """Drive `repeats` cases at each N and collect what happened to each."""
     results: dict[int, list[Outcome_]] = {n: [] for n in n_values}
+    no_fault: dict[int, int] = {n: 0 for n in n_values}
+    short: dict[int, int] = {n: 0 for n in n_values}
+    attempts: dict[int, int] = {n: 0 for n in n_values}
 
     # ONE desk for the whole run, and this is not an optimisation.
     # Desk seeds its RNG from the profile NAME -- "calibrated, not moody", so a
@@ -310,13 +390,21 @@ def curve(profile_name: str = "bwssb", seed: int = 7,
             big = [f for f in corpus.faults
                    if len(f.claims) >= n and f.service == Service.WATER]
             if not big:
+                no_fault[n] += 1
                 continue
             got = run_one(big[0], corpus.households, n, desk, clock)
             if got is not None:
                 results[n].append(got)
                 made += 1
+            else:
+                # _build_case refused: the case came back without the
+                # corroboration it claimed. Counted, because a curve that
+                # quietly drops these is the N-guard bug again one level up.
+                short[n] += 1
+        attempts[n] = attempt
     db.reset()
-    return results
+    return CurveRun(results=results, no_fault=no_fault, short=short,
+                    attempts=attempts)
 
 
 def _rate(rows: list[Outcome_], corrected: bool) -> float:
@@ -344,6 +432,81 @@ def _table(title: str, results, corrected: bool, note: str) -> None:
               f"      {100 * _rate(of_filed, corrected):>6.1f}%")
 
 
+def _truth_table(run: CurveRun) -> None:
+    """What the desk actually did, against what our rule noticed.
+
+    This replaces a table driven by `corrected_dispute`, which measured
+    nothing. Before every claim reached the table it could not return True at
+    all -- so it reported the desk's raw close rate with false closures
+    counted as resolutions, the precise inversion `Outcome_.resolved`'s own
+    docstring exists to prevent. Afterwards it mostly agrees with the broken
+    rule instead. Neither reading is a measurement.
+
+    Making it discriminate needs claims created AFTER closure, which needs
+    households to re-report following a false closure. The corpus does not
+    model that, and a re-report rate has no data behind it -- a headline
+    number that is a function of an invented constant is issue #11 wearing a
+    different hat.
+
+    So: report what is already true rather than inferring it. The desk decided
+    `will_false_close` at accept(); we read it. That gives a defensible
+    sentence with no invented constant in it, and it measures our rule against
+    truth instead of measuring it against a world built for it to succeed in.
+    """
+    print("\nGROUND TRUTH -- what the desk did, and what we caught")
+    print("  Read from the desk's own ticket state. Oracle only; nothing "
+          "outside eval/ may do this.")
+    print("   N   filed   closed   FALSE(truth)   flagged   FALSE ALARMS   TRUE res.")
+    for n, rows in sorted(run.results.items()):
+        if not rows:
+            print(f"  {n:>2}       -        -              -         -"
+                  f"              -         n/a")
+            continue
+        filed = sum(1 for r in rows if r.filed)
+        closed = [r for r in rows if r.desk_false_closed is not None]
+        false_ = [r for r in closed if r.desk_false_closed]
+        genuine = [r for r in closed if not r.desk_false_closed]
+
+        # "flagged", NOT "caught", and the false-alarm column sits beside it.
+        #
+        # The first version of this table printed caught/missed and nothing
+        # else, which claimed detection it had not computed -- the
+        # semantic_available lesson in a new place. reconcile_closure disputes
+        # essentially EVERY realistic closure (this file's own docstring says
+        # so, and a test pins it), so "caught" printed at ~100% and "missed"
+        # at 0 for a rule that is not discriminating at all. A reader would
+        # have quoted that as detection.
+        #
+        # With the genuine closures it also disputed printed next to it, the
+        # two columns move together and the rule's indiscriminacy is visible
+        # on the page instead of hidden by a flattering ratio.
+        flagged = sum(1 for r in false_ if r.disputed_as_shipped)
+        alarms = sum(1 for r in genuine if r.disputed_as_shipped)
+
+        # Resolution against TRUTH: the desk closed it and the closure was
+        # genuine. Not "the desk closed it", and not "our rule stayed quiet".
+        rate = 100 * len(genuine) / len(rows) if rows else 0.0
+        print(f"  {n:>2}    {filed:>4}     {len(closed):>4}       "
+              f"{len(false_):>4}       {flagged:>4}          "
+              f"{alarms:>4}        {rate:>6.1f}%")
+
+    print("  FALSE ALARMS = genuine closures the shipped rule also disputed.")
+    print("  If it tracks the flagged column, the rule is not discriminating.")
+
+
+def _attrition(run: CurveRun) -> None:
+    """How many samples were thrown away to get the ones above.
+
+    On the page, not in a comment. Silent discarding thins the right-hand end
+    of the curve, and three samples at N=20 read exactly like twenty-five.
+    """
+    print("\nSAMPLE ATTRITION -- read this before quoting any row above")
+    print("   N   kept   attempts   no fault big enough   built short")
+    for n, rows in sorted(run.results.items()):
+        print(f"  {n:>2}   {len(rows):>4}   {run.attempts.get(n, 0):>8}"
+              f"   {run.no_fault.get(n, 0):>19}   {run.short.get(n, 0):>11}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--profile", default="bwssb")
@@ -351,7 +514,8 @@ def main() -> None:
     ap.add_argument("--repeats", type=int, default=25)
     args = ap.parse_args()
 
-    results = curve(args.profile, args.seed, repeats=args.repeats)
+    run = curve(args.profile, args.seed, repeats=args.repeats)
+    results = run.results
 
     profile = load_profile(args.profile)
     print(f"density curve -- {profile.name}, a FIXED institution profile")
@@ -366,12 +530,11 @@ def main() -> None:
            results, corrected=False,
            note="NOT A FINDING. See the note below the second table.")
 
-    _table("WITH THE DISPUTE RULE CORRECTED -- claims not already on the case",
-           results, corrected=True,
-           note="What the curve looks like once a closure can stand at all.")
+    _truth_table(run)
+    _attrition(run)
 
     print("""
-READ THE TWO TABLES TOGETHER, and do not quote the first one on its own.
+READ ALL THREE TABLES TOGETHER, and do not quote the first one on its own.
 
 reconcile_closure counts every claim on the segment in the last seven days as
 contradicting the closure, including the claims that OPENED the case. With
@@ -380,11 +543,36 @@ that window, so it disputes everything and the first curve is flat at zero
 whatever N is. That is an INSTRUMENT LIMITATION, not evidence about collective
 pressure, and a flat line means the opposite thing here.
 
-The second table applies the rule reconcile_closure's own docstring describes
--- "live claims from OTHER households" -- by ignoring claims already recorded
-on the case. That is one line in agents/watchdog.py and it is Raghav's to
-write; it is applied here so the group can see what the number becomes, not
-substituted for his.
+THE SECOND TABLE IS GROUND TRUTH, NOT ANOTHER RULE OF OURS. It used to be a
+second dispute rule -- "live claims from OTHER households", the one
+reconcile_closure's own docstring describes -- and that table measured
+nothing. Before every claim reached the table it could not return True at all,
+so it reported the desk's raw close rate with false closures counted as
+resolutions: the exact inversion Outcome_.resolved exists to prevent. After
+the fix it mostly agrees with the broken rule instead. Neither reading is a
+measurement, so it is gone.
+
+Making that rule discriminate needs claims created AFTER a closure, which
+needs households to re-report once a desk falsely closes on them. The corpus
+does not model that, and the re-report rate has no data behind it -- a
+headline number that is a function of a constant we invented is issue #11
+wearing a different hat. corrected_dispute() is still in this file and still
+tested, because it remains a real proposal for agents/watchdog.py. It is just
+not presented as evidence.
+
+What replaces it is the desk's own ticket state. It decided will_false_close
+at accept() and set actually_resolved at close(), so whether a closure was
+genuine is a fact it already holds. Reading it measures OUR rule against
+truth, rather than measuring it against a world we built for it to succeed in.
+That reaches inside the institutions lane, which is legitimate for a harness
+reading an oracle and WRONG anywhere near a live path -- the A2A boundary
+exists precisely so our side cannot see in. Nothing outside eval/ may do it.
+
+THE THIRD TABLE IS THE ONE THAT STOPS YOU OVERCLAIMING. Samples that cannot be
+built are dropped and retried, and dropping them silently thins the right-hand
+end of the curve -- which is the end this whole thesis is about. Three samples
+at N=20 read exactly like twenty-five. Check the attrition row before quoting
+any rate above it.
 
 Nothing in the repo writes CaseStatus.RESOLVED either. This harness decides
 resolution from the desk reply and the dispute verdict, which is a state

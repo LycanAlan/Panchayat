@@ -869,14 +869,32 @@ def put_filing_once(filing: Filing) -> tuple[bool, Filing]:
     except ClientError as exc:
         if not _condition_failed(exc):
             raise
-        stored = _t().get_item(
-            Key={"PK": "CASE#" + filing.case_id, "SK": "FILING#" + key}
-        ).get("Item")
-        if not stored:
-            # Only a racing delete between the failed condition and this read
-            # gets here; the caller's filing is then the only copy we have.
+        # FOLLOW THE POINTER, do not read under the caller's own case.
+        #
+        # The pointer Put is conditional on
+        # `attribute_not_exists(PK) OR case_id = :cid`, so a filing for
+        # case_two reusing case_one's idempotency_key passes its OWN
+        # attribute_not_exists(SK) check (different partition) and fails the
+        # pointer's -- rolling the whole transaction back. Reading under
+        # CASE#case_two then found nothing, and this returned
+        # `(False, filing)`: the caller's own object, which exists in no
+        # table and whose key resolves to a different case. agents/watchdog
+        # and graph/request_path both do `filing = stored` on that.
+        #
+        # memstore keys filings by idempotency_key globally and returns the
+        # genuinely stored one, so the two backends disagreed -- and
+        # CLAUDE.md's rule is that if they differ, the DynamoDB one is wrong.
+        # get_filing() resolves the key through the pointer to whichever case
+        # actually owns it, which is what "first write wins" means.
+        #
+        # The old comment here ("only a racing delete gets here") was true
+        # before this commit added the pointer condition.
+        existing = get_filing(key)
+        if existing is None:
+            # Genuinely nothing stored: a racing delete between the failed
+            # condition and this read. The caller's filing is the only copy.
             return False, filing
-        return False, _filing_from(stored)
+        return False, existing
 
 
 def get_filing(idempotency_key: str) -> Filing | None:

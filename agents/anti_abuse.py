@@ -176,7 +176,17 @@ class AntiAbuse:
             return ("No feeder_id on this claim: it has not been routed, so it "
                     "has not been shown to sit on this trunk main. Treating a "
                     "blank as a match is exactly how a decoy gets in.")
-        if want and got != want:
+        if not want:
+            # The SAME hazard as the blank claim three lines up, and it was
+            # guarded there and open here. `if want and ...` short-circuits, so
+            # a Case with feeder_id="" -- the dataclass default, a case created
+            # before routing, or a split child of one -- accepted every claim
+            # on every trunk main. Treating a blank as a match is exactly how a
+            # decoy gets in, in both directions.
+            return ("No feeder_id on this case: it has not been routed, so "
+                    "nothing has been shown to sit on the same trunk main as "
+                    "it. A blank is not a wildcard.")
+        if got != want:
             return ("Different trunk main: this claim's feeder_id is "
                     f"{claim.feeder_id} and the case is on {case.feeder_id}. "
                     "Same street is not the same fault.")
@@ -207,13 +217,25 @@ class AntiAbuse:
             # Nothing to gate against. Refusing everything is right: a merge
             # into a case we cannot read is not a merge we can justify.
             emit(Tag.PATTERN, "verify_no_case", case_id=proposal.case_id)
+            # ADD to the refusals, do not replace them. Twelve lines up this
+            # function takes care to seed `rejected`/`reasons` from the
+            # proposal because "every stage in the chain may only ADD
+            # refusals" -- and then this branch built a fresh dict over the
+            # candidates and passed it to replace(), discarding whatever
+            # adjudicate() had written. That is the one LLM call in the lane,
+            # and the trace UI renders rejection_reasons: a merge the model
+            # refused showed the generic "No such case" text instead of the
+            # reason it actually gave. The rejected list lost ids too.
+            for cid in proposal.candidate_claim_ids:
+                if cid not in rejected:
+                    rejected.append(cid)
+                reasons.setdefault(cid, (
+                    "No such case: the case this merge would join could not "
+                    "be read, so nothing about it can be checked."))
             return replace(
                 proposal,
-                rejected_claim_ids=list(proposal.candidate_claim_ids),
-                rejection_reasons={
-                    cid: ("No such case: the case this merge would join could "
-                          "not be read, so nothing about it can be checked.")
-                    for cid in proposal.candidate_claim_ids},
+                rejected_claim_ids=rejected,
+                rejection_reasons=reasons,
                 verified_household_count=0,
             )
 
