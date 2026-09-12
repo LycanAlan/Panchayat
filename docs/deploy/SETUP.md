@@ -44,7 +44,7 @@ otel trap" below; an earlier note here claiming otherwise was wrong.
 | Stage | Turns on | State |
 |---|---|---|
 | **1. Runtime** | the request path — a household reports, we route and draft | **DONE, live in ap-south-2** |
-| **2. Scheduler** | the temporal path — the SLA clock, breach, escalation | needs a Lambda that is not packaged yet |
+| **2. Scheduler** | the temporal path — the SLA clock, breach, escalation | **DONE, live in ap-south-2** |
 | **3. Streams** | the ambient path — clustering | handler exists; needs a Lambda + event-source mapping |
 | **4. Desks** | the institution simulators over A2A | runs locally today, no cloud needed |
 
@@ -388,14 +388,55 @@ call.** Stages 2–4 are not blocking that.
 
 ---
 
-## Stage 2 — the scheduler, so cases escalate
+## Stage 2 — the scheduler. DONE 13 Sep, verified end to end
 
-Without this, `RealClock.schedule()` raises `SchedulerNotConfigured`, no wake
-is ever booked, and **a filed case is never chased.** The SLA clock is the
-product; this is the stage that makes it true in production.
+```
+Lambda    panchayat-watchdog          arm64, python3.12, handlers.temporal.handler
+Roles     panchayat-watchdog-exec     table + logs + books the next wake
+          panchayat-scheduler         EventBridge assumes this to invoke the Lambda
+```
 
-**Not yet attempted.** Written from what `core/clock.py` and
-`handlers/temporal.py` require. Budget real time.
+**Proven by filing a real report at the live endpoint**, not from a test:
+
+```
+report          -> case_ea0c49e96c9e, drafted, SLA 2026-09-19
+EventBridge     -> pnc-case_ea0c49e96c9e-expire_draft
+                   at(2026-09-19T20:37:48) -> panchayat-watchdog
+                   ActionAfterCompletion: DELETE
+fire the wake   -> {"woken": 1, "failed": 0}
+DynamoDB        -> status drafted -> dormant
+```
+
+An unsigned draft that expired becomes DORMANT, which is the correct
+transition. **The chain Runtime → EventBridge → Lambda → Watchdog → DynamoDB
+works.**
+
+### Two things that would have broken it quietly
+
+**The package is 15.9 MB, not 88 MB.** `handlers/temporal.py` needs far less
+than `app.py`: measured by importing it and diffing `sys.modules`, it wants
+our code, numpy, and boto3 — which the Lambda runtime provides. **No strands,
+no bedrock_agentcore, no opentelemetry.** Those are most of the AgentCore
+package and none is on this path. arm64 because numpy 2.5.3 publishes no
+manylinux_2_17 x86_64 wheel.
+
+**The Lambda's own role needs `scheduler:CreateSchedule` and `PassRole`, and
+that is not a copy-paste of the Runtime's.** `climb()` books the NEXT wake and
+`climb()` runs INSIDE this Lambda. A role with only DynamoDB and logs would
+chase a case exactly once and then go silent — which reads as success.
+`WATCHDOG_LAMBDA_ARN` and `SCHEDULER_ROLE_ARN` are set on the Lambda too, for
+the same reason; without them `RealClock.schedule()` raises
+`SchedulerNotConfigured` on the second hop.
+
+### Rebuilding the package
+
+```bash
+uv pip install --target build --python-platform aarch64-manylinux_2_28   --python-version 3.12 --only-binary=:all: numpy pyyaml python-dotenv
+cp -r agents core graph handlers institutions data build/
+# zip build/ and: aws lambda update-function-code --function-name panchayat-watchdog
+```
+
+### Historical — what this said before it was done
 
 ### 2.1 Package and create the Watchdog Lambda
 

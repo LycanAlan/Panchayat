@@ -62,7 +62,8 @@
         "arn:aws:iam::699073937307:role/AmazonBedrockAgentCoreSDK*",
         "arn:aws:iam::699073937307:role/AmazonBedrockAgentCoreRuntime*",
         "arn:aws:iam::699073937307:role/service-role/AmazonBedrockAgentCore*",
-        "arn:aws:iam::699073937307:role/codebuild-bedrock-agentcore*"
+        "arn:aws:iam::699073937307:role/codebuild-bedrock-agentcore*",
+        "arn:aws:iam::699073937307:role/panchayat-*"
       ]
     },
     {
