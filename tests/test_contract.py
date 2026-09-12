@@ -221,6 +221,35 @@ def test_the_stalled_queue_is_ordered_by_deadline_with_undated_last():
         early.case_id, late.case_id, undated.case_id]
 
 
+def test_the_stalled_queue_breaks_a_shared_deadline_tie_by_case_id():
+    """Two cases sharing a deadline must come back in the SAME order from
+    both backends, and until now nothing pinned what that order was.
+
+    store.py has always sorted `(sla_deadline is None, sla_deadline,
+    case_id)` -- case_id is the documented tiebreaker, see its stalled_cases
+    docstring. memstore's sort was `(sla_deadline is None, sla_deadline)`,
+    two elements, no third key. Python's sort is stable, so a tie there falls
+    back to whatever order `dict.values()` yields, which is INSERTION order
+    -- not case_id, and nothing a caller could reason about. Both answers
+    are "a case", so no equality-on-a-set test would ever have caught the
+    two backends disagreeing about which one comes first.
+
+    Inserted in the REVERSE of case_id order on purpose: a tiebreak that
+    silently falls back to insertion order would pass this test by
+    accident if the fixture happened to insert in case_id order already.
+    """
+    deadline = fakes.T0 + timedelta(days=5)
+    later = fakes.a_case(case_id="case_zzz_last", sla_deadline=deadline,
+                         sla_paused=True)
+    earlier = fakes.a_case(case_id="case_aaa_first", sla_deadline=deadline,
+                           sla_paused=True)
+    undated = fakes.a_case(case_id="case_mmm_undated", sla_deadline=None,
+                           sla_paused=True)
+    for case in (later, undated, earlier):
+        db.put_case(case)
+
+    assert [c.case_id for c in db.stalled_cases()] == [
+        earlier.case_id, later.case_id, undated.case_id]
 # ------------------------------------------------ the desk's reply, stored
 
 def test_the_desks_reference_survives_the_write():
