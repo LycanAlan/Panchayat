@@ -1,0 +1,111 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrPushTheImage",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:CreateRepository",
+        "ecr:DescribeRepositories",
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:SetRepositoryPolicy",
+        "ecr:GetRepositoryPolicy",
+        "ecr:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CodeBuildBuildsTheArm64Image",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:CreateProject",
+        "codebuild:UpdateProject",
+        "codebuild:StartBuild",
+        "codebuild:BatchGetBuilds",
+        "codebuild:BatchGetProjects",
+        "codebuild:ListProjects"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CodeBuildSourceBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:GetBucketLocation",
+        "s3:ListBucket",
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:PutBucketPolicy",
+        "s3:PutEncryptionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1",
+        "arn:aws:s3:::bedrock-agentcore-codebuild-sources-699073937307-us-east-1/*"
+      ]
+    },
+    {
+      "Sid": "CreateTheExecutionAndBuildRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:TagRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::699073937307:role/AmazonBedrockAgentCoreSDK*",
+        "arn:aws:iam::699073937307:role/AmazonBedrockAgentCoreRuntime*",
+        "arn:aws:iam::699073937307:role/service-role/AmazonBedrockAgentCore*",
+        "arn:aws:iam::699073937307:role/codebuild-bedrock-agentcore*"
+      ]
+    },
+    {
+      "Sid": "CreateAndInvokeTheRuntime",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:CreateAgentRuntime",
+        "bedrock-agentcore:UpdateAgentRuntime",
+        "bedrock-agentcore:GetAgentRuntime",
+        "bedrock-agentcore:ListAgentRuntimes",
+        "bedrock-agentcore:DeleteAgentRuntime",
+        "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+        "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
+        "bedrock-agentcore:GetAgentRuntimeEndpoint",
+        "bedrock-agentcore:ListAgentRuntimeEndpoints",
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadTheLogsWhenItFails",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
