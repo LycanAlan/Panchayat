@@ -24,6 +24,7 @@ Lane: platform
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -109,6 +110,26 @@ _UNSET = object()
 _intake_caller: Any = _UNSET
 
 
+#: Tokens spent by model calls made OUTSIDE the Graph, for THIS request.
+#:
+#: A ContextVar and not a module dict, for the reason this file's own
+#: docstring gives about the Graph: AgentCore runs sync entrypoints on a
+#: thread pool, so two households reporting at once share module state. A
+#: plain dict here would bill one household's tokens to the other's trace --
+#: the same class of bug, introduced by the thing that reports on it.
+_side_usage: ContextVar[dict[str, int] | None] = ContextVar(
+    "panchayat_side_usage", default=None)
+
+
+def _bank_usage(used: dict | None) -> None:
+    bucket = _side_usage.get()
+    if not used or bucket is None:
+        return
+    for k, v in used.items():
+        if isinstance(v, int):
+            bucket[k] = bucket.get(k, 0) + v
+
+
 def _intake_model():
     """A `str -> str` callable for `IntakeAgent`, or None when no model exists.
 
@@ -185,9 +206,21 @@ def _intake_model():
 
         def call(prompt: str) -> str:
             try:
-                return str(agent(prompt))
+                out = str(agent(prompt))
             except Exception as exc:  # noqa: BLE001 - see docstring
                 raise RuntimeError("intake model call failed: " + str(exc)[:200]) from exc
+            # THIS AGENT IS NOT A GRAPH NODE, so its tokens never reach the
+            # Graph's accumulated_usage. Measured on the deployed runtime: the
+            # model WAS called, two needs came back, and the response still
+            # reported totalTokens 0 -- which reads as "no AI ran" to anyone
+            # looking, and is the one claim this project cannot afford to get
+            # backwards in either direction. Banked here, added in _response().
+            try:
+                used = agent.event_loop_metrics.accumulated_usage
+                _bank_usage(dict(used) if used else None)
+            except Exception:  # noqa: BLE001 - never cost a report a metric
+                pass
+            return out
 
         _intake_caller = call
     except Exception:  # noqa: BLE001
@@ -888,6 +921,11 @@ def _response(ctx: RequestContext, result=None) -> dict:
     context, which is empty in exactly the way that says so.
     """
     usage = getattr(result, "accumulated_usage", None) if result else None
+    # Graph nodes plus anything the spine called beside them. See _bank_usage.
+    merged = dict(usage) if usage else {}
+    for k, v in (_side_usage.get() or {}).items():
+        merged[k] = merged.get(k, 0) + v
+    usage = merged
     return {
         "case_id": ctx.case_id,
         # .value, not str(): Strands' Status is a bare Enum, so str() renders
@@ -916,7 +954,7 @@ def _response(ctx: RequestContext, result=None) -> dict:
         "sla_deadline": (ctx.case.sla_deadline.isoformat()
                          if ctx.case and ctx.case.sla_deadline else None),
         # Free evidence for the cost argument. Log it from day one.
-        "usage": dict(usage) if usage else {},
+        "usage": usage,
         "stubbed_agents": ctx.trace.stubbed_agents,
         "trace": ctx.trace.to_dict(),
         "trace_text": ctx.trace.render(),
@@ -924,6 +962,8 @@ def _response(ctx: RequestContext, result=None) -> dict:
 
 
 def run_request_path(payload: dict) -> dict:
+    # One empty bucket per request. Set before anything can spend a token.
+    _side_usage.set({})
     case_id = payload.get("case_id") or new_id("case")
     ctx = RequestContext(
         payload=dict(payload), case_id=case_id,
