@@ -1,0 +1,314 @@
+/* ---------------------------------------------------------------
+   Paper. Grain, perforation, folds, punch holes, rubber ink.
+   Everything here is drawn — no raster assets.
+   --------------------------------------------------------------- */
+
+body {
+  position: relative;
+}
+
+/* grain: one turbulence filter, rasterised once by the browser,
+   pinned to the viewport so it never scrolls with content */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.055;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* ---- the document ----------------------------------------------
+   A municipal form: header block, ruled field rows, a signature
+   well, and a perforated tear edge. */
+
+.doc {
+  background: #fdfaf4;
+  border: 1px solid var(--rule-strong);
+  position: relative;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.doc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.15rem 0.7rem;
+  border-bottom: 2px solid var(--ink);
+}
+
+.doc-body {
+  padding: 0.35rem 1.15rem 1.15rem;
+}
+
+/* ruled field rows — dotted leaders like a real form */
+.field {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 11rem) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: baseline;
+  padding-block: 0.52rem;
+  border-bottom: 1px dotted var(--rule-strong);
+}
+
+.field:last-child {
+  border-bottom: 0;
+}
+
+.field > dt {
+  font-family: var(--sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.field > dd {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  font-variant-numeric: lining-nums tabular-nums;
+  word-break: break-word;
+}
+
+@media (max-width: 520px) {
+  .field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+}
+
+/* ruled writing area — the lines a clerk writes between */
+.ruled {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 1.69rem,
+    var(--rule-hair) 1.69rem,
+    var(--rule-hair) calc(1.69rem + 1px)
+  );
+  line-height: 1.7rem;
+  padding-block: 0.2rem 0.6rem;
+}
+
+/* perforated tear edge */
+.perf-bottom::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  background-image: radial-gradient(
+    circle at 3px 1.5px,
+    var(--paper) 1.5px,
+    transparent 1.6px
+  );
+  background-size: 8px 3px;
+}
+
+/* punch holes, the way a file is bound */
+.punched {
+  padding-left: 2.5rem;
+}
+
+.punched::before {
+  content: '';
+  position: absolute;
+  left: 0.95rem;
+  top: 12%;
+  bottom: 12%;
+  width: 9px;
+  background-image: radial-gradient(
+    circle at 4.5px 4.5px,
+    var(--paper-sunk) 4.5px,
+    transparent 4.7px
+  );
+  background-size: 9px 4.4rem;
+  background-repeat: repeat-y;
+  border-right: 1px dashed var(--rule);
+}
+
+@media (max-width: 620px) {
+  .punched {
+    padding-left: 1.15rem;
+  }
+  .punched::before {
+    display: none;
+  }
+}
+
+/* fold crease across a sheet */
+.creased::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 38%;
+  height: 3px;
+  border-top: 1px solid rgba(110, 101, 89, 0.22);
+  border-bottom: 1px solid rgba(253, 250, 244, 0.9);
+  pointer-events: none;
+}
+
+/* ---- marginalia: annotations in the gutter ---- */
+
+.marginalia {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  line-height: 1.7;
+}
+
+.marginalia b {
+  display: block;
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+/* a hand annotation — set in italic serif, slightly off-axis */
+.hand {
+  display: block;
+  margin-top: 0.55rem;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  color: var(--indigo);
+  text-transform: none;
+  letter-spacing: 0;
+  transform: rotate(-1.1deg);
+  transform-origin: left center;
+}
+
+.hand::before {
+  content: '↳ ';
+  font-style: normal;
+  color: var(--ink-faint);
+}
+
+/* ---- status tokens: printed, not pill-shaped ---- */
+
+.status {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 0.22em 0.5em 0.18em;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 1.35;
+}
+
+.status-open {
+  color: var(--indigo);
+}
+.status-breach {
+  color: var(--terracotta);
+}
+.status-closed {
+  color: var(--sage);
+}
+.status-disputed {
+  color: var(--terracotta);
+  background: rgba(184, 69, 47, 0.07);
+}
+
+/* ---- links & actions: underlines and rules, never filled pills ---- */
+
+.link {
+  border-bottom: 1px solid var(--rule-strong);
+  padding-bottom: 0.06em;
+  transition: border-color 0.25s var(--ease-paper), color 0.25s var(--ease-paper);
+}
+
+.link:hover {
+  border-bottom-color: var(--ink);
+}
+
+.action {
+  font-family: var(--sans);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 0.35em 0 0.3em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6em;
+  transition: gap 0.3s var(--ease-paper), color 0.3s var(--ease-paper);
+}
+
+.action:hover {
+  gap: 1em;
+  color: var(--indigo);
+  border-bottom-color: var(--indigo);
+}
+
+.action-indigo {
+  color: var(--indigo);
+  border-bottom-color: var(--indigo);
+}
+
+/* ---- the rubber stamp ---------------------------------------
+   Sage ink, rotated, imperfect edge, subtle bleed. Static by
+   design: a real stamp does not animate, and animating this one
+   would make a false closure look playful. */
+
+.stamp {
+  display: inline-block;
+  transform: rotate(-7deg);
+  transform-origin: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.stamp svg {
+  overflow: visible;
+}
+
+/* ---- registration marks & plate furniture ---- */
+
+.crop {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  border-color: var(--rule-strong);
+  border-style: solid;
+  border-width: 0;
+  pointer-events: none;
+}
+.crop-tl {
+  top: 0;
+  left: 0;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+.crop-tr {
+  top: 0;
+  right: 0;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+.crop-bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+.crop-br {
+  bottom: 0;
+  right: 0;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}

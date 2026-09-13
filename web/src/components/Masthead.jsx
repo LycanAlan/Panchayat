@@ -1,0 +1,55 @@
+import { NavLink, Link, useLocation } from 'react-router-dom'
+import { CASE } from '../data/case.js'
+import { MASTHEAD } from '../data/indic.js'
+
+const ENTRIES = [
+  { to: '/case', n: '01', label: 'Case', sub: 'PNC-2026-0912' },
+  { to: '/street', n: '02', label: 'Street', sub: 'Ward 12 layout' },
+  { to: '/process', n: '03', label: 'Process', sub: 'Seven stages' },
+  { to: '/about', n: '04', label: 'About', sub: 'Boundaries' },
+]
+
+/**
+ * A case index, not a navbar. The bar carries the same four things a
+ * file cover carries: whose file, which ward, what state, what is in it.
+ */
+export default function Masthead() {
+  const { pathname } = useLocation()
+
+  return (
+    <header className="masthead">
+      <div className="masthead-strip">
+        <div className="page masthead-strip-in">
+          <span className="micro">Ward {CASE.ward} · {CASE.ward_name} · Bengaluru</span>
+          <span className="micro masthead-strip-mid">Register of pursued complaints</span>
+          <span className="micro">
+            File {CASE.id} · <span className="ink-terracotta">{CASE.status}</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="page masthead-bar">
+        <Link to="/" className="wordmark" aria-label="Panchayat — home">
+          <span className="kn wordmark-kn">{MASTHEAD.kn}</span>
+          <span className="wordmark-en">{MASTHEAD.en}</span>
+        </Link>
+
+        <nav className="index" aria-label="Case index">
+          {ENTRIES.map((e) => (
+            <NavLink
+              key={e.to}
+              to={e.to}
+              className={({ isActive }) => `index-entry${isActive ? ' is-current' : ''}`}
+            >
+              <span className="index-n mono">{e.n}</span>
+              <span className="index-label">{e.label}</span>
+              <span className="index-sub">{e.sub}</span>
+            </NavLink>
+          ))}
+        </nav>
+      </div>
+
+      <div className={`masthead-seam${pathname === '/' ? ' is-home' : ''}`} />
+    </header>
+  )
+}

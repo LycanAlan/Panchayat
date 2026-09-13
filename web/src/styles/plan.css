@@ -1,0 +1,547 @@
+/* ---------------------------------------------------------------
+   The survey sheet. Line weights follow drawing convention:
+   structure heavy, services light, dimensions lightest.
+   --------------------------------------------------------------- */
+
+.plan {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.plan text {
+  font-family: var(--mono);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* Annotations sit over the drawing, so they carry their own paper —
+   the trick every draughtsman uses to letter across a hatch. */
+.plan .ann text,
+.plan .subject-flag text,
+.plan .plan-fault text,
+.plan .main-label,
+.plan .plan-fgl,
+.plan .valve text {
+  paint-order: stroke;
+  stroke: #fdfaf4;
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+
+.plan-t1 {
+  font-size: 13.5px;
+  letter-spacing: 2.2px;
+  fill: var(--ink);
+  font-weight: 500;
+}
+.plan-t2 {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  fill: var(--ink-muted);
+}
+.plan-t3 {
+  font-size: 10.5px;
+  letter-spacing: 1.1px;
+  fill: var(--ink-faint);
+}
+
+/* ---- plate ---- */
+.plan-plate rect {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+}
+.plan-corner {
+  stroke: var(--ink);
+  stroke-width: 1.1;
+  fill: none;
+}
+
+/* ---- legend ---- */
+.key-a {
+  stroke: var(--ink-muted);
+  stroke-width: 3.4;
+}
+.key-b {
+  stroke: var(--ink-muted);
+  stroke-width: 1.3;
+}
+.key-chip {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 1;
+}
+.key-chip-t {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  fill: var(--ink-muted);
+}
+.key-valve {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 1.2;
+}
+.key-tee {
+  fill: var(--rule-strong);
+}
+
+/* ---- ground ---- */
+.plan-grade-line {
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: plan-draw 1.5s var(--ease-paper) both;
+}
+
+@keyframes plan-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Each main gets a corridor. Two depths become two bands, and the
+   reader stops having to hold a y-coordinate in their head. */
+.lane {
+  fill: var(--paper-deep);
+  opacity: 0;
+  transition: opacity 0.7s var(--ease-paper) 0.35s, fill 0.6s var(--ease-paper);
+}
+.plan:not([data-stage='0']) .lane {
+  opacity: 0.55;
+}
+.plan[data-stage='2'] .lane[data-feeder='A'] {
+  fill: #f7ecd9;
+  opacity: 1;
+}
+.plan[data-stage='3'] .lane[data-feeder='A'] {
+  fill: #f7e6e0;
+  opacity: 1;
+}
+
+/* ---- properties ---- */
+.house-hit {
+  fill: transparent;
+  pointer-events: none;
+}
+.plan--live .house-hit {
+  pointer-events: all;
+  cursor: crosshair;
+}
+.plan--live .house {
+  outline: none;
+}
+
+.house-body,
+.house-roof {
+  fill: var(--paper);
+  stroke: var(--ink-muted);
+  stroke-width: 1.15;
+  stroke-linejoin: miter;
+  transition: stroke 0.5s var(--ease-paper), fill 0.5s var(--ease-paper),
+    stroke-width 0.5s var(--ease-paper);
+}
+
+.house-detail {
+  fill: none;
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  transition: stroke 0.5s var(--ease-paper);
+}
+
+.house-tank rect {
+  fill: var(--paper);
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+}
+.house-tank line {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+}
+
+.house-no {
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  fill: var(--ink-faint);
+  transition: fill 0.5s var(--ease-paper);
+}
+
+/* ---- the feeder tag ----
+   One letter under each door number. It is the fastest way to read
+   the drawing and the only part that survives being printed small. */
+.chip rect {
+  fill: var(--paper);
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  transition: stroke 0.45s var(--ease-paper), fill 0.45s var(--ease-paper),
+    stroke-width 0.45s var(--ease-paper);
+}
+.chip text {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  fill: var(--ink-muted);
+  transition: fill 0.45s var(--ease-paper);
+}
+.chip {
+  opacity: 0;
+  transition: opacity 0.5s var(--ease-paper) 0.3s;
+}
+.plan:not([data-stage='0']) .chip {
+  opacity: 1;
+}
+
+.house[data-feeder='A'] .chip rect {
+  stroke: var(--ink-muted);
+}
+.house[data-feeder='A'] .chip text {
+  fill: var(--ink);
+}
+
+.plan[data-stage='2'] .house[data-feeder='A'] .chip rect {
+  stroke: var(--marigold);
+  fill: #fdf4e6;
+  stroke-width: 1.4;
+}
+.plan[data-stage='2'] .house[data-feeder='A'] .chip text {
+  fill: var(--marigold);
+}
+.plan[data-stage='3'] .house[data-feeder='A'] .chip rect {
+  stroke: var(--terracotta);
+  fill: #faeeea;
+  stroke-width: 1.4;
+}
+.plan[data-stage='3'] .house[data-feeder='A'] .chip text {
+  fill: var(--terracotta);
+}
+
+/* the subject */
+.subject-flag {
+  opacity: 0;
+  transition: opacity 0.6s var(--ease-paper) 0.5s;
+}
+.plan:not([data-stage='0']) .subject-flag {
+  opacity: 1;
+}
+.subject-flag path {
+  fill: none;
+  stroke: var(--indigo);
+  stroke-width: 1;
+  stroke-dasharray: 3 2.5;
+}
+.subject-flag text {
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  fill: var(--indigo);
+}
+
+/* corroborating households — marigold once the feeder is traced */
+.house[data-state='claim'] .house-body,
+.house[data-state='claim'] .house-roof {
+  stroke: var(--marigold);
+  stroke-width: 2;
+  fill: #fdf4e6;
+}
+.house[data-state='claim'] .house-no {
+  fill: var(--marigold);
+}
+
+/* still dry after the closure — terracotta */
+.house[data-state='dispute'] .house-body,
+.house[data-state='dispute'] .house-roof {
+  stroke: var(--terracotta);
+  stroke-width: 2.2;
+  fill: #faeeea;
+}
+.house[data-state='dispute'] .house-no {
+  fill: var(--terracotta);
+}
+
+/* the house next door that is fine, and therefore proves the point */
+.house[data-state='decoy'] .house-body,
+.house[data-state='decoy'] .house-roof {
+  stroke: var(--indigo);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 2.5;
+}
+.house[data-state='decoy'] .house-no,
+.house[data-state='decoy'] .chip text {
+  fill: var(--indigo);
+}
+.house[data-state='decoy'] .chip rect {
+  stroke: var(--indigo);
+  stroke-width: 1.4;
+}
+
+.house[data-state='probe'] .house-body,
+.house[data-state='probe'] .house-roof {
+  stroke: var(--ink);
+  stroke-width: 2.2;
+  fill: var(--paper-deep);
+}
+.house[data-state='probe'] .house-no {
+  fill: var(--ink);
+}
+
+/* ---- Once the feeder is traced, everything off it steps back.
+   Not hidden — a drawing that deletes its context is a diagram —
+   but quiet enough that the family on Main A is what you see. ---- */
+.house,
+.service {
+  transition: opacity 0.6s var(--ease-paper);
+}
+
+.plan[data-stage='2'] .house[data-feeder='B']:not([data-state='decoy']):not([data-state='probe']),
+.plan[data-stage='3'] .house[data-feeder='B']:not([data-state='decoy']):not([data-state='probe']),
+.plan[data-stage='2'] .service[data-feeder='B']:not([data-state='decoy']):not([data-state='probe']),
+.plan[data-stage='3'] .service[data-feeder='B']:not([data-state='decoy']):not([data-state='probe']) {
+  opacity: 0.34;
+}
+
+/* a slow breath on the corroborating houses — three seconds in,
+   three out. Fast enough to notice, slow enough to ignore. */
+@media (prefers-reduced-motion: no-preference) {
+  .plan[data-stage='2'] .house[data-state='claim'] .house-body,
+  .plan[data-stage='3'] .house[data-state='dispute'] .house-body {
+    animation: breathe 6s ease-in-out infinite;
+  }
+  .plan .house[data-state='claim']:nth-of-type(2n) .house-body,
+  .plan .house[data-state='dispute']:nth-of-type(2n) .house-body {
+    animation-delay: -2s;
+  }
+  .plan .house[data-state='claim']:nth-of-type(3n) .house-body,
+  .plan .house[data-state='dispute']:nth-of-type(3n) .house-body {
+    animation-delay: -4s;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    fill-opacity: 1;
+  }
+  50% {
+    fill-opacity: 0.25;
+  }
+}
+
+/* ---- services ---- */
+.service-line {
+  fill: none;
+  stroke: var(--rule-strong);
+  stroke-width: 1.1;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 0.75s var(--ease-paper),
+    stroke 0.5s var(--ease-paper), stroke-width 0.5s var(--ease-paper);
+  transition-delay: calc(var(--i) * 22ms + 420ms), 0s, 0s;
+}
+
+.service[data-feeder='A'] .service-line {
+  stroke: var(--ink-muted);
+  stroke-width: 1.5;
+}
+
+.service-tee {
+  fill: var(--rule-strong);
+  opacity: 0;
+  transition: opacity 0.4s var(--ease-paper), fill 0.5s var(--ease-paper);
+  transition-delay: calc(var(--i) * 22ms + 900ms), 0s;
+}
+.service[data-feeder='A'] .service-tee {
+  fill: var(--ink-muted);
+}
+
+.plan:not([data-stage='0']) .service-line {
+  stroke-dashoffset: 0;
+}
+.plan:not([data-stage='0']) .service-tee {
+  opacity: 1;
+}
+
+.plan[data-stage='2'] .service[data-feeder='A'] .service-line {
+  stroke: var(--marigold);
+  stroke-width: 2;
+}
+.plan[data-stage='2'] .service[data-feeder='A'] .service-tee {
+  fill: var(--marigold);
+}
+
+.plan[data-stage='3'] .service[data-feeder='A'] .service-line {
+  stroke: var(--terracotta);
+  stroke-width: 2.1;
+}
+.plan[data-stage='3'] .service[data-feeder='A'] .service-tee {
+  fill: var(--terracotta);
+}
+
+.service[data-state='probe'] .service-line {
+  stroke: var(--ink);
+  stroke-width: 2.2;
+}
+.service[data-state='probe'] .service-tee {
+  fill: var(--ink);
+}
+
+/* ---- mains ---- */
+.main-line {
+  stroke: var(--ink-muted);
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 1.3s var(--ease-paper), stroke 0.6s var(--ease-paper);
+}
+.main[data-feeder='A'] .main-line {
+  stroke-width: 4;
+}
+.main[data-feeder='B'] .main-line {
+  stroke-width: 1.4;
+  transition-delay: 0.22s;
+}
+
+.plan:not([data-stage='0']) .main-line {
+  stroke-dashoffset: 0;
+}
+
+.main-label {
+  opacity: 0;
+  transition: opacity 0.6s var(--ease-paper) 0.9s;
+}
+.plan:not([data-stage='0']) .main-label {
+  opacity: 1;
+}
+
+.plan[data-stage='2'] .main[data-feeder='A'] .main-line {
+  stroke: var(--marigold);
+}
+.plan[data-stage='3'] .main[data-feeder='A'] .main-line {
+  stroke: var(--terracotta);
+}
+.plan[data-stage='2'] .main[data-feeder='B'],
+.plan[data-stage='3'] .main[data-feeder='B'] {
+  opacity: 0.45;
+}
+.main[data-feeder='B'] {
+  transition: opacity 0.6s var(--ease-paper);
+}
+
+.plan-inlet path {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1.2;
+  opacity: 0;
+  transition: opacity 0.5s var(--ease-paper) 1.1s;
+}
+.plan:not([data-stage='0']) .plan-inlet path {
+  opacity: 1;
+}
+
+.valve {
+  opacity: 0;
+  transition: opacity 0.5s var(--ease-paper) 1.15s;
+}
+.valve path,
+.valve line {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 1.2;
+}
+.plan:not([data-stage='0']) .valve {
+  opacity: 1;
+}
+.plan[data-stage='2'] .valve[data-feeder='A'] path,
+.plan[data-stage='2'] .valve[data-feeder='A'] line {
+  stroke: var(--marigold);
+}
+.plan[data-stage='3'] .valve[data-feeder='A'] path,
+.plan[data-stage='3'] .valve[data-feeder='A'] line {
+  stroke: var(--terracotta);
+}
+
+/* ---- the fault ---- */
+.plan-fault {
+  opacity: 0;
+  transition: opacity 0.6s var(--ease-paper) 0.3s;
+}
+.plan-fault circle {
+  fill: var(--paper);
+  stroke: var(--terracotta);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+}
+.plan-fault path {
+  stroke: var(--terracotta);
+  stroke-width: 1.9;
+}
+.plan-fault text {
+  fill: var(--terracotta);
+}
+.plan[data-stage='3'] .plan-fault {
+  opacity: 1;
+}
+
+/* ---- annotations ---- */
+.ann {
+  opacity: 0;
+  transition: opacity 0.7s var(--ease-paper) 0.55s;
+}
+.ann text {
+  font-size: 11.5px;
+  letter-spacing: 1.7px;
+}
+.ann-brace,
+.ann-leader {
+  fill: none;
+  stroke-width: 1.3;
+}
+.ann-cluster .ann-brace {
+  stroke: var(--marigold);
+}
+.ann-cluster text {
+  fill: var(--marigold);
+}
+.ann-decoy .ann-leader {
+  stroke: var(--indigo);
+  stroke-dasharray: 3 2.5;
+}
+.ann-decoy text {
+  fill: var(--indigo);
+}
+
+.plan[data-stage='2'] .ann,
+.plan[data-stage='3'] .ann {
+  opacity: 1;
+}
+.plan[data-stage='3'] .ann-cluster .ann-brace {
+  stroke: var(--terracotta);
+}
+.plan[data-stage='3'] .ann-cluster text {
+  fill: var(--terracotta);
+}
+
+/* ---- dimensions ---- */
+.plan-dim line {
+  stroke: var(--rule-strong);
+  stroke-width: 0.9;
+}
+.plan-dim {
+  opacity: 0;
+  transition: opacity 0.5s var(--ease-paper) 1.2s;
+}
+.plan:not([data-stage='0']) .plan-dim {
+  opacity: 1;
+}
+
+/* ---- reduced motion: arrive, do not travel ---- */
+@media (prefers-reduced-motion: reduce) {
+  .plan *,
+  .plan-grade-line {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+}

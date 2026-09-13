@@ -1,0 +1,182 @@
+/* ---------------------------------------------------------------
+   Typography. Newsreader carries the argument, Plex Sans labels it,
+   Plex Mono files it.
+   --------------------------------------------------------------- */
+
+body {
+  font-family: var(--serif);
+  font-size: var(--t-body);
+  font-weight: 400;
+  line-height: 1.62;
+  color: var(--ink);
+  background: var(--paper);
+  font-variant-numeric: oldstyle-nums;
+}
+
+/* ---- display ---- */
+
+.display,
+.colossal,
+.head,
+.sub {
+  font-family: var(--serif);
+  font-weight: 400;
+  letter-spacing: -0.021em;
+  line-height: 1.02;
+  text-wrap: balance;
+  font-variant-numeric: lining-nums;
+}
+
+.colossal {
+  font-size: var(--t-colossal);
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+}
+
+.display {
+  font-size: var(--t-display);
+  line-height: 0.98;
+  letter-spacing: -0.028em;
+}
+
+.head {
+  font-size: var(--t-head);
+  line-height: 1.08;
+}
+
+.sub {
+  font-size: var(--t-sub);
+  line-height: 1.22;
+  letter-spacing: -0.014em;
+}
+
+.lead {
+  font-size: var(--t-lead);
+  line-height: 1.52;
+  color: var(--ink);
+  max-width: var(--measure);
+}
+
+.prose {
+  max-width: var(--measure);
+}
+
+.prose p + p {
+  margin-top: 0.85em;
+  text-indent: 1.35em;
+}
+
+.prose p + p.noindent {
+  text-indent: 0;
+}
+
+.dim {
+  color: var(--ink-muted);
+}
+
+.faint {
+  color: var(--ink-faint);
+}
+
+em,
+.italic {
+  font-style: italic;
+}
+
+/* an opening line set in the manner of a printed notice */
+.opener::first-letter {
+  initial-letter: 2;
+  -webkit-initial-letter: 2;
+  font-weight: 500;
+  margin-right: 0.09em;
+  color: var(--indigo);
+}
+
+/* ---- technical registers ---- */
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: lining-nums tabular-nums;
+  font-feature-settings: 'zero' 1;
+}
+
+.label {
+  font-family: var(--sans);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  line-height: 1.3;
+  color: var(--ink-muted);
+}
+
+.meta {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  color: var(--ink-muted);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.micro {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.sans {
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.58;
+}
+
+/* ---- indic artifacts ----
+   These are not translations. They are the words as they were
+   actually spoken, written, or printed on the form. */
+
+.kn,
+.hi,
+.ta {
+  font-family: 'Noto Serif Kannada', 'Noto Serif Devanagari',
+    'Noto Serif Tamil', var(--serif);
+  line-height: 1.72;
+  letter-spacing: 0;
+}
+
+.hi {
+  font-family: 'Noto Serif Devanagari', var(--serif);
+}
+
+.ta {
+  font-family: 'Noto Serif Tamil', var(--serif);
+}
+
+.script-tag {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  vertical-align: 0.35em;
+  margin-left: 0.5em;
+}
+
+/* ---- accent text ---- */
+
+.ink-indigo {
+  color: var(--indigo);
+}
+.ink-marigold {
+  color: var(--marigold);
+}
+.ink-terracotta {
+  color: var(--terracotta);
+}
+.ink-sage {
+  color: var(--sage);
+}
