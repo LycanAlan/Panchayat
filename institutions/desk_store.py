@@ -39,6 +39,22 @@ OUR_TABLE_ENV = "PANCHAYAT_TABLE"
 
 _table: Any = None
 
+#: Version last read per desk, so a write can refuse to clobber a newer one.
+#: Keyed by desk name, which is right because one runtime serves one desk --
+#: see "ONE RUNTIME PER DESK" in institutions/a2a_runtime.py.
+_versions: dict[str, int] = {}
+
+
+class Contended(RuntimeError):
+    """Someone else wrote this desk between our load and our save.
+
+    Raised instead of overwriting. `a2a_runtime.act()` answers it by reloading
+    and re-running the tool, which is safe because `Desk.accept()` checks its
+    idempotency key before any random draw: the loser of a race gets the
+    winner's reference number back as DUPLICATE rather than minting a second
+    one. That is hard rule 5, and it is the whole reason this is conditional.
+    """
+
 
 def table_name() -> str:
     return os.environ.get(TABLE_ENV, "").strip()
@@ -124,7 +140,12 @@ def load(desk: Desk) -> bool:
         return False
     item = table.get_item(Key={"desk": desk.profile.name}).get("Item")
     if not item:
+        # Nothing stored yet, so the next save must be the FIRST one. Recorded
+        # as version 0 rather than left unset, so save() can tell "new desk"
+        # from "desk we never loaded".
+        _versions[desk.profile.name] = 0
         return False
+    _versions[desk.profile.name] = int(item.get("version") or 0)
     desk.tickets = {ref: _unpacked(row)
                     for ref, row in (item.get("tickets") or {}).items()}
     desk._by_key = {str(k): str(v) for k, v in (item.get("by_key") or {}).items()}
@@ -156,8 +177,14 @@ def _restore_rng(desk: Desk, raw: Any) -> None:
     try:
         version, internal, gauss = json.loads(raw)
         desk._rng.setstate((version, tuple(internal), gauss))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # Left as seeded. Never fatal: the office still answers.
+        #
+        # OverflowError is NOT redundant and was missed on the first pass:
+        # setstate() raises it -- not ValueError -- for a negative or oversized
+        # word, so a truncated row or one written by a different Python build
+        # would have propagated out through load() and act() and stopped the
+        # desk answering anything at all, until someone deleted the row.
         return
 
 
@@ -172,8 +199,13 @@ def save(desk: Desk) -> bool:
     table = _open()
     if table is None:
         return False
-    table.put_item(Item={
-        "desk": desk.profile.name,
+    from boto3.dynamodb.conditions import Attr
+    from botocore.exceptions import ClientError
+
+    name = desk.profile.name
+    seen = _versions.get(name, 0)
+    item = {
+        "desk": name,
         "tickets": {ref: _packed(t) for ref, t in desk.tickets.items()},
         "by_key": dict(desk._by_key),
         "n": desk._n,
@@ -181,5 +213,20 @@ def save(desk: Desk) -> bool:
         # rather than as a DynamoDB list because getstate() is 625 ints and a
         # list of Decimals would be both larger and lossier on the way back.
         "rng": json.dumps(desk._rng.getstate()),
-    })
+        "version": seen + 1,
+    }
+
+    # CONDITIONAL, because this is a read-modify-write of one shared item and
+    # AgentCore gives concurrent filings separate microVMs. Two of them both
+    # read n=5, both mint <DESK>-100006, and an unconditional put_item lets the
+    # later writer erase the earlier ticket: two households holding one
+    # reference number and one complaint gone from the desk's records.
+    condition = Attr("desk").not_exists() if seen == 0 else Attr("version").eq(seen)
+    try:
+        table.put_item(Item=item, ConditionExpression=condition)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise Contended(name + " was written by another session") from exc
+        raise
+    _versions[name] = seen + 1
     return True

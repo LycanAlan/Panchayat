@@ -595,10 +595,13 @@ answered.
 
 ```bash
 # One desk, one runtime. PANCHAYAT_DESK picks which. The script does configure
-# + launch for each and prints the ARNs; it reads GEMINI_API_KEY from .env, so
-# the key never reaches a command line or a log. This is the exact invocation
-# used on 14 Sep -- note `-File`, which hands the whole comma list over as ONE
-# string, so the script splits it itself rather than trusting the caller.
+# + launch for each and prints the ARNs. It reads GEMINI_API_KEY from .env so
+# the key is never typed and never committed -- but it IS passed to `agentcore
+# launch` as an -env argument, so it does land in that child process's argument
+# vector and in PowerShell script-block logs. Protection against committing the
+# key, not against a local observer. This is the exact invocation used on
+# 14 Sep -- note `-File`, which hands the whole comma list over as ONE string,
+# so the script splits it itself rather than trusting the caller.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy_desk.ps1 \
   -Desk bwssb,ward,school,vendor,payments
 
@@ -617,8 +620,28 @@ aws lambda update-function-configuration --function-name panchayat-watchdog \
   --region ap-south-2 --environment file://<the full set>.json
 ```
 
-**Six traps, all of them now closed by `scripts/deploy_desk.ps1`.** They are
-listed here because the script can be lost and the reasons cannot.
+**The script is Windows-only. On macOS or Linux, run the two commands it wraps**
+— they are the portable path and they still work. Traps 1–3 below are yours to
+honour by hand; traps 4 and 5 do not arise off Windows.
+
+```bash
+agentcore configure -n panchayat_desk_bwssb -e desk_app.py -p A2A -r ap-south-2 \
+  -dt direct_code_deploy -rt PYTHON_3_12 -rf requirements-prod.txt -ni -do -dm \
+  -er arn:aws:iam::699073937307:role/panchayat-desk-exec \
+  -s3 bedrock-agentcore-codebuild-sources-699073937307-ap-south-2
+agentcore launch --agent panchayat_desk_bwssb \
+  -env PANCHAYAT_DESK=bwssb -env PANCHAYAT_MODEL=gemini -env GEMINI_API_KEY=... \
+  -env PANCHAYAT_DESK_TABLE=panchayat-desks -env PANCHAYAT_TABLE=panchayat
+```
+
+**Then put `default_agent` back.** `agentcore configure` rewrites it in
+`.bedrock_agentcore.yaml`, so after deploying a desk the next `agentcore`
+command typed **without** `--agent` targets that desk instead of the main
+`panchayat` runtime. The script restores it; by hand, you must. That file is
+gitignored, so nothing will warn you.
+
+**Five traps closed by `scripts/deploy_desk.ps1`, and a sixth that is yours.**
+They are listed here because the script can be lost and the reasons cannot.
 
 1. **The entrypoint must sit at the repo root** (`desk_app.py`). Configured as
    `institutions/a2a_runtime.py`, the toolkit records a Windows backslash and
@@ -635,7 +658,10 @@ listed here because the script can be lost and the reasons cannot.
    spurious `shutil.which` check for a binary it never runs, see
    `scripts/zip_shim.py` — and stock Windows has no `zip`.
 6. **The Watchdog package must bundle `boto3` and allow 180s.** An AgentCore
-   cold start plus a model call does not fit in 60.
+   cold start plus a model call does not fit in 60. **This one the script does
+   not close and cannot** — it configures desks, never the `panchayat-watchdog`
+   Lambda. It is yours to check after deploying, and the first real filing is
+   where you find out you did not.
 
 **And one that is not a trap but reads like one.** A desk may answer `REJECTED
 — reference number does not match our records`. That is `server.py` refusing a

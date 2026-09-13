@@ -51,10 +51,25 @@ def build_desk_agent():
     desk = Desk(profile)
 
     def act(fn, *args) -> str:
-        desk_store.load(desk)
-        reply = fn(*args)
-        desk_store.save(desk)
-        return reply.render()
+        """Load, decide, checkpoint -- retrying if another session got there.
+
+        The retry is what makes the conditional write in desk_store usable. On
+        contention we reload and re-run the tool rather than overwriting, and
+        that is safe because `Desk.accept()` checks its idempotency key before
+        any random draw: the loser gets the winner's reference back as
+        DUPLICATE instead of minting a second number for one complaint.
+        """
+        last: Exception | None = None
+        for _ in range(3):
+            desk_store.load(desk)
+            reply = fn(*args)
+            try:
+                desk_store.save(desk)
+            except desk_store.Contended as exc:
+                last = exc
+                continue
+            return reply.render()
+        raise last  # type: ignore[misc]
 
     @tool
     def accept(case_id: str, service: str, body: str, idempotency_key: str) -> str:

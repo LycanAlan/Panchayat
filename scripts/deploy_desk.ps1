@@ -8,7 +8,7 @@
 # trust boundary (CLAUDE.md), and collapsing it to save a deploy would make the
 # A2A hop decorative.
 #
-# WHY A SCRIPT AND NOT TWO TYPED COMMANDS. Four traps, each of which cost us
+# WHY A SCRIPT AND NOT TWO TYPED COMMANDS. Five traps, each of which cost us
 # time on the first desk and each of which is closed here:
 #
 #   1. The entrypoint must sit at the REPO ROOT (desk_app.py). Configured as
@@ -25,15 +25,24 @@
 #      not found" -- a spurious shutil.which check for a binary it never runs,
 #      see scripts/zip_shim.py -- and stock Windows has no zip.
 #
-# The Gemini key is read from .env at run time and never printed. .env is
-# gitignored and the pre-commit hook refuses it; keep it that way.
+# THE GEMINI KEY, STATED ACCURATELY. It is read from .env at run time and is
+# never echoed to the console or written to a repo file. It IS passed to
+# `agentcore launch` as an -env argument, which means it lands in that child
+# process's argument vector: readable locally via Get-CimInstance Win32_Process
+# or Task Manager's "Command line" column, and captured by PowerShell
+# script-block logging (event 4104) or an active Start-Transcript.
+#
+# So this is protection against committing the key, not against a local
+# observer. An earlier version of this comment claimed the key "never reaches a
+# command line", which was false, and a false guarantee is worse than none --
+# it is exactly the reason nobody thinks to rotate.
 #
 # Owner: Ali (platform).
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string[]]$Desk,
     [string]$Region = 'ap-south-2',
-    [string]$Profile = 'panchayat',
+    [string]$AwsProfile = 'panchayat',
     [string]$ExecutionRole = 'arn:aws:iam::699073937307:role/panchayat-desk-exec',
     [string]$SourceBucket = 'bedrock-agentcore-codebuild-sources-699073937307-ap-south-2',
     [string]$DeskTable = 'panchayat-desks',
@@ -49,7 +58,7 @@ if (-not (Test-Path (Join-Path $root 'desk_app.py'))) {
 }
 
 # Trap 4.
-$env:AWS_PROFILE = $Profile
+$env:AWS_PROFILE = $AwsProfile
 
 # Trap 5. Prepended, so the venv's uv and our zip shim win over anything else.
 $env:PATH = (Join-Path $root '.venv\Scripts') + ';' + (Join-Path $root 'scripts') + ';' + $env:PATH
@@ -61,7 +70,9 @@ if (-not (Get-Command zip -ErrorAction SilentlyContinue)) {
 # which buries the one line that matters when a deploy fails.
 $env:AGENTCORE_SUPPRESS_RECOMMENDATION = '1'
 
-# Trap: never put the key in a command line you type. Read it here instead.
+# Read the key from .env rather than taking it as a parameter, so it is never
+# typed, never in shell history, and never committed. See the header for what
+# this does and does not protect against.
 $envFile = Join-Path $root '.env'
 if (-not (Test-Path $envFile)) { throw '.env not found; the desks need GEMINI_API_KEY.' }
 $line = Get-Content $envFile | Where-Object { $_ -match '^\s*GEMINI_API_KEY\s*=' } | Select-Object -First 1
@@ -75,6 +86,21 @@ if ($DeskTable -eq $OurTable) {
 
 $known = @('bwssb', 'ward', 'school', 'vendor', 'payments')
 $arns = @{}
+
+# The sixth trap, which this script used to OPEN rather than close.
+# `agentcore configure` rewrites `default_agent` in the shared
+# .bedrock_agentcore.yaml, so after deploying desks the next `agentcore launch`
+# or `agentcore invoke` typed WITHOUT --agent silently targets the last desk
+# instead of the main `panchayat` runtime -- deploying a desk over the app.
+# That file is gitignored, so the damage is invisible to review. Remember it
+# here and put it back at the end.
+$configPath = Join-Path $root '.bedrock_agentcore.yaml'
+$defaultAgent = $null
+if (Test-Path $configPath) {
+    $hit = Select-String -Path $configPath -Pattern '^default_agent:\s*(.+)$' |
+        Select-Object -First 1
+    if ($hit) { $defaultAgent = $hit.Matches[0].Groups[1].Value.Trim() }
+}
 
 # Called as `powershell -File ... -Desk a,b,c` the whole list arrives as ONE
 # string -- -File does not parse PowerShell array syntax, unlike -Command and
@@ -103,13 +129,27 @@ foreach ($d in $desks) {
         -env "PANCHAYAT_TABLE=$OurTable"
     if ($LASTEXITCODE -ne 0) { throw "launch failed for $name (exit $LASTEXITCODE)" }
 
-    $arn = (aws bedrock-agentcore-control list-agent-runtimes --region $Region `
-            --profile $Profile `
+    # Checked like the two calls above it. Without the exit-code test a failed
+    # CLI call (expired token, throttling, wrong region) returns nothing, and
+    # $null.Trim() throws "You cannot call a method on a null-valued
+    # expression" -- pointing at PowerShell rather than at credentials, AFTER
+    # the runtime has already been created.
+    $arn = aws bedrock-agentcore-control list-agent-runtimes --region $Region `
+            --profile $AwsProfile `
             --query "agentRuntimes[?agentRuntimeName=='$name'].agentRuntimeArn" `
-            --output text).Trim()
+            --output text
+    if ($LASTEXITCODE -ne 0) { throw "list-agent-runtimes failed for $name (exit $LASTEXITCODE)" }
     if (-not $arn) { throw "$name did not appear in list-agent-runtimes." }
+    $arn = $arn.Trim()
     $arns[$d] = $arn
     Write-Host "$name -> $arn" -ForegroundColor Green
+}
+
+if ($defaultAgent -and (Test-Path $configPath)) {
+    (Get-Content $configPath) -replace '^default_agent:.*$', "default_agent: $defaultAgent" |
+        Set-Content $configPath -Encoding utf8
+    Write-Host ''
+    Write-Host "default_agent put back to '$defaultAgent'." -ForegroundColor DarkGray
 }
 
 Write-Host ''

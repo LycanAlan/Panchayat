@@ -4,8 +4,16 @@
     python scripts/smoke_desks.py ward school # just these
 
 Discovers the runtimes by name (`panchayat_desk_<desk>`), addresses each one
-the way the deployed Watchdog does -- boto3 `InvokeAgentRuntime` carrying
-JSON-RPC, per institutions/client.py -- and files one marked smoke complaint.
+over the transport the deployed Watchdog uses -- boto3 `InvokeAgentRuntime`
+carrying JSON-RPC, per institutions/client.py -- and files one marked smoke
+complaint.
+
+WHAT IT DOES NOT COVER. It calls `send()` with an instruction of its own, not
+`InstitutionClient.file()`, so the signature gate and the JSON fencing that
+file() puts around citizen-authored text are NOT exercised here. A regression
+in file() would leave every desk answering ACCEPTED to this script while every
+real filing failed. This checks that a desk is deployed, reachable and
+answering; it is not a test of the filing path.
 
 WHAT COUNTS AS PASS, AND WHY IT IS NOT "ACCEPTED"
 A desk answering ACCEPTED or DUPLICATE has done the whole chain: SigV4 in,
@@ -42,31 +50,50 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 REGION = os.environ.get("AWS_REGION", "ap-south-2")
 PREFIX = "panchayat_desk_"
 
-#: Enough attempts that a desk with a 5% simulated downtime is very unlikely
-#: (1 in 8000) to be reported down for that reason alone.
+#: Retries before a desk is called down. Judge this against the WORST desk,
+#: not the best: vendor carries `unreachable_rate: 0.10`, the highest of the
+#: five, so three attempts is 0.10^3 -- about 1 run in 1000 reporting a
+#: spurious DOWN, or 1 in 800 across all five. (The first draft of this comment
+#: quoted 1 in 8000, which is ward's 0.05 and the most flattering desk.)
 ATTEMPTS = 3
 
 #: A live desk answered. See "WHAT COUNTS AS PASS" above.
 ANSWERED = ("ACCEPTED", "DUPLICATE", "REJECTED")
 
 
-def discover(region: str) -> dict[str, str]:
-    """Deployed desks, by desk name -> runtime ARN."""
+def discover(region: str) -> tuple[dict[str, str], list[str]]:
+    """Deployed desks by name -> runtime ARN, plus any strays.
+
+    A runtime whose name carries the prefix but is not one of the five known
+    desks -- a leftover, a rename, a sixth desk deployed before client.py knows
+    about it -- is NAMED and skipped rather than probed. Probing it would look
+    up an environment variable that does not exist and abort the whole run on a
+    bare KeyError, so one stray runtime would hide the state of every desk
+    after it in the loop.
+    """
     import boto3
+
+    from institutions.client import RUNTIME_ARN_ENV
 
     client = boto3.client("bedrock-agentcore-control", region_name=region)
     found: dict[str, str] = {}
+    strays: list[str] = []
     token = None
     while True:
         kwargs = {"nextToken": token} if token else {}
         page = client.list_agent_runtimes(**kwargs)
         for runtime in page.get("agentRuntimes", []):
             name = runtime.get("agentRuntimeName", "")
-            if name.startswith(PREFIX):
-                found[name[len(PREFIX):]] = runtime["agentRuntimeArn"]
+            if not name.startswith(PREFIX):
+                continue
+            desk = name[len(PREFIX):]
+            if desk in RUNTIME_ARN_ENV:
+                found[desk] = runtime["agentRuntimeArn"]
+            else:
+                strays.append(name)
         token = page.get("nextToken")
         if not token:
-            return found
+            return found, strays
 
 
 def instruction(desk: str) -> str:
@@ -95,9 +122,14 @@ def probe(desk: str, arn: str) -> tuple[str, str]:
     from institutions.client import RUNTIME_ARN_ENV, InstitutionClient
 
     os.environ[RUNTIME_ARN_ENV[desk]] = arn
+    # Both are loop-invariant. Building the client once also keeps the cached
+    # boto3 client it holds, and makes the retries a truer replay of one caller
+    # retrying -- which is what the Watchdog does.
+    client = InstitutionClient()
+    text = instruction(desk)
     last = ("UNREACHABLE", "no attempt made")
     for _ in range(ATTEMPTS):
-        reply = InstitutionClient().send(desk, instruction(desk))
+        reply = client.send(desk, text)
         name = reply.outcome.name
         last = (name, (reply.ref or reply.detail or "").strip())
         if name in ANSWERED:
@@ -106,7 +138,9 @@ def probe(desk: str, arn: str) -> tuple[str, str]:
 
 
 def main(argv: list[str]) -> int:
-    runtimes = discover(REGION)
+    runtimes, strays = discover(REGION)
+    for name in strays:
+        print("  " + name + " -- prefixed but not a known desk, skipped")
     if not runtimes:
         print("No " + PREFIX + "* runtimes in " + REGION + ".", file=sys.stderr)
         return 1

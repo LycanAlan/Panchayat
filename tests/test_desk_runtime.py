@@ -10,6 +10,7 @@ import sys
 import types
 
 import pytest
+from botocore.exceptions import ClientError
 
 from institutions import desk_store
 from institutions.client import InstitutionClient
@@ -17,6 +18,57 @@ from institutions.protocol import Outcome
 from institutions.server import Desk, load_profile
 
 ARN = "arn:aws:bedrock-agentcore:ap-south-2:123456789012:runtime/panchayat-desk-bwssb"
+
+
+def _no_floats(value) -> None:
+    """Refuse a float the way boto3 does, so an offline pass means something.
+
+    CLAUDE.md documents this trap: `TypeError: Float types are not supported.`
+    A fake that accepts floats would let a save() that writes one pass every
+    offline test and fail only on the deployed desk.
+    """
+    if isinstance(value, float):
+        raise TypeError("Float types are not supported. Use Decimal types instead.")
+    if isinstance(value, dict):
+        for item in value.values():
+            _no_floats(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _no_floats(item)
+
+
+@pytest.fixture
+def desk_table(monkeypatch):
+    """The desk's own table, faked once for every checkpoint test.
+
+    Approximates the ConditionExpression rather than evaluating it: a write
+    carrying one is accepted only if the stored version is exactly the one the
+    writer expected. That is the property save() relies on, and simulating it
+    keeps the race test honest without a live table.
+    """
+    store: dict = {}
+
+    class Table:
+        def get_item(self, Key):  # noqa: N803 - boto3's own spelling
+            item = store.get(Key["desk"])
+            return {"Item": item} if item else {}
+
+        def put_item(self, Item, **kwargs):  # noqa: N803
+            _no_floats(Item)
+            if "ConditionExpression" in kwargs:
+                current = store.get(Item["desk"])
+                seen = int(current["version"]) if current else 0
+                if seen != int(Item["version"]) - 1:
+                    raise ClientError(
+                        {"Error": {"Code": "ConditionalCheckFailedException",
+                                   "Message": "The conditional request failed"}},
+                        "PutItem")
+            store[Item["desk"]] = json.loads(json.dumps(Item, default=str))
+
+    monkeypatch.setenv(desk_store.TABLE_ENV, "panchayat-desks")
+    monkeypatch.setattr(desk_store, "_table", Table())
+    monkeypatch.setattr(desk_store, "_versions", {})
+    return store
 
 
 def _artifact(text: str) -> dict:
@@ -133,26 +185,43 @@ def test_a_desk_may_never_share_our_table(monkeypatch):
         desk_store.save(Desk(load_profile("bwssb")))
 
 
-def test_a_restored_desk_answers_as_the_same_office(monkeypatch):
+def test_two_sessions_cannot_issue_the_same_reference(desk_table):
+    """Hard rule 5, against the concurrency AgentCore actually gives us.
+
+    Two filings arrive at one desk at the same moment and get separate
+    microVMs. Both load the same state, both mint the same next reference. An
+    unconditional put_item lets the later writer erase the earlier ticket --
+    two households holding one number, one complaint gone from the record.
+
+    The stale writer must be refused. `a2a_runtime.act()` answers that refusal
+    by reloading and re-running, which returns the winner's reference as a
+    DUPLICATE rather than a second number.
+    """
+    first = Desk(load_profile("bwssb"))
+    desk_store.load(first)
+    first.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
+    assert desk_store.save(first) is True
+    first.accept("case_2", "water", "no water, duration 2 days, affected 6", "k2")
+    assert desk_store.save(first) is True
+
+    # A session that loaded before that second write landed still holds the
+    # older version, and must not be allowed to overwrite it.
+    desk_store._versions["bwssb"] = 1
+    stale = Desk(load_profile("bwssb"))
+    with pytest.raises(desk_store.Contended):
+        desk_store.save(stale)
+
+    # The winner's record is intact: both tickets, neither erased.
+    assert len(json.loads(json.dumps(desk_table["bwssb"]["tickets"]))) == 2
+
+
+def test_a_restored_desk_answers_as_the_same_office(desk_table):
     """The ticket, its idempotency key and the counter all come back.
 
     Without `_by_key` a retry gets a second reference number for one
     complaint, which is the duplicate hard rule 5 forbids; without `_n` the
     next ticket reuses a number already issued.
     """
-    store: dict = {}
-
-    class Table:
-        def get_item(self, Key):  # noqa: N803 - boto3's own spelling
-            item = store.get(Key["desk"])
-            return {"Item": item} if item else {}
-
-        def put_item(self, Item):  # noqa: N803
-            store[Item["desk"]] = json.loads(json.dumps(Item, default=str))
-
-    monkeypatch.setenv(desk_store.TABLE_ENV, "panchayat-desks")
-    monkeypatch.setattr(desk_store, "_table", Table())
-
     first = Desk(load_profile("bwssb"))
     filed = first.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
     assert filed.outcome is Outcome.ACCEPTED
@@ -167,7 +236,7 @@ def test_a_restored_desk_answers_as_the_same_office(monkeypatch):
     assert again.ref == filed.ref
 
 
-def test_a_restored_desk_does_not_replay_its_calibrated_rolls(monkeypatch):
+def test_a_restored_desk_does_not_replay_its_calibrated_rolls(desk_table):
     """The RNG POSITION is state, and leaving it out rewrote the calibration.
 
     `Desk` seeds `random.Random(profile.name)`, so every fresh instance replays
@@ -180,19 +249,6 @@ def test_a_restored_desk_does_not_replay_its_calibrated_rolls(monkeypatch):
     chance would have made that a 0.24% event. Their published rates, 0.08 and
     0.03, had quietly become 1.0 for the only filing that matters.
     """
-    store: dict = {}
-
-    class Table:
-        def get_item(self, Key):  # noqa: N803 - boto3's own spelling
-            item = store.get(Key["desk"])
-            return {"Item": item} if item else {}
-
-        def put_item(self, Item):  # noqa: N803
-            store[Item["desk"]] = json.loads(json.dumps(Item, default=str))
-
-    monkeypatch.setenv(desk_store.TABLE_ENV, "panchayat-desks")
-    monkeypatch.setattr(desk_store, "_table", Table())
-
     first = Desk(load_profile("vendor"))
     first.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
     desk_store.save(first)
