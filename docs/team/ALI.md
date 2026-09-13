@@ -146,28 +146,8 @@ one. That pairing is the entire rebuttal to "you faked the hard part" — show
 
 ## Day 5 — ship
 
-Three moments, in this order:
-
-1. **Grounded routing**, citation visible — establishes it is looked up, not guessed
-2. **The upgrade** — the case mutating without anyone requesting it
-3. **The disputed closure** — the peak; give it room
-
-**One line of setup so a non-Indian judge knows false closure is normal**, not
-scandalous. Without it, our best moment reads as confusing rather than damning.
-
-Say out loud, because both are answered in the docs and absent from most videos:
-
-- *"For one household chasing its own problem, one agent would do. The mesh
-  earns itself where two households' interests meet without merging their data."*
-- *"We used A2A not because it's impressive, but because a Swarm shares a mutable
-  context across every agent in it — and that's precisely what we promised never
-  to do across households."*
-
-Close on the two numbers: the density curve, and *eleven weeks, nobody spent
-more than four minutes.*
-
-**Open the repo before you record.** A great video over thin code is worse than
-a plain video over solid code — judges who look afterwards feel sold to.
+**The video is Raghav's (14 Sep).** Its guidance moved to `docs/team/RAGHAV.md`,
+and the project lives in `video/`.
 
 ---
 

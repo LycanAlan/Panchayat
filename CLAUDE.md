@@ -200,10 +200,10 @@ federation. Say so plainly -- naming your own compromises reads as judgement.
 
 | Who | Lane | Owns |
 |---|---|---|
-| **Ali** | platform + lead | `graph/`, `app.py`, deploy, observability, trace UI, `agents/digest.py`, video |
+| **Ali** | platform + lead | `graph/`, `app.py`, deploy, observability, trace UI, `agents/digest.py` |
 | **Kartik** | data + mesh | `core/store.py`, `core/scoring.py`, `agents/pattern_watch.py`, `agents/anti_abuse.py`, corpus, tau sweep, density curve |
 | **Alakshendra** | institutions | `data/jurisdiction/`, `agents/remedy.py`, `institutions/`, routing accuracy |
-| **Raghav** | household + time | `core/clock.py`, `agents/intake.py`, `agents/household.py`, `agents/warden.py`, `agents/watchdog.py` |
+| **Raghav** | household + time, video | `core/clock.py`, `agents/intake.py`, `agents/household.py`, `agents/warden.py`, `agents/watchdog.py`, `video/` (the demo video) |
 
 Your brief is in `docs/team/<YOURNAME>.md`. Read it and this file, then start.
 
