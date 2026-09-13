@@ -47,8 +47,8 @@
       "Effect": "Allow",
       "Action": "bedrock-agentcore:InvokeAgentRuntime",
       "Resource": [
-        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:runtime/panchayat-desk-*",
-        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:runtime/panchayat-desk-*/*"
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:runtime/panchayat_desk_*",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:runtime/panchayat_desk_*/*"
       ]
     },
     {
