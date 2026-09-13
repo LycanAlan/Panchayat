@@ -69,6 +69,16 @@ eval/        routing accuracy, tau sweep, density curve
 docs/team/   one brief per person
 ```
 
+## Explaining it to someone
+
+- **[`docs/EXPLAINER.md`](docs/EXPLAINER.md)** — the whole project in plain
+  language, no jargon left unpacked. Start here if you have to describe this to
+  a judge, a teammate's teammate, or yourself at 2am.
+- **[`docs/demo/docket.html`](docs/demo/docket.html)** — the same ground in
+  detail: forty questions we expect to be asked, each with a verdict
+  (*verified live / by design / synthetic / known gap*) and the file that proves
+  it. Open it in a browser.
+
 ## Getting started
 
 Read **`CLAUDE.md`** first — it is the shared context and it has the rules that
