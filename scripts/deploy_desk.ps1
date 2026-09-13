@@ -146,8 +146,12 @@ foreach ($d in $desks) {
 }
 
 if ($defaultAgent -and (Test-Path $configPath)) {
-    (Get-Content $configPath) -replace '^default_agent:.*$', "default_agent: $defaultAgent" |
-        Set-Content $configPath -Encoding utf8
+    # Written WITHOUT a BOM. PowerShell 5.1's `Set-Content -Encoding utf8`
+    # writes one, and a BOM lands inside the first YAML key -- `default_agent`
+    # then parses as "﻿default_agent" and agentcore silently stops seeing
+    # the setting this block exists to restore.
+    $lines = (Get-Content $configPath) -replace '^\s*default_agent:.*$', "default_agent: $defaultAgent"
+    [System.IO.File]::WriteAllLines($configPath, $lines, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ''
     Write-Host "default_agent put back to '$defaultAgent'." -ForegroundColor DarkGray
 }

@@ -37,6 +37,26 @@ def _no_floats(value) -> None:
             _no_floats(item)
 
 
+def _condition_holds(condition, current) -> bool:
+    """Evaluate a REAL boto3 condition against the fake's stored item.
+
+    Evaluating the expression save() actually passed -- rather than
+    re-deriving the rule from version arithmetic -- is the whole point. The
+    outage was save() sending `attribute_not_exists(desk)` for a row that
+    plainly existed, and a fake that re-derives the rule agrees with itself
+    and cannot see that. This one can: the condition is false, the write is
+    refused, and the test fails the way the deployed desks did.
+    """
+    expression = condition.get_expression()
+    operator = expression["operator"]
+    field = expression["values"][0].name
+    if operator == "attribute_not_exists":
+        return current is None if field == "desk" else field not in (current or {})
+    if operator == "=":
+        return current is not None and str(current.get(field)) == str(expression["values"][1])
+    raise AssertionError("the fake does not model " + operator)
+
+
 @pytest.fixture
 def desk_table(monkeypatch):
     """The desk's own table, faked once for every checkpoint test.
@@ -55,14 +75,13 @@ def desk_table(monkeypatch):
 
         def put_item(self, Item, **kwargs):  # noqa: N803
             _no_floats(Item)
-            if "ConditionExpression" in kwargs:
-                current = store.get(Item["desk"])
-                seen = int(current["version"]) if current else 0
-                if seen != int(Item["version"]) - 1:
-                    raise ClientError(
-                        {"Error": {"Code": "ConditionalCheckFailedException",
-                                   "Message": "The conditional request failed"}},
-                        "PutItem")
+            condition = kwargs.get("ConditionExpression")
+            if condition is not None and not _condition_holds(
+                    condition, store.get(Item["desk"])):
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException",
+                               "Message": "The conditional request failed"}},
+                    "PutItem")
             store[Item["desk"]] = json.loads(json.dumps(Item, default=str))
 
     monkeypatch.setenv(desk_store.TABLE_ENV, "panchayat-desks")
@@ -213,6 +232,35 @@ def test_two_sessions_cannot_issue_the_same_reference(desk_table):
 
     # The winner's record is intact: both tickets, neither erased.
     assert len(json.loads(json.dumps(desk_table["bwssb"]["tickets"]))) == 2
+
+
+def test_an_unversioned_row_can_still_be_saved(desk_table):
+    """The migration state, which took all five deployed desks down at once.
+
+    Rows written before this module versioned anything carry no `version`
+    attribute. Reading that as "no row at all" conditions the write on the row
+    NOT existing, which fails forever against a row that plainly does: every
+    save raised Contended, act() retried three times and re-raised, and every
+    desk answered nothing until this was fixed.
+
+    The first version of the fake hid it by indexing `current["version"]`
+    directly, so the one state that mattered could not be reached offline.
+    """
+    # A row exactly as the previous release left it: state, and no version.
+    desk_table["bwssb"] = {
+        "desk": "bwssb",
+        "tickets": {},
+        "by_key": {},
+        "n": 0,
+        "rng": json.dumps(Desk(load_profile("bwssb"))._rng.getstate()),
+    }
+
+    desk = Desk(load_profile("bwssb"))
+    assert desk_store.load(desk) is True
+    desk.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
+
+    assert desk_store.save(desk) is True
+    assert int(desk_table["bwssb"]["version"]) == 1
 
 
 def test_a_restored_desk_answers_as_the_same_office(desk_table):

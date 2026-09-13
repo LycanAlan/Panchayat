@@ -44,6 +44,17 @@ _table: Any = None
 #: see "ONE RUNTIME PER DESK" in institutions/a2a_runtime.py.
 _versions: dict[str, int] = {}
 
+#: No row at all: this desk has never been checkpointed.
+NO_ROW = -1
+
+#: A row exists but predates versioning. MEASURED, and it took all five desks
+#: down: treating this as NO_ROW conditions the write on the row not existing,
+#: which fails forever against a row that plainly does exist. Every save then
+#: raised Contended, act() retried three times and re-raised, and the desk
+#: answered nothing at all. A migration state needs its own condition, not the
+#: nearest-looking one.
+UNVERSIONED = 0
+
 
 class Contended(RuntimeError):
     """Someone else wrote this desk between our load and our save.
@@ -140,12 +151,11 @@ def load(desk: Desk) -> bool:
         return False
     item = table.get_item(Key={"desk": desk.profile.name}).get("Item")
     if not item:
-        # Nothing stored yet, so the next save must be the FIRST one. Recorded
-        # as version 0 rather than left unset, so save() can tell "new desk"
-        # from "desk we never loaded".
-        _versions[desk.profile.name] = 0
+        _versions[desk.profile.name] = NO_ROW
         return False
-    _versions[desk.profile.name] = int(item.get("version") or 0)
+    # A row written before this module versioned anything reads as UNVERSIONED,
+    # which is NOT the same as "no row" -- see the guard in save().
+    _versions[desk.profile.name] = int(item.get("version") or UNVERSIONED)
     desk.tickets = {ref: _unpacked(row)
                     for ref, row in (item.get("tickets") or {}).items()}
     desk._by_key = {str(k): str(v) for k, v in (item.get("by_key") or {}).items()}
@@ -203,7 +213,13 @@ def save(desk: Desk) -> bool:
     from botocore.exceptions import ClientError
 
     name = desk.profile.name
-    seen = _versions.get(name, 0)
+    seen = _versions.get(name, UNVERSIONED)
+    # Derived ONCE. NO_ROW is -1, so the next version is 1 both for a desk with
+    # no row and for one whose row predates versioning. Computing it separately
+    # here and in the bookkeeping below is how the two drifted: a successful
+    # first write left _versions holding 0, so the very next save conditioned on
+    # the row being un-versioned, against a row it had just versioned itself.
+    fresh = max(seen, 0) + 1
     item = {
         "desk": name,
         "tickets": {ref: _packed(t) for ref, t in desk.tickets.items()},
@@ -213,7 +229,7 @@ def save(desk: Desk) -> bool:
         # rather than as a DynamoDB list because getstate() is 625 ints and a
         # list of Decimals would be both larger and lossier on the way back.
         "rng": json.dumps(desk._rng.getstate()),
-        "version": seen + 1,
+        "version": fresh,
     }
 
     # CONDITIONAL, because this is a read-modify-write of one shared item and
@@ -221,12 +237,19 @@ def save(desk: Desk) -> bool:
     # read n=5, both mint <DESK>-100006, and an unconditional put_item lets the
     # later writer erase the earlier ticket: two households holding one
     # reference number and one complaint gone from the desk's records.
-    condition = Attr("desk").not_exists() if seen == 0 else Attr("version").eq(seen)
+    if seen == NO_ROW:
+        condition = Attr("desk").not_exists()
+    elif seen == UNVERSIONED:
+        # Claim an old un-versioned row, but only if nobody has upgraded it
+        # since we read it.
+        condition = Attr("version").not_exists()
+    else:
+        condition = Attr("version").eq(seen)
     try:
         table.put_item(Item=item, ConditionExpression=condition)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             raise Contended(name + " was written by another session") from exc
         raise
-    _versions[name] = seen + 1
+    _versions[name] = fresh
     return True
