@@ -90,4 +90,4 @@ to the live table and the Watchdog files it with the simulated BWSSB desk.
 **The deployed site predates PR #43**, so the case page will not show the
 ticket arrive on its own; step 4 needs "Read it again" on camera unless the web
 Lambda is redeployed first (`scripts/deploy_web.ps1`, needs the AWS CLI and
-the `panchayat` profile, which Raghav's laptop does not have).
+the `panchayat` AWS profile).
