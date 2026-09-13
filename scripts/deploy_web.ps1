@@ -7,10 +7,15 @@
   AgentCore runtime. handlers/web_api.py says why it is one Lambda rather
   than CloudFront + API Gateway.
 
-  NEEDS docs/deploy/web-deployer-policy.json attached to the deploying IAM
-  user by an account admin. On 13 Sep `ali` could not read or create Lambda
-  function URLs at all. The script stops at the first AccessDenied and names
-  that file, rather than leaving a half-built stack.
+  ap-south-1, NOT ap-south-2. Lambda Function URLs are not offered in
+  ap-south-2: the API answers "Unable to determine service/operation name to
+  be authorized" there, and "resource not found" for the same call in
+  ap-south-1. That message reads like a permissions problem and is not one.
+  The function calls the runtime in ap-south-2 across regions.
+
+  If the deploying user lacks a Lambda or IAM action, the script stops at the
+  first AccessDenied and names docs/deploy/web-deployer-policy.json, rather
+  than leaving a half-built stack.
 
   Idempotent. Run it again after any change to the site or the handler.
 
@@ -19,7 +24,7 @@
 #>
 param(
   [string]$AwsProfile = 'panchayat',
-  [string]$Region = 'ap-south-2',
+  [string]$Region = 'ap-south-1',
   [string]$FunctionName = 'panchayat-web',
   [string]$RoleName = 'panchayat-web-exec'
 )

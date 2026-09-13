@@ -16,7 +16,7 @@
         "lambda:AddPermission",
         "lambda:GetPolicy"
       ],
-      "Resource": "arn:aws:lambda:ap-south-2:699073937307:function:panchayat-web"
+      "Resource": "arn:aws:lambda:ap-south-1:699073937307:function:panchayat-web"
     },
     {
       "Sid": "ItsExecutionRole",

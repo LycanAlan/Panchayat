@@ -1,10 +1,10 @@
 # The site, deployed
 
-**13 Sep: built, and proven from this machine against the live runtime. Not
-deployed yet: one IAM grant stands in the way.**
+**Deployed 13 Sep:**
+**https://pcvsce443opuo4ma4wayk4bogi0btrkj.lambda-url.ap-south-1.on.aws/**
 
 ```
-browser ── https://<id>.lambda-url.ap-south-2.on.aws/
+browser ── https://<id>.lambda-url.ap-south-1.on.aws/
              │
              ├─ GET  /*    web/dist, bundled in the zip, SPA fallback to index.html
              └─ POST /api  handlers/web_api.py
@@ -24,13 +24,19 @@ there is no CORS to configure. It is also the smallest ask: `ali` was refused
 13 Sep, so every service avoided is one fewer grant. S3 + CloudFront is the
 better long-term shape and nothing here blocks the move.
 
-## The one step that needs an admin
+## Why ap-south-1, and why no admin was needed
 
-`lambda:GetFunctionUrlConfig` is denied for `ali`. `CreateFunction` was not
-probed, because the probe would have created a function.
+**Lambda Function URLs are not offered in ap-south-2.** There the API answers
+`AccessDeniedException: Unable to determine service/operation name to be
+authorized`. The same call answers `ResourceNotFoundException` in ap-south-1
+and us-east-1. The first message reads exactly like a missing permission, and
+this doc briefly said `ali` was denied. `ali` was not.
 
-Attach **`docs/deploy/web-deployer-policy.json`** to `ali`: IAM → Users →
-ali → Add permissions → Create inline policy → JSON. It fits the inline cap.
+So the function lives in ap-south-1 and calls the runtime in ap-south-2 across
+regions. `ali` already holds the Lambda and IAM actions it needs; the deploy
+went through with no grant.
+
+**`docs/deploy/web-deployer-policy.json`** stays for a deployer who lacks them.
 It is scoped to one function name (`panchayat-web`), one role
 (`panchayat-web-exec`), and `PassRole` only to Lambda.
 
