@@ -325,3 +325,63 @@ def test_route_fields_never_override_what_the_warden_did_set(monkeypatch):
 
     stored = db.get_claim(out["claim_id"])
     assert stored.segment == "ward12-9thmain", "the Warden's value must win"
+
+
+# ------------------------------------------------- the intake model gate
+
+
+def _reset_intake_cache():
+    """`_intake_model()` caches per process. Tests set different env, so the
+    sentinel has to go back or the first test wins for the whole session."""
+    import graph.request_path as rp
+
+    rp._intake_caller = rp._UNSET
+
+
+def test_no_model_is_wired_when_nothing_is_configured(monkeypatch):
+    """THE OFFLINE PROMISE. CLAUDE.md says the suite runs with no AWS, and
+    `BedrockModel(...)` constructs perfectly well with no credentials -- it
+    only fails when called. So "can I build a model?" is true everywhere and
+    would have put a live network call on every report in a test run."""
+    import graph.request_path as rp
+
+    monkeypatch.delenv("PANCHAYAT_MODEL", raising=False)
+    _reset_intake_cache()
+    assert rp._intake_model() is None
+
+
+def test_a_provider_without_its_key_wires_nothing(monkeypatch):
+    import graph.request_path as rp
+
+    monkeypatch.setenv("PANCHAYAT_MODEL", "gemini")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    _reset_intake_cache()
+    assert rp._intake_model() is None
+
+
+def test_an_unknown_provider_wires_nothing(monkeypatch):
+    import graph.request_path as rp
+
+    monkeypatch.setenv("PANCHAYAT_MODEL", "ollama")
+    _reset_intake_cache()
+    assert rp._intake_model() is None
+
+
+def test_a_failing_model_degrades_to_the_deterministic_split(monkeypatch):
+    """A free-tier quota running out must cost us the clever split, never the
+    household's report. `IntakeAgent.parse()` already catches RuntimeError, so
+    the adapter turns everything into one."""
+    from agents import intake
+    from core.types import MemberContext
+
+    def explode(prompt: str) -> str:
+        raise RuntimeError("429 quota exceeded")
+
+    member = MemberContext(member_id="mem_1", name="L", role="parent",
+                           language="en")
+    needs = intake.IntakeAgent(model=explode).parse(
+        "no water and the sewage is overflowing", member)
+
+    assert len(needs) == 2, "the deterministic fallback did not run"
+    assert all(n["description"] for n in needs)
