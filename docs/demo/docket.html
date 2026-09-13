@@ -1,0 +1,1054 @@
+<title>Panchayat Docket</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root{
+  --paper:#ECEFEE;
+  --raised:#F7F9F8;
+  --sunk:#E1E6E4;
+  --ink:#14202B;
+  --body:#25323A;
+  --muted:#55655F;
+  --rule:#C7D1CE;
+  --rule-soft:#DBE2E0;
+  --teal:#0C6156;
+  --teal-soft:#D5E5E1;
+  --ochre:#8A6224;
+  --ochre-soft:#EFE5D2;
+  --verified:#2C6A47;
+  --verified-soft:#D9E8DE;
+  --gap:#8C5E10;
+  --gap-soft:#F1E6CE;
+  --blocked:#8E3730;
+  --blocked-soft:#F2DCD9;
+  --shadow:0 1px 2px rgba(20,32,43,.06);
+
+  --f-display:"Spectral",Georgia,"Times New Roman",serif;
+  --f-body:"Public Sans","Helvetica Neue",Arial,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F1618;
+    --raised:#161F21;
+    --sunk:#0A1012;
+    --ink:#E3EAE7;
+    --body:#C3CFCB;
+    --muted:#8B9C97;
+    --rule:#27332F;
+    --rule-soft:#1E2A27;
+    --teal:#5DBBA9;
+    --teal-soft:#12312D;
+    --ochre:#C89C52;
+    --ochre-soft:#2C2415;
+    --verified:#6FBE8D;
+    --verified-soft:#14291D;
+    --gap:#D0A24A;
+    --gap-soft:#2B2213;
+    --blocked:#D97C72;
+    --blocked-soft:#2E1917;
+    --shadow:0 1px 2px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F1618;
+  --raised:#161F21;
+  --sunk:#0A1012;
+  --ink:#E3EAE7;
+  --body:#C3CFCB;
+  --muted:#8B9C97;
+  --rule:#27332F;
+  --rule-soft:#1E2A27;
+  --teal:#5DBBA9;
+  --teal-soft:#12312D;
+  --ochre:#C89C52;
+  --ochre-soft:#2C2415;
+  --verified:#6FBE8D;
+  --verified-soft:#14291D;
+  --gap:#D0A24A;
+  --gap-soft:#2B2213;
+  --blocked:#D97C72;
+  --blocked-soft:#2E1917;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper);
+  color:var(--body);
+  font-family:var(--f-body);
+  font-size:16px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  max-width:1180px;
+  margin:0 auto;
+  padding-inline:20px;
+  padding-block:0 72px;
+}
+
+/* ---------- masthead ---------- */
+.masthead{
+  border-bottom:2px solid var(--ink);
+  padding-block:44px 0;
+}
+.kicker{
+  font-family:var(--f-mono);
+  font-size:11px;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--teal);
+  margin:0 0 14px;
+}
+h1{
+  font-family:var(--f-display);
+  font-weight:600;
+  font-size:clamp(2.1rem,5.2vw,3.3rem);
+  line-height:1.08;
+  letter-spacing:-.015em;
+  color:var(--ink);
+  margin:0;
+  text-wrap:balance;
+}
+.standfirst{
+  font-family:var(--f-display);
+  font-size:clamp(1.02rem,2.2vw,1.22rem);
+  font-style:italic;
+  color:var(--muted);
+  margin:14px 0 0;
+  max-width:62ch;
+  line-height:1.5;
+}
+.masthead-note{
+  margin:22px 0 26px;
+  max-width:70ch;
+  font-size:.94rem;
+}
+
+/* ---------- verified strip ---------- */
+.strip{
+  border-top:1px solid var(--rule);
+  border-bottom:1px solid var(--rule);
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
+  gap:1px;
+  background:var(--rule-soft);
+  margin-block:0 0;
+}
+.strip-cell{
+  background:var(--paper);
+  padding:14px 16px;
+}
+.strip-cell dt{
+  font-family:var(--f-mono);
+  font-size:10px;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+  color:var(--muted);
+  margin:0 0 5px;
+}
+.strip-cell dd{
+  margin:0;
+  font-family:var(--f-mono);
+  font-size:.86rem;
+  color:var(--ink);
+  font-variant-numeric:tabular-nums;
+  word-break:break-word;
+}
+.strip-cell dd b{color:var(--teal);font-weight:500}
+.asof{
+  font-family:var(--f-mono);
+  font-size:11px;
+  color:var(--muted);
+  padding-block:12px 0;
+  margin:0;
+}
+
+/* ---------- shell ---------- */
+.shell{
+  display:grid;
+  grid-template-columns:222px minmax(0,1fr);
+  gap:56px;
+  align-items:start;
+  margin-top:46px;
+}
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr;gap:30px}
+}
+
+/* ---------- index rail ---------- */
+.rail{position:sticky;top:24px}
+@media (max-width:900px){
+  .rail{position:static;border:1px solid var(--rule);background:var(--raised);padding:18px 18px 6px;border-radius:2px}
+}
+.rail h2{
+  font-family:var(--f-mono);
+  font-size:10px;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+  color:var(--muted);
+  margin:0 0 12px;
+  font-weight:500;
+}
+.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.rail a{
+  display:grid;
+  grid-template-columns:1.7em 1fr auto;
+  gap:6px;
+  align-items:baseline;
+  text-decoration:none;
+  color:var(--body);
+  font-size:.85rem;
+  line-height:1.35;
+  padding:6px 7px;
+  border-radius:2px;
+  border-left:2px solid transparent;
+}
+.rail a:hover{background:var(--sunk);border-left-color:var(--teal);color:var(--ink)}
+.rail a:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.rail .sec{font-family:var(--f-mono);font-size:.72rem;color:var(--teal);letter-spacing:.04em}
+.rail .n{font-family:var(--f-mono);font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ---------- sections ---------- */
+.col{min-width:0;display:flex;flex-direction:column;gap:52px}
+section{scroll-margin-top:20px}
+.sec-head{
+  border-top:2px solid var(--ink);
+  padding-top:14px;
+  margin-bottom:30px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px 14px;
+  align-items:baseline;
+}
+.sec-head .letter{
+  font-family:var(--f-mono);
+  font-size:.78rem;
+  color:var(--teal);
+  letter-spacing:.1em;
+}
+.sec-head h2{
+  font-family:var(--f-display);
+  font-weight:600;
+  font-size:1.44rem;
+  color:var(--ink);
+  margin:0;
+  letter-spacing:-.01em;
+  line-height:1.2;
+  text-wrap:balance;
+}
+.sec-head p{
+  flex-basis:100%;
+  margin:6px 0 0;
+  color:var(--muted);
+  font-size:.92rem;
+  max-width:64ch;
+}
+
+/* ---------- docket entries ---------- */
+.entries{display:flex;flex-direction:column;gap:0}
+.entry{
+  border-top:1px solid var(--rule-soft);
+  padding-block:26px;
+}
+.entry:first-child{border-top:none;padding-top:0}
+.meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  margin-bottom:10px;
+}
+.qid{
+  font-family:var(--f-mono);
+  font-size:.72rem;
+  color:var(--muted);
+  letter-spacing:.06em;
+  font-variant-numeric:tabular-nums;
+}
+.chip{
+  font-family:var(--f-mono);
+  font-size:.68rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  padding:3px 8px;
+  border-radius:2px;
+  white-space:nowrap;
+}
+.chip.v{background:var(--verified-soft);color:var(--verified)}
+.chip.d{background:var(--teal-soft);color:var(--teal)}
+.chip.s{background:var(--ochre-soft);color:var(--ochre)}
+.chip.g{background:var(--gap-soft);color:var(--gap)}
+.chip.b{background:var(--blocked-soft);color:var(--blocked)}
+
+.entry h3{
+  font-family:var(--f-display);
+  font-weight:500;
+  font-size:1.19rem;
+  line-height:1.32;
+  color:var(--ink);
+  margin:0 0 12px;
+  max-width:60ch;
+  text-wrap:balance;
+}
+.lead{
+  font-size:1.01rem;
+  color:var(--ink);
+  font-weight:500;
+  margin:0 0 12px;
+  max-width:66ch;
+}
+.entry p{margin:0 0 12px;max-width:68ch}
+.entry p:last-of-type{margin-bottom:0}
+.entry ul{margin:0 0 12px;padding-left:1.15em;max-width:66ch}
+.entry li{margin-bottom:5px}
+.entry li::marker{color:var(--teal)}
+strong{color:var(--ink);font-weight:600}
+em{font-style:italic}
+code{
+  font-family:var(--f-mono);
+  font-size:.855em;
+  background:var(--sunk);
+  padding:1px 4px;
+  border-radius:2px;
+  color:var(--ink);
+  word-break:break-word;
+}
+
+.cite{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px 10px;
+  align-items:baseline;
+  margin-top:14px;
+  padding-top:9px;
+  border-top:1px dotted var(--rule);
+  font-family:var(--f-mono);
+  font-size:.73rem;
+  color:var(--muted);
+  line-height:1.55;
+}
+.cite .lbl{color:var(--ochre);letter-spacing:.08em;text-transform:uppercase;font-size:.67rem}
+
+/* ---------- figures ---------- */
+figure{margin:16px 0;max-width:100%}
+.tbl-scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:2px;background:var(--raised)}
+table{border-collapse:collapse;width:100%;font-size:.86rem;min-width:440px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+thead th{
+  font-family:var(--f-mono);
+  font-size:.68rem;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  color:var(--muted);
+  background:var(--sunk);
+  font-weight:500;
+  white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:none}
+td.m{font-family:var(--f-mono);font-size:.8rem;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+figcaption{font-size:.79rem;color:var(--muted);margin-top:7px;font-style:italic}
+
+/* ladder */
+.ladder{
+  display:flex;
+  flex-direction:column;
+  gap:0;
+  border:1px solid var(--rule);
+  border-radius:2px;
+  background:var(--raised);
+  overflow:hidden;
+}
+.rung{
+  display:grid;
+  grid-template-columns:52px 1fr 76px;
+  gap:12px;
+  align-items:center;
+  padding:11px 14px;
+  border-bottom:1px solid var(--rule-soft);
+}
+.rung:last-child{border-bottom:none}
+.rung .t{
+  font-family:var(--f-mono);
+  font-size:.7rem;
+  letter-spacing:.06em;
+  color:var(--teal);
+  text-transform:uppercase;
+}
+.rung .who{font-size:.87rem;color:var(--ink);line-height:1.35}
+.rung .win{
+  font-family:var(--f-mono);
+  font-size:.8rem;
+  color:var(--muted);
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.rung.terminal{background:var(--ochre-soft)}
+.rung.terminal .t{color:var(--ochre)}
+.rung.terminal .who{color:var(--ochre)}
+
+/* callout */
+.note{
+  border-left:3px solid var(--teal);
+  background:var(--raised);
+  padding:13px 16px;
+  margin:16px 0;
+  border-radius:0 2px 2px 0;
+  font-size:.92rem;
+  max-width:68ch;
+}
+.note.warn{border-left-color:var(--gap)}
+.note.warn strong{color:var(--gap)}
+.note p{margin:0 0 8px}
+.note p:last-child{margin:0}
+.note .hdr{
+  font-family:var(--f-mono);
+  font-size:.68rem;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--teal);
+  margin:0 0 6px;
+}
+.note.warn .hdr{color:var(--gap)}
+
+pre{
+  font-family:var(--f-mono);
+  font-size:.78rem;
+  line-height:1.55;
+  background:var(--sunk);
+  border:1px solid var(--rule-soft);
+  border-radius:2px;
+  padding:13px 15px;
+  overflow-x:auto;
+  margin:16px 0;
+  color:var(--ink);
+}
+pre b{color:var(--teal);font-weight:500}
+pre i{color:var(--muted);font-style:normal}
+
+/* footer */
+footer{
+  margin-top:56px;
+  border-top:2px solid var(--ink);
+  padding-top:18px;
+  font-size:.85rem;
+  color:var(--muted);
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px 24px;
+  justify-content:space-between;
+}
+footer .mono{font-family:var(--f-mono);font-size:.76rem}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">AWS Agents for Humans · Good Neighbor · Ward 12, Bengaluru</p>
+  <h1>Panchayat Docket</h1>
+  <p class="standfirst">Every question we expect to be asked about this system, and the honest answer — with the file that proves it.</p>
+  <p class="masthead-note">Each entry carries a verdict: <b style="color:var(--verified)">verified live</b> means it was run against the deployed system, not a test. <b style="color:var(--ochre)">Synthetic</b> means calibrated simulation, said out loud. <b style="color:var(--gap)">Known gap</b> means not built. Naming your own compromises is the point — a system that cannot say which of its parts are real is asking to be taken on faith.</p>
+
+  <dl class="strip">
+    <div class="strip-cell"><dt>Runtime</dt><dd>AgentCore <b>ap-south-2</b><br>panchayat-3FFhtr5OfG</dd></div>
+    <div class="strip-cell"><dt>Test suite</dt><dd><b>522</b> passed · 37 skipped<br>ruff clean</dd></div>
+    <div class="strip-cell"><dt>Live table</dt><dd><b>28</b> rows · GSI1<br>streams on</dd></div>
+    <div class="strip-cell"><dt>Jurisdiction</dt><dd><b>31</b> curated entries<br>9 feeders · 74 aliases</dd></div>
+    <div class="strip-cell"><dt>Model plane</dt><dd style="color:var(--blocked)"><b style="color:var(--blocked)">Blocked</b> account-wide<br>case 178898467100367</dd></div>
+  </dl>
+  <p class="asof">Figures re-measured 13 Sep 2026 by running the suite and describing the live table. Nothing below is recalled.</p>
+</header>
+
+<div class="shell">
+
+  <nav class="rail" aria-label="Sections">
+    <h2>Docket index</h2>
+    <ol>
+      <li><a href="#a"><span class="sec">A</span><span>Why agents at all</span><span class="n">6</span></a></li>
+      <li><a href="#b"><span class="sec">B</span><span>Where the model runs</span><span class="n">5</span></a></li>
+      <li><a href="#c"><span class="sec">C</span><span>Who receives it</span><span class="n">6</span></a></li>
+      <li><a href="#d"><span class="sec">D</span><span>Grounding without location</span><span class="n">5</span></a></li>
+      <li><a href="#e"><span class="sec">E</span><span>Hard-coding &amp; proof</span><span class="n">7</span></a></li>
+      <li><a href="#f"><span class="sec">F</span><span>Where output is stored</span><span class="n">4</span></a></li>
+      <li><a href="#g"><span class="sec">G</span><span>Privacy &amp; limits</span><span class="n">7</span></a></li>
+    </ol>
+  </nav>
+
+  <main class="col">
+
+  <!-- ============ A ============ -->
+  <section id="a">
+    <div class="sec-head">
+      <span class="letter">A</span>
+      <h2>Why agentic AI at all</h2>
+      <p>The first question, and the one a judge is entitled to be sceptical about. "Could this be a cron job and a form?" deserves a real answer.</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A1</span><span class="chip d">By design</span></div>
+        <h3>Why does this need agents rather than a workflow engine and a database?</h3>
+        <p class="lead">Because the work is not one process. It is four, running on different triggers, on different timescales, with no shared call stack — and three of them have to make judgement calls with nobody watching.</p>
+        <p>A form submits a complaint. What this system does is pursue one for eleven weeks: decide which of thirty-one jurisdiction entries fits a sentence someone typed in Kannada; decide whether two households on the same trunk main are reporting one fault or two; decide whether an office that marked a ticket "resolved" actually did anything; decide when a statutory window has breached and who is next up the ladder. Each of those is a decision under ambiguity that has to be made, recorded, and defended with a citation.</p>
+        <p>The agentic part is not that a model writes prose. It is that <strong>each decision is owned by a named component that can refuse</strong> — the Remedy agent returns "I do not know, ask" rather than guessing an authority; the Anti-Abuse agent can veto a merge the scorer proposed; the Warden can block a field from crossing the membrane. A workflow engine has no seat for "decline and say why."</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/request_path.py · agents/remedy.py:192 · agents/anti_abuse.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A2</span><span class="chip v">Verified live</span></div>
+        <h3>What are the four execution paths, and why not model everything as one agent loop?</h3>
+        <p class="lead">Because a Graph invocation cannot wait seven days, and it cannot react to a row arriving. Exactly one of the four things this system does is request-scoped.</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>Path</th><th>Trigger</th><th>Runs on</th><th>Deployed</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Request</strong></td><td>a household reports</td><td class="m">AgentCore Runtime, one Strands Graph</td><td style="color:var(--verified)">live</td></tr>
+              <tr><td><strong>Temporal</strong></td><td>a deadline passes</td><td class="m">EventBridge Scheduler → Lambda</td><td style="color:var(--verified)">live</td></tr>
+              <tr><td><strong>Ambient</strong></td><td>a claim row arrives</td><td class="m">Lambda on DynamoDB Streams</td><td style="color:var(--gap)">handler written, not wired</td></tr>
+              <tr><td><strong>Institutions</strong></td><td>called over A2A</td><td class="m">separate processes, own state</td><td style="color:var(--gap)">localhost only</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>Three of four are in production. The ambient path has its entry point but no event-source mapping yet.</figcaption>
+        </figure>
+        <p>Forcing the deadline-chasing into the request path is the mistake that makes this product a chatbot: the household closes the tab and the eleven-week pursuit — the entire premise — stops.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>CLAUDE.md §"four execution paths" · handlers/temporal.py · handlers/ambient.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A3</span><span class="chip d">By design</span></div>
+        <h3>Why A2A between the institutions instead of one bigger Swarm?</h3>
+        <p class="lead">Because a Strands <code>Swarm</code> maintains a mutable <code>SharedContext</code> that every agent in it reads and writes. That is correct inside one household and catastrophic across households.</p>
+        <p>Putting BWSSB's desk and five households in one Swarm would mean every participant can read every other participant's state. The privacy promise would be decorative. So the trust boundary is a process boundary: <strong>the institution desks never import <code>core.store</code></strong> and have no access to our table. They hold their own tickets in their own memory, exactly as a real office would.</p>
+        <p>Same argument at the other end: the Swarm is used <em>inside</em> one household, where members legitimately share context when deciding what the household wants.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>institutions/server.py:6–10 · agents/household.py:45 · CLAUDE.md §Verified API surface</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A4</span><span class="chip d">By design</span></div>
+        <h3>Clustering is the headline. Why is it not part of the request path?</h3>
+        <p class="lead">Because the spine has to work at N=1, and clustering must never gate a single household's complaint.</p>
+        <p>One household reporting alone gets the full journey: routed, drafted, tracked, escalated. Clustering is ambient — it watches claims arriving behind that and <strong>upgrades a case already in flight</strong> when a pattern crosses threshold. Nobody opts in to collective action; it happens to them and then they are told.</p>
+        <p>The consequence worth stating on camera: on a quiet street this system invokes no model for weeks. That is a feature of the design, not an outage.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>handlers/ambient.py:14–18 · agents/pattern_watch.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A5</span><span class="chip v">Verified live</span></div>
+        <h3>Isn't the "Graph" just a state machine with LLM flavouring?</h3>
+        <p class="lead">Partly, and deliberately. Several spine nodes must <em>never</em> call a model, and the code says so in the type.</p>
+        <p><code>FunctionNode</code> wraps a plain Python callable as a Strands graph node. <code>warden.minimise()</code> is field reduction — a model there could improvise a leak. <code>remedy.resolve()</code> is a table lookup — a model there would hallucinate an authority. Nodes that genuinely reason, like intake extraction and household deliberation, take a real Strands <code>Agent</code>, and <code>add_node</code> accepts either.</p>
+        <p>The honest framing: this is a graph where <strong>the reasoning is concentrated where ambiguity actually lives</strong>, and everything else is deterministic and auditable. A judge should be more worried about the reverse.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/nodes.py:1–20 · graph/request_path.py:718 build_graph()</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">A6</span><span class="chip v">Verified live</span></div>
+        <h3>How many agents are there, exactly?</h3>
+        <p class="lead">Eight: intake, household, warden, remedy, watchdog, pattern_watch, anti_abuse, digest. Plus five institution desks on the far side of the A2A boundary, in their own processes.</p>
+        <p>Our own docs used to disagree — <code>README.md</code> claimed eleven, <code>CLAUDE.md</code> claimed nine, and <code>core/tags.py</code> claimed eleven again. All three now say eight, which is what a judge who counts files will find. The household Swarm additionally spawns one <code>Agent</code> per member at runtime, which is where the inflated counts came from.</p>
+        <p>The same pass fixed a larger overclaim: the README said "all five Strands multi-agent patterns", and <strong><code>Workflow</code> is never imported anywhere in the repo.</strong> Four are genuinely used — Swarm, Graph, Agents-as-Tools, A2A — and the escalation ladder is our own class driven by the Watchdog across weeks, because no Workflow invocation survives a seven-day statutory window.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>README.md:45 · CLAUDE.md:192 · core/tags.py:12 · fixed on branch docs/fix-counts</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ B ============ -->
+  <section id="b">
+    <div class="sec-head">
+      <span class="letter">B</span>
+      <h2>Where the model actually runs</h2>
+      <p>The uncomfortable one. Bedrock's data plane is blocked on this account, so be precise about what that costs and what it does not.</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">B1</span><span class="chip b">Account-blocked</span></div>
+        <h3>Bedrock is blocked. So is there any AI running in this at all?</h3>
+        <p class="lead">Right now the deployed spine completes with <code>totalTokens: 0</code>. Every node that would call a model falls back to deterministic parsing instead. That costs quality, not availability — and we say so rather than hiding it.</p>
+        <p>Every <code>bedrock-runtime</code> invoke on this account returns <code>ValidationException: Operation not allowed</code>, all vendors, all regions, while the control plane happily lists 120 models. It is account-level authorization — not IAM, not model access, and nothing in the console fixes it. Support case 178898467100367.</p>
+        <p><strong>Read the error, it tells you which problem you have.</strong> <code>AccessDeniedException</code> names a principal and means an IAM policy is missing, which you can fix. <code>ValidationException: Operation not allowed</code> names the account and you cannot. Conflating the two cost us a day.</p>
+        <div class="note"><p class="hdr">What is not blocked</p><p>AgentCore itself. Runtime, Memory, Gateway, Identity and Code Interpreter all answer clean — which is the part the hackathon actually grades. The deploy target was never at risk.</p></div>
+        <div class="cite"><span class="lbl">Evidence</span><span>CLAUDE.md §Bedrock · core/models.py:110 probe() · docs/DEPLOY.md:236</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">B2</span><span class="chip d">By design</span></div>
+        <h3>So which steps would call a model, and which never will?</h3>
+        <p class="lead">Four call sites, all injectable. Everything else is a lookup or a comparison, permanently.</p>
+        <ul>
+          <li><strong>Intake extraction</strong> — only when one sentence carries more than one problem. A single-need report needs no model at all; the split is deterministic on <code>and</code> / <code>;</code> first.</li>
+          <li><strong>Household deliberation</strong> — the Swarm, deciding what this household actually wants.</li>
+          <li><strong>Pattern Watch adjudication</strong> — <em>the</em> one model call in the mesh lane: are these genuinely the same failure?</li>
+          <li><strong>Embeddings</strong> — Titan v2, in the ambient Lambda, on the stream record.</li>
+        </ul>
+        <p>Never: the Warden (a model could improvise a leak), the Remedy lookup (a model would invent an authority), and the whole of Anti-Abuse — <em>"no model in this file, ever. The text this agent polices is household-authored, and a model reading it could be talked into approving the merge by the very thing it is meant to catch."</em></p>
+        <div class="cite"><span class="lbl">Evidence</span><span>agents/intake.py:52 · agents/pattern_watch.py:291 _judge() · agents/anti_abuse.py:12 · core/scoring.py:254 embed()</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">B3</span><span class="chip d">By design</span></div>
+        <h3>Why is the model never allowed to pick the authority?</h3>
+        <p class="lead">Because a hallucinated authority reproduces the exact failure we claim to fix.</p>
+        <p>Filing against the wrong department is the most common way a valid complaint quietly dies — and the citizen is never told that is what happened, only that the ticket closed. A model that invents "BBMP Water Department" would be manufacturing precisely that outcome while looking confident.</p>
+        <p>So the division of labour is explicit: <strong>a model may read messy free text well enough to pick the key</strong> — service, segment, feeder. <strong>It may never produce the value.</strong> The authority comes from <code>data/jurisdiction/*.yaml</code> or the agent says it does not know and asks. Every routing decision carries a citation, and an entry with no <code>statute_ref</code> raises at load: <em>"an entry without a citation is a guess with a table around it."</em></p>
+        <div class="cite"><span class="lbl">Evidence</span><span>agents/remedy.py:1–17 · agents/remedy.py:108 (statute_ref guard) · hard rule 3</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">B4</span><span class="chip d">By design</span></div>
+        <h3>Which models, which region — and why is our data in India but the inference in the US?</h3>
+        <p class="lead">Because <code>ap-south-1</code> has no Anthropic inference profiles at all. The table and the runtime are in-country; the model calls are not, and never were.</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>Role</th><th>Model</th><th>Used for</th></tr></thead>
+            <tbody>
+              <tr><td class="m">reason</td><td class="m">us.anthropic.claude-sonnet-5</td><td>deliberation, drafting, escalation judgement</td></tr>
+              <tr><td class="m">cheap</td><td class="m">us.anthropic.claude-haiku-4-5</td><td>classification, extraction, routing checks</td></tr>
+              <tr><td class="m">embed</td><td class="m">amazon.titan-embed-text-v2:0</td><td>semantic term in the correlation score</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>Region-prefixed inference profile IDs. The bare model ID will not resolve. Every ID lives in <code>core/models.py</code> and nowhere else.</figcaption>
+        </figure>
+        <p>Two seams make this survivable: <code>PANCHAYAT_MODEL=bedrock|anthropic</code> swaps the entire provider with an environment variable, so when authorization clears you change a variable rather than eight agent files. Paying Sonnet prices to classify a complaint is silly, hence two roles.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/models.py:44–56 · STATUS.md:269</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">B5</span><span class="chip d">By design</span></div>
+        <h3>No embeddings means no semantic similarity. Doesn't clustering just break?</h3>
+        <p class="lead">It would have, silently, and finding that out was the most valuable half-day of the build. A missing embedding means the semantic term is <em>unavailable</em>, not zero.</p>
+        <p>The weights are topology <code>0.40</code>, recency <code>0.25</code>, semantic <code>0.35</code>, against <code>TAU = 0.72</code>. Score a missing embedding as zero and the ceiling becomes <code>0.40 + 0.25 = 0.65</code> — <strong>below threshold</strong>. Two houses on one trunk main reporting the same fault a minute apart would score a perfect 1.0 on both components that actually ran and still never cluster. Nothing errors, nothing logs; Pattern Watch just never fires.</p>
+        <p>So the term is dropped and the score renormalised over the weights that did run. It degrades safely in the right direction too: the decoy on a different feeder scores topology 0, so its renormalised ceiling is 0.385 and it still does not cluster.</p>
+        <div class="note warn"><p class="hdr">Say this out loud in the demo</p><p><code>CorrelationScore.semantic_available</code> must reach the trace UI. While Bedrock is blocked, <strong>every</strong> cluster forms this way. Showing clusters without saying semantic never ran is claiming agreement the system did not compute.</p></div>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/scoring.py:24–31 · CLAUDE.md §Clustering without embeddings</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ C ============ -->
+  <section id="c">
+    <div class="sec-head">
+      <span class="letter">C</span>
+      <h2>Who receives the complaint</h2>
+      <p>Nothing is autonomous about this. Follow one report from a sentence to a named officer's desk and see where the human sits.</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C1</span><span class="chip v">Verified live</span></div>
+        <h3>Who actually receives the complaint, and how does it get there?</h3>
+        <p class="lead">A named officer at a specific tier — <em>"BWSSB Assistant Engineer, sub-division office"</em>, not "BWSSB" — reached over A2A through a desk that is deliberately a separate process from ours.</p>
+        <pre><i>household POSTs</i>  → AgentCore Runtime, <b>/invocations</b>
+<i>intake</i>          → 1 need parsed from the text
+<i>household</i>       → what this household actually wants
+<i>warden</i>          → a <b>Claim</b> crosses the membrane. Nothing else does.
+<i>remedy</i>          → looked up: <b>BWSSB</b> (not BBMP)  [BWSSB Citizen Charter]
+<i>file</i>            → <b>DRAFTED</b> to the Assistant Engineer, tier 1
+                   <i>— awaiting a human signature —</i>
+<i>watchdog</i>        → SLA 7d, EventBridge wake booked for the breach date
+<i>a person signs</i>  → approve(idempotency_key, <b>member_id</b>)
+<i>climb()</i>         → InstitutionClient → A2A desk → ticket reference back</pre>
+        <p>Addressing the tier's officer rather than the umbrella body is most of what makes a filing land — and it is also load-bearing in code, because <code>Filing.compute_key()</code> hashes <code>case_id|authority|tier</code>. If the Watchdog computed that key from the ladder step and the request path computed it from the umbrella body, the two keys would differ, duplicate suppression would fail, and the same complaint would be filed twice.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/request_path.py:454 _file() · institutions/routing.yaml · institutions/client.py:292 build_submit()</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C2</span><span class="chip v">Verified live</span></div>
+        <h3>Does the system file complaints by itself?</h3>
+        <p class="lead">No. Hard rule 4: agents draft, humans sign. No filing against a public body is submitted without a named person approving it, and that is enforced in the deployed system, not just in tests.</p>
+        <p>The signature takes a <code>member_id</code> and explicitly <strong>not</strong> a household — <em>"the liability lands on a person, and 'the household agreed' is not a signature anyone can be held to."</em> Approving does not submit either: recording approval and handing paper to an institution are two different acts, and collapsing them would put a network call behind a click.</p>
+        <p>Verified on the live endpoint: approve recorded <code>mem_001</code>; approving a second time was refused with the original signatory left intact. In the live table right now, three filings sit under the <code>UNSIGNED</code> partition and one does not — that one is the filing a human signed.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>agents/digest.py:199 approve() · graph/read_api.py:245 · live table: 3 × <code>UNSIGNED</code> rows</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C3</span><span class="chip s">Synthetic</span></div>
+        <h3>The desks are simulators. Doesn't that make the whole demo a puppet show?</h3>
+        <p class="lead">It would, if they always said yes. They are adversarial by calibration — every rate is a parameter with a sourced note, and an uncited rate raises at load.</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>BWSSB desk behaviour</th><th>Rate</th><th>Anchored on</th></tr></thead>
+            <tbody>
+              <tr><td>Breaches the statutory window</td><td class="m">0.45</td><td>Sakala carries over one lakh overdue applications</td></tr>
+              <tr><td>Closes as "resolved", no work done</td><td class="m">0.30</td><td>reported Sahaaya / BBMP ticket behaviour</td></tr>
+              <tr><td>Rejects as malformed</td><td class="m">0.15</td><td>missing or mismatched RR number</td></tr>
+              <tr><td>Unreachable (portal down)</td><td class="m">0.08</td><td>observed grievance-portal downtime</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>Load a profile with no <code>calibration_note</code> and it raises: <em>"an uncited rate is a number we made up, and it turns the benchmark back into a prop."</em></figcaption>
+        </figure>
+        <p>Nearly half of all filings breach and nearly a third get falsely closed. <strong>That is the environment the Watchdog was built to survive</strong>, and it is what makes the resolution-rate number mean something rather than flatter us.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>institutions/profiles/bwssb.yaml · institutions/server.py:56 (calibration_note guard)</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C4</span><span class="chip v">Verified live</span></div>
+        <h3>What happens when nobody answers, or the office closes it falsely?</h3>
+        <p class="lead">The Watchdog wakes on the breach date, disputes a false closure using corroborating evidence, and climbs the ladder. Four tiers, each with its own statutory window and citation.</p>
+        <figure>
+          <div class="ladder">
+            <div class="rung"><span class="t">Tier 1</span><span class="who">BWSSB Assistant Engineer, sub-division office</span><span class="win">7 days</span></div>
+            <div class="rung"><span class="t">Tier 2</span><span class="who">BWSSB Assistant Executive Engineer, service station</span><span class="win">7 days</span></div>
+            <div class="rung"><span class="t">Tier 3</span><span class="who">Sakala Competent Officer, public grievance portal</span><span class="win">15 days</span></div>
+            <div class="rung terminal"><span class="t">Tier 4</span><span class="who">RTI application — drafted only, never filed by the system</span><span class="win">30 days</span></div>
+          </div>
+          <figcaption>The BWSSB ladder. BBMP's tier 1 is 3 days, and the developer ladder routes through the RWA before reaching the ULB. Tier 4 is a hard stop everywhere: an RTI needs a citizen's name, address and a Rs 10 fee, and we supply none of the three.</figcaption>
+        </figure>
+        <p>Tier 2 is where corroboration earns its keep — <em>"reopen with contradicting evidence; corroborated household count matters here."</em> One household saying the tap is dry is deniable. Seven households on one trunk main, timestamped, is not.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>data/jurisdiction/ward12.yaml ladders · agents/watchdog.py:311 reconcile_closure() · :445 climb()</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C5</span><span class="chip v">Verified live</span></div>
+        <h3>If a Lambda retries, does the household get filed twice?</h3>
+        <p class="lead">No. Hard rule 5: every institutional action is idempotent. A retrying Watchdog that files twice produces a duplicate that reads as spam and gets both copies closed.</p>
+        <p><code>put_filing_once()</code> writes under a key hashed from <code>case_id|authority|tier</code> with a conditional put; a second identical filing is recorded as <code>DUPLICATE</code> in the trace rather than sent. The two Lambda paths also have deliberately <strong>opposite</strong> retry semantics, which is the subtle part:</p>
+        <ul>
+          <li><strong>Temporal must raise</strong> on a retryable failure — EventBridge deletes the schedule when the Lambda returns cleanly, so returning a tidy error destroys the case's only pending wake.</li>
+          <li><strong>Ambient must not raise</strong> — a DynamoDB stream retries the whole batch from the same position, so one poison record would block every later claim on that shard for 24 hours. It returns <code>batchItemFailures</code> instead.</li>
+        </ul>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/store.py:971 compute key · handlers/temporal.py · handlers/ambient.py:31–48</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">C6</span><span class="chip g">Known gap</span></div>
+        <h3>Can the deployed runtime actually reach the institution desks?</h3>
+        <p class="lead">No — and this must be decided before the video is recorded, not during it.</p>
+        <p><code>institutions/server.py</code> runs on ports 9001–9005 on someone's laptop. A cloud runtime in ap-south-2 cannot call <code>localhost</code>. Two honest options: demo the end-to-end filing locally and say so, or give the desks public endpoints and set <code>WARD_ENDPOINT</code> and friends at deploy time — the client already reads them from the environment.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>institutions/client.py:42 ENDPOINT_ENV · docs/handoff/status-2026-09-13.md item 2</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ D ============ -->
+  <section id="d">
+    <div class="sec-head">
+      <span class="letter">D</span>
+      <h2>Grounding without real location data</h2>
+      <p>No GPS, no household registry, no address database. So how does a sentence become a named officer at a named office?</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">D1</span><span class="chip v">Verified live</span></div>
+        <h3>There is no location service. How is the jurisdiction query resolved?</h3>
+        <p class="lead">By a <code>segment</code> — a curated street-level key that arrives in the request payload — matched against a hand-curated table. It is a lookup against 31 rows, not a geocode and not a guess.</p>
+        <pre>lookup(service=<b>water</b>, segment=<b>"ward12-4thcross"</b>, feeder_id=<b>"bwssb-tm-14"</b>)
+  → authority     <b>BWSSB</b>        not_authority  [BBMP]
+    feeder_id     bwssb-tm-14   sla_days       7
+    statute_ref   "BWSSB Citizen Charter, restoration of interrupted supply"
+    helpline      1915</pre>
+        <p>Free text reaches that key through <strong>74 curated aliases</strong> — how people actually write a street: <code>"4th cross"</code>, <code>"4th cross road"</code>, <code>"fourth cross"</code>. The aliases live in the same YAML as the data rather than in a second copy that drifts.</p>
+        <p>Three things this does that a geocoder would not. A miss returns <code>None</code> and the system <em>asks</em> rather than guessing. A caller-supplied <code>feeder_id</code> that contradicts the curated one is treated as a miss too — <em>"rather than filing against a body chosen by whichever of the two we happened to trust."</em> And <code>lookup()</code> returns a deep copy, because a caller that mutated the shared table would empty a ladder and stall <code>climb()</code> on every later case, invisibly.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>agents/remedy.py:165 lookup() · data/jurisdiction/ward12.yaml · 31 entries, 74 aliases, 9 feeders</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">D2</span><span class="chip g">Known gap</span></div>
+        <h3>Where does <code>segment</code> come from, then? Isn't that passing the buck?</h3>
+        <p class="lead">It has to arrive with the request, because there is no household registry — nothing in the repo writes a Household row. This is a real gap and it is documented in the entrypoint rather than hidden.</p>
+        <p><code>HouseholdPosition</code> is frozen and carries no segment; jurisdiction is looked up by segment; so the caller must supply it. When it is missing, the response says <code>unrouted_reason: "no_segment"</code> rather than failing quietly five nodes in. An earlier version of the entrypoint docstring omitted <code>segment</code> from the payload example — which is how a deployed endpoint would have answered every real report with <code>UNROUTED</code> while looking perfectly healthy.</p>
+        <p>In production this is where an address-to-segment service or a one-time household registration sits. In a five-day build it is a field in the payload, said out loud.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>app.py:99–110 · graph/request_path.py:421 _remedy() <code>_NO_SEGMENT</code> branch</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">D3</span><span class="chip s">Synthetic</span></div>
+        <h3>Is the jurisdiction data real, or did you invent thirty-one rows?</h3>
+        <p class="lead">The bodies, the ladders, the helplines and the statute references are real Bengaluru civic structure. The street names are Ward 12 fixtures. Every row was curated by hand; none was generated.</p>
+        <p>It is deliberately <strong>not a constant function</strong>, which matters because a routing eval against a table where everything answers BWSSB would prove nothing — a stub returning "BWSSB" would score 100%. Three real discriminations are curated in, each a documented failure mode rather than a synthetic hard case:</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>Segments</th><th>Correct body</th><th>Why it is genuinely hard</th></tr></thead>
+            <tbody>
+              <tr><td class="m">25</td><td>BWSSB</td><td>Supply and sewerage. The standing wrong answer is BBMP.</td></tr>
+              <tr><td class="m">3</td><td>BBMP <span style="color:var(--muted)">(helpline 1533)</span></td><td>The 110 villages absorbed into BBMP in 2008 were on local-body borewells. Which side of an absorption boundary your house sits on decides the answer — and nobody living there can be expected to know.</td></tr>
+              <tr><td class="m">3</td><td>Layout developer</td><td>Pre-handover, the internal distribution belongs to the developer. BWSSB will decline these, correctly, and the household reads that as being ignored.</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>The file's header comment used to say "twenty-four of these thirty segments" against data that was 25 of 31 — corrected, since this is the file most likely to be opened on camera.</figcaption>
+        </figure>
+        <div class="note warn"><p class="hdr">Honesty item</p><p><code>statute_ref</code> names a document and the kind of clause relied on; it does not invent clause numbers. Verify each against the published charter before the demo — <strong>an unverifiable citation on camera is worse than a general one.</strong></p></div>
+        <div class="cite"><span class="lbl">Evidence</span><span>data/jurisdiction/ward12.yaml:1–50 · authority counts measured from the loaded YAML</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">D4</span><span class="chip d">By design</span></div>
+        <h3>Why does <code>feeder_id</code> matter so much?</h3>
+        <p class="lead">Because it is what separates "the same fault" from "two faults on the same day", and it cannot be recovered after the fact.</p>
+        <p>The topology score is 1.0 for a shared trunk main and 0.15 for an adjacent segment on a different one. <strong>Two houses fifty metres apart on different feeders are not the same fault; two houses four hundred metres apart on one trunk main are.</strong> Distance is the intuitive signal and it is the wrong one. There are 9 feeders across the 31 segments, so the table can express both cases.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>data/jurisdiction/ward12.yaml:52–60 · core/scoring.py W_TOPOLOGY</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">D5</span><span class="chip s">Synthetic</span></div>
+        <h3>Is the complaint corpus real complaints?</h3>
+        <p class="lead">No — it is synthetic, and the important property is that it is <strong>blind to the scorer</strong>. A test asserts that against the source, because an import added later would silently invalidate every number the corpus produces.</p>
+        <p>It models the failure first and the claims second: pick a feeder → decide it fails → decide who <em>notices</em> → decide who bothers to <em>report</em> → emit claims. Roughly 25–40% of affected households end up filing anything.</p>
+        <p>That funnel is not incidental realism — <strong>it is the premise of the project.</strong> A corpus where everyone complains is measuring a world where the problem has already been solved, and any density curve drawn against it would flatter the system by exactly the amount that matters. <code>Fault.affected</code> is recorded alongside <code>Fault.claims</code> so the curve can ask the real question rather than the flattering "of those who complained".</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>data/corpus/generator.py:1–40 · tests/test_corpus.py (21 tests) · eval/density_curve.py</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ E ============ -->
+  <section id="e">
+    <div class="sec-head">
+      <span class="letter">E</span>
+      <h2>What is hard-coded, and what the tests actually prove</h2>
+      <p>The sharpest version of this question is "could you have faked all of this?" Here is what the suite catches and, more usefully, what it does not.</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E1</span><span class="chip v">Verified live</span></div>
+        <h3>Is everything hard-coded?</h3>
+        <p class="lead">Three different things get called "hard-coded" and only one of them is a criticism. Worth separating them.</p>
+        <ul>
+          <li><strong>Curated data</strong> — the 31 jurisdiction entries, the ladders, the aliases. Hard-coded <em>on purpose</em>: this is the one thing a model is forbidden to generate.</li>
+          <li><strong>Calibrated parameters</strong> — <code>TAU = 0.72</code>, the weights, the desk failure rates. Not guessed: <code>TAU</code> is swept by <code>eval/tau_sweep.py</code>, and the comment in the source says <em>"do not hardcode a defended number."</em></li>
+          <li><strong>Deterministic fallbacks</strong> — the canned results nodes return while Bedrock is blocked. These <em>are</em> the honest weak point, and they are marked <code>stubbed=True</code> in the trace so the demo surface says so out loud.</li>
+        </ul>
+        <p>What is emphatically <em>not</em> hard-coded: the routing decision, the case state machine, the escalation tier, the SLA arithmetic, the idempotency keys, the storage layout. There is no <code>if demo_mode:</code> anywhere in the repo, and adding one to the Watchdog is explicitly forbidden by hard rule 1.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/request_path.py:81 run_or_stub() · graph/trace.py Transition.stubbed · core/scoring.py:31</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E2</span><span class="chip d">By design</span></div>
+        <h3>What does <code>run_or_stub</code> catch, and why only that?</h3>
+        <p class="lead">It catches <code>NotImplementedError</code> and nothing else, on purpose. A real bug in a teammate's code must surface as a failure rather than get papered over by canned data that makes the demo look fine.</p>
+        <p>It is one helper rather than the same try/except at every node, because four copies of the protocol is four chances to forget the <code>stubbed</code> marker — <em>and a trace that under-reports its own stubs is worse than no marker at all.</em> As lanes land, their stub markers disappear one by one; nothing gets rewired.</p>
+        <p>The same discipline shows up in two other places worth pointing at: the scheduler raises a specific <code>SchedulerNotConfigured</code> so callers can degrade on exactly that and a genuine outage still raises; and when no wake gets booked the trace prints <code>NO WAKE SCHEDULED</code> rather than a confident <code>TRACKING</code> line — <em>"the most expensive lie this system could tell a household."</em></p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/request_path.py:81 · core/clock.py:54 · graph/request_path.py:536</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E3</span><span class="chip v">Verified live</span></div>
+        <h3>What do 522 tests prove?</h3>
+        <p class="lead">That the logic holds under conditions we can force and a demo cannot: breached deadlines, false closures, duplicate filings, a desk that never answers, a claim that must not cross the membrane.</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>Area</th><th>Tests</th><th>The kind of thing pinned</th></tr></thead>
+            <tbody>
+              <tr><td>Watchdog</td><td class="m">49</td><td>breach, dispute, climb, ladder exhaustion, retry</td></tr>
+              <tr><td>DynamoDB store</td><td class="m">37</td><td>the real engine — all 37 are the skipped ones</td></tr>
+              <tr><td>Remedy / routing</td><td class="m">37 + 11</td><td>misses ask rather than guess; feeder conflict</td></tr>
+              <tr><td>Contract</td><td class="m">27</td><td>both backends answer identically</td></tr>
+              <tr><td>Read API</td><td class="m">26</td><td>no household id in any response</td></tr>
+              <tr><td>Scoring / Pattern Watch</td><td class="m">25 + 23</td><td>renormalisation; the decoy stays out</td></tr>
+              <tr><td>Anti-Abuse</td><td class="m">25</td><td>refusals, with a reason a person can read</td></tr>
+              <tr><td>Deploy policy</td><td class="m">3</td><td>IAM prefix matches the code's schedule prefix</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>35 test files. The last row is the one that earns its keep least often and saved the most: it caught an IAM policy naming <code>us-east-1</code> after the runtime moved to <code>ap-south-2</code> — a failure that would have appeared at the first wake, not at deploy.</figcaption>
+        </figure>
+        <div class="cite"><span class="lbl">Evidence</span><span><code>pytest -q</code> → 522 passed, 37 skipped, 43s · tests/test_deploy_policy.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E4</span><span class="chip d">By design</span></div>
+        <h3>The same tests run against both storage backends. What does that catch?</h3>
+        <p class="lead">Divergence between the thing we develop against and the thing we ship. The rule is that if a test passes on memory and fails on DynamoDB, <strong>the DynamoDB one is wrong</strong> — and we find that out on our own bench rather than during integration.</p>
+        <pre>pytest                              <i># memory backend, no AWS, 0.03s</i>
+PANCHAYAT_BACKEND=dynamodb pytest   <i># the real table, same tests</i></pre>
+        <p>It has already caught a real one. The seam originally had an <code>OPTIONAL</code> list, and <code>stalled_cases</code> lived on the memory backend alone for a day: the queue that surfaces a stuck household to a person worked offline and nowhere else, and nothing failed until somebody ran the suite against a real engine. <code>OPTIONAL</code> is now an empty tuple and every function is declared in <code>REQUIRED</code>.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/db.py:44–68 · tests/test_contract.py (27 tests)</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E5</span><span class="chip g">Known gap</span></div>
+        <h3>Why are 37 tests skipped?</h3>
+        <p class="lead">All 37 are in <code>tests/test_store_dynamodb.py</code> and need a real DynamoDB engine. They are not broken and not disabled — they are the other half of the both-backends rule and run under <code>PANCHAYAT_BACKEND=dynamodb</code>.</p>
+        <p>Being precise about this matters: a skipped test is not a passing test, and "522 passed" without the qualifier would be overstating the position by exactly 37.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span><code>pytest -rs</code> → all 37 skips cite "needs a real DynamoDB engine"</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E6</span><span class="chip s">Synthetic</span></div>
+        <h3>What does the eval harness measure — and what does it deliberately not?</h3>
+        <p class="lead">Routing accuracy against 50 labelled complaints, with a target of 80%. It measures the table's coverage. It does <em>not</em> yet measure the extraction, and the file says so in its own header.</p>
+        <p>The default extractor is keyword matching over the curated aliases, and the corpus was hand-labelled by the same person on the same afternoon — so a high score says the table is wide enough, not that the NLU works. <code>evaluate()</code> takes the extractor as an argument precisely so the real model call swaps in on one line and the number starts meaning the harder thing.</p>
+        <p>Three complaints in the set are written the way people actually write them — abbreviated, misspelt, unspaced — and the alias list does not cover them. They are labelled with the true authority and count as failures: <strong>a gate that cannot fail is not a gate.</strong></p>
+        <div class="cite"><span class="lbl">Evidence</span><span>eval/routing_accuracy.py:1–24 · eval/tau_sweep.py · eval/density_curve.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">E7</span><span class="chip d">By design</span></div>
+        <h3>Time is compressed for the demo. Isn't that simulating away the hard part?</h3>
+        <p class="lead">It would be, if the compressed path were different code. The rule that keeps it honest: <strong>both clock implementations drive the same Watchdog function.</strong></p>
+        <p><code>TIME_SCALE=1</code> is production; <code>TIME_SCALE=86400</code> makes one statutory day elapse in one real second. Seven statutory days cannot elapse inside a five-day build, so the Watchdog has to be able to run on compressed time — but there is no <code>if demo_mode:</code> branch inside it, and adding one is forbidden. <em>"If you want to, the clock is wrong."</em></p>
+        <p>Hard rule 1 is enforced by the linter, not by memory: <code>DTZ</code> is in the pinned ruff selection, so <code>datetime.utcnow()</code> fails the build. The institution desks import the same clock too — an office answering on wall time while the Watchdog runs at 86400× would never respond inside a window, and the demo would be measuring nothing. Shared time is not shared state.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/clock.py:1–18 · ruff.toml (DTZ) · institutions/server.py:11–15 · tests/test_time_discipline.py</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ F ============ -->
+  <section id="f">
+    <div class="sec-head">
+      <span class="letter">F</span>
+      <h2>Where the output is stored</h2>
+      <p>One table, six row types, in India. Plus traces, and one place where nothing durable is written yet.</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">F1</span><span class="chip v">Verified live</span></div>
+        <h3>Where does everything actually get stored?</h3>
+        <p class="lead">A single DynamoDB table named <code>panchayat</code> in <code>ap-south-2</code> (Hyderabad), single-table design, <code>PK</code>/<code>SK</code> with one GSI. It holds 28 rows right now from real invocations of the deployed endpoint.</p>
+        <figure>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>Row type</th><th>PK</th><th>SK</th><th>Answers</th></tr></thead>
+            <tbody>
+              <tr><td class="m">claim</td><td class="m">CLAIM#&lt;id&gt;</td><td class="m">META</td><td>what crossed the membrane</td></tr>
+              <tr><td class="m">case</td><td class="m">CASE#&lt;id&gt;</td><td class="m">META</td><td>status, tier, SLA deadline</td></tr>
+              <tr><td class="m">filing</td><td class="m">CASE#&lt;id&gt;</td><td class="m">FILING#&lt;key&gt;</td><td>the drafted paper and its signatory</td></tr>
+              <tr><td class="m">filing_pointer</td><td class="m">FILING#&lt;key&gt;</td><td class="m">META</td><td>sign by key without knowing the case</td></tr>
+              <tr><td class="m">case_by_feeder</td><td class="m">FEEDER#&lt;f&gt;#SVC#&lt;s&gt;</td><td class="m">TS#…#CASE#&lt;id&gt;</td><td>who else is on this trunk main</td></tr>
+              <tr><td class="m">unsigned_filing</td><td class="m">UNSIGNED</td><td class="m">CASE#…#TIER#…#FILING#…</td><td>the human signature queue</td></tr>
+            </tbody>
+          </table></div>
+          <figcaption>Live keys, read from the table. <code>GSI1</code> is keyed on status for cases and on <code>SEG#…#SVC#…</code> for claims — Pattern Watch queries the index, never a scan.</figcaption>
+        </figure>
+        <p>The <code>FEEDER#</code> rows exist because the declared case index is keyed on status, so there is no index on <code>feeder_id</code> at all. Without them, "who else is on this feeder" would be a full scan on the ambient path.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span><code>aws dynamodb describe-table</code> → 28 items, ACTIVE, GSI1, streams NEW_AND_OLD_IMAGES · core/store.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">F2</span><span class="chip v">Verified live</span></div>
+        <h3>Is the data in India?</h3>
+        <p class="lead">The table and the runtime are both in <code>ap-south-2</code>, Hyderabad. The model calls are not, and never were — <code>ap-south-1</code> has no Anthropic inference profiles at all.</p>
+        <p>Worth knowing why we are in Hyderabad rather than Mumbai: the AgentCore <code>maxAgents</code> quota is <strong>per-region</strong>, and it is 0 in us-east-1, us-west-2, eu-west-1 <em>and</em> ap-south-1, while sitting at the full default of 1,000 in ap-south-2. Four zeroed regions were nearly generalised to "all of them", which would have meant waiting on a support ticket that did not need to exist. Data residency is a happy side effect of that, not the original reason.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>arn:aws:bedrock-agentcore:<b>ap-south-2</b>:699073937307:runtime/panchayat-3FFhtr5OfG</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">F3</span><span class="chip v">Verified live</span></div>
+        <h3>Where do the traces go, and can you actually follow one case?</h3>
+        <p class="lead">CloudWatch, and yes. AgentCore instruments the runtime itself — our <code>panchayat</code> log lines already arrive with <code>otelTraceID</code> set and <code>otelTraceSampled: true</code>.</p>
+        <p>Every node opens a span carrying its <code>case_id</code>, so <strong>every span from one case, across all four execution paths, sits under one query.</strong> Without it a slow request is just a slow request; with it, the node that cost the time is named.</p>
+        <p>The <code>CaseTrace</code> object is separate and more important for the demo: it is the human-readable story, and it is treated as a first-class product surface rather than a log. Almost nothing good about this system has a natural screen — the Warden refusing to leak an inference, Pattern Watch going four days without invoking a model, the Watchdog disputing a closure using seven other households' claims. All of it happens in a log, so the log is the product.</p>
+        <div class="note warn"><p class="hdr">Known gap</p><p><code>demo/trace_ui/</code> is an empty untracked folder. The data is all there; nothing renders it yet.</p></div>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/trace.py:1–14 · graph/nodes.py:68–74 · graph/observability.py</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">F4</span><span class="chip d">By design</span></div>
+        <h3>What runs when nothing is happening?</h3>
+        <p class="lead">Nothing. There is no poller, no scheduled sweep, no always-on process.</p>
+        <p>A wake is booked against a specific case for a specific date as an EventBridge schedule named <code>pnc-&lt;case_id&gt;-&lt;action&gt;</code>, with <code>ActionAfterCompletion: DELETE</code> so it cleans itself up. The Watchdog is stateless between wakes — AgentCore Runtime sessions cap at eight hours and statutory windows are measured in weeks, so all case state lives in the table and nothing is held in memory across a deadline.</p>
+        <p>On a quiet street the ambient path invokes no model for weeks, the temporal path sleeps until a real date, and the cost is storage plus the requests that actually arrive.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>core/clock.py:36 SCHEDULE_PREFIX · verified wake: <code>pnc-case_ea0c49e96c9e-expire_draft</code></span></div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ G ============ -->
+  <section id="g">
+    <div class="sec-head">
+      <span class="letter">G</span>
+      <h2>Privacy, safety, and the limits we will say out loud</h2>
+      <p>The questions where the right answer is sometimes "that is a real hole, here is where it is."</p>
+    </div>
+    <div class="entries">
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G1</span><span class="chip d">By design</span></div>
+        <h3>What crosses the privacy membrane, and what never does?</h3>
+        <p class="lead">Only a <code>Claim</code> crosses, and only the Warden emits one. <code>HouseholdPosition</code> — the thing that knows what the household actually wants and why — never leaves.</p>
+        <p>The Warden also scans for <em>correlation</em> leaks, which is the class no schema catches. A household declining Tuesday and Friday swaps has told the mesh someone has a Tuesday–Friday commitment; the leak is in the pattern, not in any single field.</p>
+        <p>The read API applies the same discipline outward: <code>get_case</code> and <code>list_cases</code> build responses from an <strong>allowlist</strong> projection, not by deleting fields from the full object. That is not stylistic — a denylist means every new field on <code>Case</code> is published by default until someone remembers to redact it.</p>
+        <div class="note"><p class="hdr">Two leaks this caught in our own code</p><p><code>merged_from</code> was publishing raw <code>hh_x:clm_y</code> provenance tokens, and the "what are we waiting on" field was a household id. Both were found by searching for id <em>values</em> rather than the field name — searching for the key <code>household_ids</code> found neither.</p></div>
+        <div class="cite"><span class="lbl">Evidence</span><span>agents/warden.py:37 · graph/read_api.py <code>_case_public()</code> · tests/test_read_api.py (26 tests)</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G2</span><span class="chip d">By design</span></div>
+        <h3>Why "minimisation, not anonymity"? Why not just promise anonymity?</h3>
+        <p class="lead">Because it would be a lie, and a checkable one. Eight houses on a cross street means any claim precise enough to file is precise enough to identify.</p>
+        <p>A complaint that says "no water on 4th Cross for three days" against a feeder with nine households on it is not anonymous no matter what we do to the payload. What we can actually guarantee is that <strong>income, health, arrears and schooling never cross the membrane</strong> — and that is a promise the code keeps rather than a claim the marketing makes.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>hard rule 9 · agents/warden.py minimise()</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G3</span><span class="chip d">By design</span></div>
+        <h3>Could this be turned against a neighbour?</h3>
+        <p class="lead">Aggregation points outward only. Collective pressure may be assembled against an institution, never against a person or a household — and that rule is in the routing data, not only in the README.</p>
+        <p>The escalation ladder for a private layout has the residents' welfare association at tier 2, and the A2A routing table gives it <strong>no desk</strong>, with the reason stated in the file: <em>"the RWA is a neighbour, not an institution."</em> Same for the layout developer: <em>"contractual, not statutory — this tier is a conversation the household has to have."</em> Those are guardrails, not missing integrations, and the Digest surfaces them to a person instead.</p>
+        <p>And nothing here touches the police. Read, track, advise only — no autonomous FIR filing, in any tier, for any service.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>institutions/routing.yaml:22–40 · hard rules 7 and 8</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G4</span><span class="chip g">Known gap</span></div>
+        <h3>Anyone can call <code>approve</code> with any <code>member_id</code>. Isn't that a hole?</h3>
+        <p class="lead">Yes. It is the single largest gap in the deployed system and we should name it before a judge does.</p>
+        <p>There is no authentication on the endpoint. Anyone who can invoke it can read any case by id and approve any filing by passing any <code>member_id</code> string. Hard rule 4's "the liability lands on a named person" is currently only as strong as the caller's honesty.</p>
+        <p><strong>The frontend team must know this:</strong> a UI that lets someone type their own <code>member_id</code> makes the signature meaningless. The fix is an identity layer — AgentCore Identity exists for exactly this — and it is P1.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>graph/read_api.py:245 approve() · docs/handoff/status-2026-09-13.md item 1</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G5</span><span class="chip g">Known gap</span></div>
+        <h3>What else is not finished?</h3>
+        <p class="lead">Six things, listed so nobody discovers them on camera.</p>
+        <ul>
+          <li><strong>No authentication</strong> (G4) — P1.</li>
+          <li><strong>Cloud runtime cannot reach the localhost desks</strong> (C6) — decide before recording.</li>
+          <li><strong>Bedrock models blocked account-wide</strong> (B1) — costs quality, not availability.</li>
+          <li><strong>The trace UI does not exist.</strong> The data is there; nothing renders it.</li>
+          <li><strong><code>list_cases</code> shows only open cases</strong> — so "your complaint was resolved", the most satisfying screen in the product, cannot be built yet. Needs a by-household query on the store.</li>
+          <li><strong>Standing items:</strong> <code>compose_filing()</code> wants an <code>rr_number</code> nothing collects (required by 25 of 31 entries); no household registry; no version guard on <code>Case</code> with three writers; <code>.env.example</code> is stale and lists four variables nothing reads.</li>
+        </ul>
+        <div class="cite"><span class="lbl">Evidence</span><span>docs/handoff/status-2026-09-13.md</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G6</span><span class="chip d">By design</span></div>
+        <h3>What was designed and deliberately not built?</h3>
+        <p class="lead">The institutional tail only, text intake only, one ward. Naming your own compromises reads as judgement rather than weakness.</p>
+        <p>Drawn and not built: the mutual-aid and shared-cost tails, voice and vernacular input, per-member privacy <em>inside</em> a household, and cross-neighbourhood federation. The transliterated Kannada read-back strings in <code>agents/intake.py</code> are honest about this too — the comment says <em>"no script asset in this repo."</em></p>
+        <div class="cite"><span class="lbl">Evidence</span><span>CLAUDE.md §Scope for the five days · agents/intake.py:20</span></div>
+      </article>
+
+      <article class="entry">
+        <div class="meta"><span class="qid">G7</span><span class="chip v">Verified live</span></div>
+        <h3>Is it genuinely deployed, or is the demo running on a laptop?</h3>
+        <p class="lead">Genuinely deployed. Two of the four paths were proven by filing a real report against the live endpoint and watching the table change — not by running a test.</p>
+        <pre>report        → case_ea0c49e96c9e, drafted, SLA 2026-09-19
+EventBridge   → <b>pnc-case_ea0c49e96c9e-expire_draft</b>
+                at(2026-09-19T20:37:48) → panchayat-watchdog
+                ActionAfterCompletion: DELETE
+fire the wake → {"woken": 1, "failed": 0}
+DynamoDB      → status <b>drafted → dormant</b></pre>
+        <p>An unsigned draft that expired became DORMANT, which is the correct transition — not a breach, because under hard rule 4 nothing had been submitted to anybody. Runtime → EventBridge → Lambda → Watchdog → DynamoDB, end to end.</p>
+        <p>What is still local: the five institution desks (C6). Be straight about that on camera rather than letting it be discovered.</p>
+        <div class="cite"><span class="lbl">Evidence</span><span>Lambda <code>panchayat-watchdog</code>, arm64, python3.12, 15.9 MB · roles panchayat-watchdog-exec, panchayat-scheduler</span></div>
+      </article>
+
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<footer>
+  <span>Panchayat · Ward 12, Bengaluru · Good Neighbor track</span>
+  <span class="mono">main @ 79b60b8 · 522 passed · ruff clean · 13 Sep 2026</span>
+</footer>
+
+</div>

@@ -9,7 +9,7 @@ produces
     tag=ladder event=climbed case_id=case_a7f3 tier=2 authority="BWSSB AEE"
 
 WHY A VOCABULARY RATHER THAN free-text logging
-Eleven agents across four execution paths, and by Thursday the only question
+Eight agents across four execution paths, and by Thursday the only question
 that matters is "what happened to case X". Free-text logs cannot answer it.
 Every line carries tag= and event=, and every line about a case carries
 case_id=, so one grep reconstructs the whole eleven-week story.

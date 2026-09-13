@@ -189,7 +189,7 @@ and the cost story survives.
 
 ## Scope for the five days
 
-**Built:** institutional tail only, text intake, 9 agents, one ward of curated
+**Built:** institutional tail only, text intake, 8 agents, one ward of curated
 jurisdiction data, calibrated institution simulators, the eval harness.
 
 **Designed, drawn, not built:** mutual-aid and shared-cost tails, voice and
