@@ -122,14 +122,20 @@ someone with Service Quotas access.
 
 ## What the live page shows honestly, and why
 
-- **Signed filings stay "Submitted: not yet", and that is now the honest
-  answer.** Until 16:45 UTC on 13 Sep the `panchayat-watchdog` Lambda ran
-  12 Sep code that ignored the wake a signature books; measured on two
-  browser-signed cases, it returned in 749 ms and 5 ms having done nothing.
-  After redeploying from `main`, a filing signed on this site at 16:46:11 was
-  picked up at 16:47 and logged `PAUSED watchdog -> endpoint unreachable,
-  clock held, retry in 1d`. The desks run only on localhost, so the case reads
-  `escalating` with its clock held.
+- **A signed filing now reaches a real desk and comes back with a ticket.**
+  `case_a563a3394549`, signed on this site at 18:24 UTC on 13 Sep: the
+  Watchdog called the deployed `bwssb` desk over A2A and the desk issued
+  **BWSSB-100002**. The case reads `tracking`, with a statutory deadline of
+  20 Sep. Two earlier walls had to fall first: the Watchdog Lambda was running
+  12 Sep code that ignored the wake a signature books (redeployed 16:45 UTC),
+  and the desks ran only on a laptop (deployed 18:0x UTC, see
+  `docs/deploy/SETUP.md` Stage 4).
+- **A rejection is not a fault.** The desk refuses filings with "incomplete
+  particulars" when the body does not state duration and who is affected --
+  a calibrated behaviour, and roughly what a real counter does. The Watchdog
+  reports every failed submit, rejection included, as `endpoint unreachable`,
+  which cost an hour of chasing a network fault that did not exist. The
+  wording is in `agents/watchdog.py`, which is Raghav's.
 - **A lapsed draft cannot be signed through the site.** The page hides the
   button on `dormant`, `withdrawn` and `resolved` cases, and the door refuses
   the request with 409. The runtime's `approve()` still accepts it from any

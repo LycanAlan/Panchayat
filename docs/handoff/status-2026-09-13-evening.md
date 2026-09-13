@@ -162,7 +162,7 @@ caught because the smoke test *called* the model rather than reading about it.
 | Request path | live, reasoning, persisting |
 | Temporal path | live, EventBridge delivery **observed** |
 | Signature → submit | **deployed and verified**: signature, wake, Watchdog tries the desk; desk unreachable, clock held, retry booked |
-| Institution desks | still localhost, the last wall |
+| Institution desks | **bwssb deployed** on AgentCore as an A2A server; a signed filing came back with ticket BWSSB-100002. Four desks still local |
 | Ambient / clustering | **deployed and running**: a claim crosses TAU, but nothing merges, because every report already has its own case and cross-case merge is an open group decision |
 | Site | **deployed**: Lambda URL in ap-south-1, calling the runtime in ap-south-2 |
 
@@ -171,7 +171,12 @@ caught because the smoke test *called* the model rather than reading about it.
 1. **Redeploy the watchdog Lambda.** Done at 16:45 UTC and verified on a real
    signed filing.
 2. **Deploy the site.** Done: `scripts/deploy_web.ps1`, no admin step.
-3. **Deploy the five desks.** AgentCore `serverProtocol` accepts `A2A`
+3. **Deploy the remaining four desks.** `bwssb` is live as
+   `panchayat_desk_bwssb`; `ward`, `school`, `vendor` and `payments` are the
+   same three commands with `PANCHAYAT_DESK` changed, plus a
+   `<DESK>_RUNTIME_ARN` on the Watchdog. See `docs/deploy/SETUP.md` Stage 4.
+   Historical note, from when none of them were deployed: AgentCore
+   `serverProtocol` accepts `A2A`
    natively — checked, `['MCP', 'HTTP', 'A2A', 'AGUI']` — so they can be
    AgentCore runtimes on the same `direct_code_deploy` path, and we have quota
    in ap-south-2. One snag: `serve()` binds `profile.port` (9001–9005) and
