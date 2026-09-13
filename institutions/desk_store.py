@@ -22,6 +22,7 @@ behaviour itself; this only persists what that behaviour produces.
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Any
@@ -37,6 +38,33 @@ TABLE_ENV = "PANCHAYAT_DESK_TABLE"
 OUR_TABLE_ENV = "PANCHAYAT_TABLE"
 
 _table: Any = None
+
+#: Version last read per desk, so a write can refuse to clobber a newer one.
+#: Keyed by desk name, which is right because one runtime serves one desk --
+#: see "ONE RUNTIME PER DESK" in institutions/a2a_runtime.py.
+_versions: dict[str, int] = {}
+
+#: No row at all: this desk has never been checkpointed.
+NO_ROW = -1
+
+#: A row exists but predates versioning. MEASURED, and it took all five desks
+#: down: treating this as NO_ROW conditions the write on the row not existing,
+#: which fails forever against a row that plainly does exist. Every save then
+#: raised Contended, act() retried three times and re-raised, and the desk
+#: answered nothing at all. A migration state needs its own condition, not the
+#: nearest-looking one.
+UNVERSIONED = 0
+
+
+class Contended(RuntimeError):
+    """Someone else wrote this desk between our load and our save.
+
+    Raised instead of overwriting. `a2a_runtime.act()` answers it by reloading
+    and re-running the tool, which is safe because `Desk.accept()` checks its
+    idempotency key before any random draw: the loser of a race gets the
+    winner's reference number back as DUPLICATE rather than minting a second
+    one. That is hard rule 5, and it is the whole reason this is conditional.
+    """
 
 
 def table_name() -> str:
@@ -123,12 +151,51 @@ def load(desk: Desk) -> bool:
         return False
     item = table.get_item(Key={"desk": desk.profile.name}).get("Item")
     if not item:
+        _versions[desk.profile.name] = NO_ROW
         return False
+    # A row written before this module versioned anything reads as UNVERSIONED,
+    # which is NOT the same as "no row" -- see the guard in save().
+    _versions[desk.profile.name] = int(item.get("version") or UNVERSIONED)
     desk.tickets = {ref: _unpacked(row)
                     for ref, row in (item.get("tickets") or {}).items()}
     desk._by_key = {str(k): str(v) for k, v in (item.get("by_key") or {}).items()}
     desk._n = int(item.get("n") or 0)
+    _restore_rng(desk, item.get("rng"))
     return True
+
+
+def _restore_rng(desk: Desk, raw: Any) -> None:
+    """Put the calibrated dice back where this desk left them.
+
+    MEASURED, 14 Sep. Desk seeds `random.Random(profile.name)`, so every fresh
+    instance replays one identical sequence. A laptop runs one long-lived
+    process and the sequence advances across filings, which is what the
+    calibrated rates describe. A microVM does not: without this, every cold
+    start rewinds to roll one, and the deployed vendor and payments desks
+    refused the first filing on a pretext every single time -- four probes,
+    four identical refusals, a 0.24% event if it had really been chance.
+
+    That would be our hosting quietly replacing the calibration with a fixed
+    verdict, and the rate Kartik sweeps would stop meaning anything.
+
+    A bad or absent value leaves the desk's own seeding alone rather than
+    raising: a desk that has never been checkpointed is the ordinary first
+    case, and a corrupt one should still answer.
+    """
+    if not raw:
+        return
+    try:
+        version, internal, gauss = json.loads(raw)
+        desk._rng.setstate((version, tuple(internal), gauss))
+    except (TypeError, ValueError, OverflowError):
+        # Left as seeded. Never fatal: the office still answers.
+        #
+        # OverflowError is NOT redundant and was missed on the first pass:
+        # setstate() raises it -- not ValueError -- for a negative or oversized
+        # word, so a truncated row or one written by a different Python build
+        # would have propagated out through load() and act() and stopped the
+        # desk answering anything at all, until someone deleted the row.
+        return
 
 
 def save(desk: Desk) -> bool:
@@ -142,10 +209,47 @@ def save(desk: Desk) -> bool:
     table = _open()
     if table is None:
         return False
-    table.put_item(Item={
-        "desk": desk.profile.name,
+    from boto3.dynamodb.conditions import Attr
+    from botocore.exceptions import ClientError
+
+    name = desk.profile.name
+    seen = _versions.get(name, UNVERSIONED)
+    # Derived ONCE. NO_ROW is -1, so the next version is 1 both for a desk with
+    # no row and for one whose row predates versioning. Computing it separately
+    # here and in the bookkeeping below is how the two drifted: a successful
+    # first write left _versions holding 0, so the very next save conditioned on
+    # the row being un-versioned, against a row it had just versioned itself.
+    fresh = max(seen, 0) + 1
+    item = {
+        "desk": name,
         "tickets": {ref: _packed(t) for ref, t in desk.tickets.items()},
         "by_key": dict(desk._by_key),
         "n": desk._n,
-    })
+        # The RNG POSITION is state too -- see _restore_rng. Stored as JSON
+        # rather than as a DynamoDB list because getstate() is 625 ints and a
+        # list of Decimals would be both larger and lossier on the way back.
+        "rng": json.dumps(desk._rng.getstate()),
+        "version": fresh,
+    }
+
+    # CONDITIONAL, because this is a read-modify-write of one shared item and
+    # AgentCore gives concurrent filings separate microVMs. Two of them both
+    # read n=5, both mint <DESK>-100006, and an unconditional put_item lets the
+    # later writer erase the earlier ticket: two households holding one
+    # reference number and one complaint gone from the desk's records.
+    if seen == NO_ROW:
+        condition = Attr("desk").not_exists()
+    elif seen == UNVERSIONED:
+        # Claim an old un-versioned row, but only if nobody has upgraded it
+        # since we read it.
+        condition = Attr("version").not_exists()
+    else:
+        condition = Attr("version").eq(seen)
+    try:
+        table.put_item(Item=item, ConditionExpression=condition)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise Contended(name + " was written by another session") from exc
+        raise
+    _versions[name] = fresh
     return True

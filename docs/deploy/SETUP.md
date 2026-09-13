@@ -587,12 +587,44 @@ an uncurated segment leaves it empty and those claims cannot corroborate).
 their own state** — that separation is the trust boundary, not decoration
 (CLAUDE.md: they must never touch our table).
 
-**`bwssb` is deployed, 13 Sep.** It runs as an AgentCore A2A server,
-`panchayat_desk_bwssb`, and a filing signed on the live site came back with
-ticket `BWSSB-100002`. The other four still run locally.
+**All five are deployed, 14 Sep.** Each runs as its own AgentCore A2A server
+(`panchayat_desk_<desk>`), on its own execution role, checkpointing to its own
+row in `panchayat-desks`. A filing signed on the live site came back with
+ticket `BWSSB-100002`, and a smoke filing against each of the five came back
+answered.
 
 ```bash
-# one desk, one runtime. PANCHAYAT_DESK picks which.
+# One desk, one runtime. PANCHAYAT_DESK picks which. The script does configure
+# + launch for each and prints the ARNs. It reads GEMINI_API_KEY from .env so
+# the key is never typed and never committed -- but it IS passed to `agentcore
+# launch` as an -env argument, so it does land in that child process's argument
+# vector and in PowerShell script-block logs. Protection against committing the
+# key, not against a local observer. This is the exact invocation used on
+# 14 Sep -- note `-File`, which hands the whole comma list over as ONE string,
+# so the script splits it itself rather than trusting the caller.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy_desk.ps1 \
+  -Desk bwssb,ward,school,vendor,payments
+
+# Then prove each one answers over A2A, exactly as the Watchdog addresses it:
+AWS_PROFILE=panchayat python scripts/smoke_desks.py
+
+# Finally hand the ARNs to the Watchdog. An env update is enough -- no code
+# change, so no repackaging. update-function-configuration REPLACES the whole
+# environment, so send every variable the function already has, not just the
+# new ones, or you will silently unset PANCHAYAT_TABLE and SCHEDULER_ROLE_ARN:
+aws lambda get-function-configuration --function-name panchayat-watchdog \
+  --region ap-south-2 --query 'Environment.Variables'   # start from this
+# then add BWSSB_RUNTIME_ARN, WARD_RUNTIME_ARN, SCHOOL_RUNTIME_ARN,
+# VENDOR_RUNTIME_ARN and PAYMENTS_RUNTIME_ARN and send the whole set back:
+aws lambda update-function-configuration --function-name panchayat-watchdog \
+  --region ap-south-2 --environment file://<the full set>.json
+```
+
+**The script is Windows-only. On macOS or Linux, run the two commands it wraps**
+— they are the portable path and they still work. Traps 1–3 below are yours to
+honour by hand; traps 4 and 5 do not arise off Windows.
+
+```bash
 agentcore configure -n panchayat_desk_bwssb -e desk_app.py -p A2A -r ap-south-2 \
   -dt direct_code_deploy -rt PYTHON_3_12 -rf requirements-prod.txt -ni -do -dm \
   -er arn:aws:iam::699073937307:role/panchayat-desk-exec \
@@ -600,17 +632,61 @@ agentcore configure -n panchayat_desk_bwssb -e desk_app.py -p A2A -r ap-south-2 
 agentcore launch --agent panchayat_desk_bwssb \
   -env PANCHAYAT_DESK=bwssb -env PANCHAYAT_MODEL=gemini -env GEMINI_API_KEY=... \
   -env PANCHAYAT_DESK_TABLE=panchayat-desks -env PANCHAYAT_TABLE=panchayat
-# then hand the ARN to the Watchdog as <DESK>_RUNTIME_ARN and redeploy it.
 ```
 
-**Four things that will bite whoever deploys the other four.** The entrypoint
-must sit at the repo root (`desk_app.py`): configured as
-`institutions/a2a_runtime.py`, the toolkit records a Windows backslash and the
-endpoint fails with "entrypoint could not be found in your artifact" **after**
-creating the runtime. The agent name takes no hyphens. A desk needs its own
-execution role, because the main runtime's role can read our case table. And
-the Watchdog package must bundle `boto3` and allow 180s, since an AgentCore
-cold start plus a model call does not fit in 60.
+**Then put `default_agent` back.** `agentcore configure` rewrites it in
+`.bedrock_agentcore.yaml`, so after deploying a desk the next `agentcore`
+command typed **without** `--agent` targets that desk instead of the main
+`panchayat` runtime. The script restores it; by hand, you must. That file is
+gitignored, so nothing will warn you.
+
+**Five traps closed by `scripts/deploy_desk.ps1`, and a sixth that is yours.**
+They are listed here because the script can be lost and the reasons cannot.
+
+1. **The entrypoint must sit at the repo root** (`desk_app.py`). Configured as
+   `institutions/a2a_runtime.py`, the toolkit records a Windows backslash and
+   the endpoint fails with "entrypoint could not be found in your artifact"
+   **after** creating the runtime, leaving a broken one to delete.
+2. **Agent names take no hyphens.** `panchayat_desk_<desk>`, underscored — and
+   that spelling is what the Watchdog's IAM pattern has to match.
+3. **Each desk needs its own execution role.** The main runtime's role can read
+   our case table; a desk that could is not a trust boundary.
+4. **`AWS_PROFILE` must be set.** `agentcore` uses the default credential
+   chain and reports "No AWS credentials found" with valid keys on disk.
+5. **On Windows, `uv.exe` and our `zip` shim must both be on PATH.** The
+   toolkit refuses `direct_code_deploy` with "zip utility not found" — a
+   spurious `shutil.which` check for a binary it never runs, see
+   `scripts/zip_shim.py` — and stock Windows has no `zip`.
+6. **The Watchdog package must bundle `boto3` and allow 180s.** An AgentCore
+   cold start plus a model call does not fit in 60. **This one the script does
+   not close and cannot** — it configures desks, never the `panchayat-watchdog`
+   Lambda. It is yours to check after deploying, and the first real filing is
+   where you find out you did not.
+
+**And one that is not a trap but reads like one.** A desk may answer `REJECTED
+— reference number does not match our records`. That is `server.py` refusing a
+well-formed filing on a pretext, at the profile's `reject_malformed_rate`, and
+it is calibrated behaviour rather than breakage. Likewise `UNREACHABLE`: every
+profile carries an `unreachable_rate` (0.10 on vendor). Retry before you
+conclude a desk is down — `smoke_desks.py` retries three times for exactly
+this reason.
+
+**A desk's state includes its dice, and that is not obvious.** `Desk` seeds
+`random.Random(profile.name)`, so every fresh instance replays one identical
+sequence. A laptop runs one long-lived process and the sequence advances across
+filings — which is what the calibrated rates describe. **A microVM rewinds to
+roll one on every cold start.** Measured 14 Sep: `vendor` and `payments`
+refused the first filing on a pretext *every single time*, four probes and four
+identical refusals, turning published rates of 0.08 and 0.03 into 1.0 for the
+only filing that matters. `desk_store.py` therefore checkpoints the RNG
+position alongside the tickets, the idempotency map and the counter.
+
+Two consequences when you redeploy. A desk landing on a row written before
+14 Sep has no `rng` attribute yet, so it **replays its first roll once** and
+resumes normally from the call after — which is why a freshly redeployed desk
+can refuse a filing that then succeeds on retry. And any rate measured against
+the deployed desks before 14 Sep measured the first roll repeatedly rather than
+the distribution, so it should be measured again.
 
 **Locally, they are still five processes.** `institutions/client.py` uses
 `<DESK>_RUNTIME_ARN` when set and otherwise resolves each desk by endpoint
