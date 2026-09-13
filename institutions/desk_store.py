@@ -22,6 +22,7 @@ behaviour itself; this only persists what that behaviour produces.
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Any
@@ -128,7 +129,36 @@ def load(desk: Desk) -> bool:
                     for ref, row in (item.get("tickets") or {}).items()}
     desk._by_key = {str(k): str(v) for k, v in (item.get("by_key") or {}).items()}
     desk._n = int(item.get("n") or 0)
+    _restore_rng(desk, item.get("rng"))
     return True
+
+
+def _restore_rng(desk: Desk, raw: Any) -> None:
+    """Put the calibrated dice back where this desk left them.
+
+    MEASURED, 14 Sep. Desk seeds `random.Random(profile.name)`, so every fresh
+    instance replays one identical sequence. A laptop runs one long-lived
+    process and the sequence advances across filings, which is what the
+    calibrated rates describe. A microVM does not: without this, every cold
+    start rewinds to roll one, and the deployed vendor and payments desks
+    refused the first filing on a pretext every single time -- four probes,
+    four identical refusals, a 0.24% event if it had really been chance.
+
+    That would be our hosting quietly replacing the calibration with a fixed
+    verdict, and the rate Kartik sweeps would stop meaning anything.
+
+    A bad or absent value leaves the desk's own seeding alone rather than
+    raising: a desk that has never been checkpointed is the ordinary first
+    case, and a corrupt one should still answer.
+    """
+    if not raw:
+        return
+    try:
+        version, internal, gauss = json.loads(raw)
+        desk._rng.setstate((version, tuple(internal), gauss))
+    except (TypeError, ValueError):
+        # Left as seeded. Never fatal: the office still answers.
+        return
 
 
 def save(desk: Desk) -> bool:
@@ -147,5 +177,9 @@ def save(desk: Desk) -> bool:
         "tickets": {ref: _packed(t) for ref, t in desk.tickets.items()},
         "by_key": dict(desk._by_key),
         "n": desk._n,
+        # The RNG POSITION is state too -- see _restore_rng. Stored as JSON
+        # rather than as a DynamoDB list because getstate() is 625 ints and a
+        # list of Decimals would be both larger and lossier on the way back.
+        "rng": json.dumps(desk._rng.getstate()),
     })
     return True

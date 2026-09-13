@@ -165,3 +165,44 @@ def test_a_restored_desk_answers_as_the_same_office(monkeypatch):
     again = second.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
     assert again.outcome is Outcome.DUPLICATE
     assert again.ref == filed.ref
+
+
+def test_a_restored_desk_does_not_replay_its_calibrated_rolls(monkeypatch):
+    """The RNG POSITION is state, and leaving it out rewrote the calibration.
+
+    `Desk` seeds `random.Random(profile.name)`, so every fresh instance replays
+    one identical sequence. A laptop runs one long-lived process and the
+    sequence advances across filings -- which is what the calibrated rates
+    describe. A microVM rewinds to roll one on every cold start.
+
+    Measured 14 Sep, deployed: vendor and payments refused the FIRST filing on
+    a pretext every single time, four probes and four identical refusals, where
+    chance would have made that a 0.24% event. Their published rates, 0.08 and
+    0.03, had quietly become 1.0 for the only filing that matters.
+    """
+    store: dict = {}
+
+    class Table:
+        def get_item(self, Key):  # noqa: N803 - boto3's own spelling
+            item = store.get(Key["desk"])
+            return {"Item": item} if item else {}
+
+        def put_item(self, Item):  # noqa: N803
+            store[Item["desk"]] = json.loads(json.dumps(Item, default=str))
+
+    monkeypatch.setenv(desk_store.TABLE_ENV, "panchayat-desks")
+    monkeypatch.setattr(desk_store, "_table", Table())
+
+    first = Desk(load_profile("vendor"))
+    first.accept("case_1", "water", "no water, duration 3 days, affected 4", "k1")
+    desk_store.save(first)
+    # The very next roll this desk would have made, captured after the save so
+    # the checkpoint is of the position BEFORE it.
+    resumes_with = first._rng.random()
+
+    second = Desk(load_profile("vendor"))
+    assert desk_store.load(second) is True
+    assert second._rng.random() == resumes_with
+
+    # And without the checkpoint it rewinds to the top -- the deployed bug.
+    assert Desk(load_profile("vendor"))._rng.random() != resumes_with
