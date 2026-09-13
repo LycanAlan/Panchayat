@@ -11,12 +11,12 @@
 # ---------------------------------------------------------------------------
 # Why this table is not a constant function
 #
-# Twenty-four of these thirty segments answer BWSSB. If that were all of them,
+# Twenty-five of these thirty-one segments answer BWSSB. If that were all of them,
 # the routing eval would prove nothing -- a stub returning "BWSSB" would score
 # 100%. Three real discriminations are curated in, and each is a documented
 # Bengaluru failure mode rather than a synthetic hard case:
 #
-#   1. BWSSB trunk mains (24 segments). Water supply and sewerage are BWSSB's;
+#   1. BWSSB trunk mains (25 segments). Water supply and sewerage are BWSSB's;
 #      the standing wrong answer is BBMP.
 #   2. BBMP borewell supply (3 segments). Areas in the 110 villages absorbed
 #      into BBMP in 2008 were on local-body borewells before BWSSB extended the

@@ -42,9 +42,16 @@ A spine, a membrane, and an ambient layer.
   flight** when a pattern crosses threshold. Nobody opts into collective action;
   it happens to them, and then they are told.
 
-Eleven agents across all five Strands multi-agent patterns — Swarm inside a
-household, Graph for the request path, Agents-as-Tools for grounded lookups,
-Workflow for the escalation ladder, and A2A at every trust boundary.
+Eight agents across four execution paths, using four of the Strands multi-agent
+patterns — Swarm inside a household, Graph for the request path, Agents-as-Tools
+for grounded lookups, and A2A at every trust boundary. Five more agents stand on
+the far side of that boundary as institution desks, in their own processes with
+their own state.
+
+The escalation ladder is deliberately **not** a Strands `Workflow`. It is driven
+by the Watchdog across weeks, on wakes from EventBridge — and no Workflow
+invocation survives a seven-day statutory window, for the same reason the
+ambient and temporal paths are not Graph nodes.
 
 > We use A2A not because it is impressive, but because a Swarm shares a mutable
 > context across every agent in it — and that is precisely what we promised never
@@ -54,13 +61,23 @@ Workflow for the escalation ladder, and A2A at every trust boundary.
 
 ```
 core/        contracts, clock, store, scoring     <- types.py is frozen
-agents/      the eleven
+agents/      the eight
 graph/       the request path
 institutions/ A2A servers, calibrated profiles
 data/        curated jurisdiction, synthetic corpus
 eval/        routing accuracy, tau sweep, density curve
 docs/team/   one brief per person
 ```
+
+## Explaining it to someone
+
+- **[`docs/EXPLAINER.md`](docs/EXPLAINER.md)** — the whole project in plain
+  language, no jargon left unpacked. Start here if you have to describe this to
+  a judge, a teammate's teammate, or yourself at 2am.
+- **[`docs/demo/docket.html`](docs/demo/docket.html)** — the same ground in
+  detail: forty questions we expect to be asked, each with a verdict
+  (*verified live / by design / synthetic / known gap*) and the file that proves
+  it. Open it in a browser.
 
 ## Getting started
 
