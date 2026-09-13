@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Icon from './Icon.jsx'
 import { prefersReducedMotion } from '../lib/motion.js'
-import { report } from '../lib/api.js'
+import { outcomeUnknown, report } from '../lib/api.js'
 import { DEFAULT_SEGMENT, SEGMENTS } from '../data/segments.js'
 import '../styles/live.css'
 
@@ -18,6 +18,10 @@ const STEP_MS = 380
  * signature — and the signature is given on the live file, by name. Nothing
  * below the field is scripted. If no model ran the footer says so, and if an
  * agent is still stubbed it says which.
+ *
+ * The placeholder is a hint, never a report. An empty field sends nothing:
+ * words the household did not write must not become a draft addressed to a
+ * named officer.
  */
 export default function ReportInput() {
   const [value, setValue] = useState('')
@@ -33,10 +37,11 @@ export default function ReportInput() {
 
   const submit = async (e) => {
     e.preventDefault()
-    if (phase !== 'idle') return
+    const text = value.trim()
+    if (phase !== 'idle' || !text) return
     setPhase('sending')
     try {
-      const r = await report({ text: value.trim() || EXAMPLE, segment })
+      const r = await report({ text, segment })
       const n = r?.trace?.transitions?.length ?? 0
       setResult(r)
       if (prefersReducedMotion() || n === 0) {
@@ -50,7 +55,7 @@ export default function ReportInput() {
       }
       timers.current.push(setTimeout(() => setPhase('done'), STEP_MS * n))
     } catch (err) {
-      setError(err.message)
+      setError({ code: err.message, unknown: outcomeUnknown(err) })
       setPhase('failed')
     }
   }
@@ -89,7 +94,7 @@ export default function ReportInput() {
             onChange={(e) => setValue(e.target.value)}
             disabled={busy}
           />
-          <button type="submit" className="action intake-submit" disabled={busy}>
+          <button type="submit" className="action intake-submit" disabled={busy || !value.trim()}>
             {phase === 'sending' ? 'Sending' : 'Report it'}
             <Icon name="arrowRight" size={15} />
           </button>
@@ -172,14 +177,22 @@ export default function ReportInput() {
             </>
           )}
 
-          {phase === 'failed' && (
+          {phase === 'failed' && error && (
             <>
               <p className="intake-step-v intake-failed">
-                The runtime did not answer ({error}). Nothing was filed.
+                {error.unknown
+                  ? `The runtime did not answer in time (${error.code}). The report may still have been filed, so look before sending it again.`
+                  : `Refused before it reached the runtime (${error.code}). Nothing was filed.`}
               </p>
               <div className="intake-done">
+                {error.unknown && (
+                  <Link to="/live" className="action action-indigo">
+                    Your reports
+                    <Icon name="arrowRight" size={15} />
+                  </Link>
+                )}
                 <button type="button" className="micro intake-reset" onClick={reset}>
-                  Try again
+                  {error.unknown ? 'Clear' : 'Try again'}
                 </button>
               </div>
             </>

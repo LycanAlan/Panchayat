@@ -6,8 +6,9 @@
 WHY A PROXY AT ALL. The runtime authenticates callers with SigV4
 (`authorizer_configuration: null` in .bedrock_agentcore.yaml). A browser holds
 no AWS credentials and must never be handed any, so something with an IAM role
-has to stand between the page and InvokeAgentRuntime. This is that thing and
-nothing more: it validates, forwards, and returns what the runtime said.
+has to stand between the page and InvokeAgentRuntime. This is that thing: it
+validates, checks the one thing the runtime trusts its callers about, forwards,
+and returns what the runtime said.
 
 WHY ONE LAMBDA FOR BOTH HALVES. Same origin, so there is no CORS policy to
 write and none to get subtly wrong. And it is the smallest thing that gets the
@@ -25,14 +26,22 @@ WHAT IT REFUSES, and why each check is here rather than in app.py:
   - Fields are allowlisted per action. `case_id` in particular never reaches
     a report: run_request_path() does `payload.get("case_id") or new_id()`,
     so forwarding it would let any visitor write into someone else's case.
+  - A signature must come from the household the Digest chose to carry the
+    filing, on a case that has not lapsed. The runtime's `approve` checks
+    neither. It trusts its caller, which is fine while every caller holds AWS
+    credentials and wrong the moment a public URL forwards to it. Measured
+    before this check existed: a request carrying nothing but a case id
+    signed that household's draft as `mem_stranger_review`.
   - Every forwarded value is a string, and the body is capped. The runtime
     bills per invocation and the model per token; an unbounded text field is
     an invoice anyone can write.
 
-WHAT IT DOES NOT DO: authenticate anyone. There is no login, so `household_id`
-and `member_id` are whatever the browser says they are -- the P1 recorded in
-docs/handoff. The institutions behind it are simulators and the site says so.
-Do not mistake this file for the auth layer it is not.
+WHAT IT DOES NOT DO: authenticate anyone. There is no login. What stands in for
+one is the household id: minted at random in the reporter's browser and never
+returned by any read action (graph/read_api.py strips both `household_ids` and
+the Digest's `ask`). A case id lets you read that case; signing it also takes
+the household id. That is a bearer token, not an identity, and the P1 recorded
+in docs/handoff stands.
 
 Owner: Ali (platform).
 """
@@ -54,15 +63,28 @@ SITE_DIR = Path(os.environ.get("PANCHAYAT_SITE_DIR",
 MAX_BODY_BYTES = 8_000
 MAX_TEXT_CHARS = 2_000
 
+#: Must equal --timeout in scripts/deploy_web.ps1.
+LAMBDA_TIMEOUT_S = 120
+#: An approve makes two runtime calls, and both at their worst must finish
+#: before the Lambda does -- otherwise the caller gets a bare 502 with no body
+#: and no log line. botocore's default connect timeout alone is 60 s.
+CONNECT_TIMEOUT_S = 3
+READ_TIMEOUT_S = 55
+
 #: action -> the only fields forwarded for it. See the module docstring.
 FIELDS: dict[str, tuple[str, ...]] = {
     "report": ("household_id", "member_id", "text", "language", "segment",
                "feeder_id", "service"),
     "get_case": ("case_id", "household_id"),
     "list_cases": ("household_id",),
-    "approve": ("idempotency_key", "member_id"),
+    "approve": ("idempotency_key", "member_id", "case_id", "household_id"),
     "health": (),
 }
+
+#: Case states in which a draft must not be signed. Signing one hands a desk
+#: paper for a complaint the case already let go -- the UNSIGNED bug, which
+#: the runtime's approve() does not check.
+LAPSED = frozenset({"dormant", "withdrawn", "resolved"})
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -94,12 +116,10 @@ def _invoke(payload: dict, session_id: str) -> Any:
 
     RETRIES ARE OFF, deliberately. A report is not idempotent -- each one mints
     a case -- and botocore's default is to retry a read timeout. A cold start
-    that answers at second 61 would be filed twice, and hard rule 5 exists
-    because a duplicate reads as spam and gets both copies closed. A visible
-    502 the household can retry by hand is the better failure.
-
-    The read timeout sits under the Lambda's 120s so a slow runtime surfaces
-    as our 502 rather than a Lambda timeout with no body.
+    that answers one second too late would be filed twice, and hard rule 5
+    exists because a duplicate reads as spam and gets both copies closed. A
+    visible 502 is the better failure, and the page says the report may have
+    landed rather than inviting a second one.
     """
     global _client
     if _client is None:
@@ -109,7 +129,9 @@ def _invoke(payload: dict, session_id: str) -> Any:
         _client = boto3.client(
             "bedrock-agentcore",
             region_name=_runtime_arn().split(":")[3],
-            config=Config(read_timeout=100, retries={"total_max_attempts": 1}),
+            config=Config(connect_timeout=CONNECT_TIMEOUT_S,
+                          read_timeout=READ_TIMEOUT_S,
+                          retries={"total_max_attempts": 1}),
         )
     resp = _client.invoke_agent_runtime(
         agentRuntimeArn=_runtime_arn(),
@@ -146,6 +168,38 @@ def _log(**fields: Any) -> None:
     """One structured line to CloudWatch. Never the report text: a household's
     words about its own house do not belong in an operator's log."""
     print(json.dumps({"panchayat_web": fields}))
+
+
+def _refuse_signature(payload: dict, session_id: str) -> dict | None:
+    """None if this household may sign this filing, otherwise the refusal.
+
+    Asks the runtime rather than re-deriving the answer. `get_case` with a
+    household id already reports `yours` for each pending signature, from the
+    same `digest.signature_requests()` the Digest itself uses -- one definition
+    of who may sign, not a second copy of it kept at the door.
+    """
+    case_id = payload.get("case_id", "")
+    household = payload.get("household_id", "")
+    if not case_id or not household:
+        return _json(400, {"error": "case_id_and_household_id_required"})
+
+    answer = _invoke({"action": "get_case", "case_id": case_id,
+                      "household_id": household}, session_id)
+    if not isinstance(answer, dict) or answer.get("error"):
+        error = answer.get("error") if isinstance(answer, dict) else None
+        return _json(404, {"error": error or "no_such_case"})
+
+    status = str((answer.get("case") or {}).get("status") or "")
+    if status in LAPSED:
+        return _json(409, {"error": "case_lapsed", "status": status})
+
+    key = payload.get("idempotency_key", "")
+    for entry in answer.get("awaiting_signature") or []:
+        if isinstance(entry, dict) and entry.get("idempotency_key") == key:
+            if entry.get("yours") is True:
+                return None
+            return _json(403, {"error": "not_yours_to_sign"})
+    return _json(409, {"error": "nothing_to_sign"})
 
 
 def _api(event: dict) -> dict:
@@ -188,8 +242,14 @@ def _api(event: dict) -> dict:
     if not _runtime_arn():
         return _json(503, {"error": "runtime_not_configured"})
 
+    session_id = _session_id(payload.get("household_id", ""))
     try:
-        answer = _invoke(payload, _session_id(payload.get("household_id", "")))
+        if action == "approve":
+            refusal = _refuse_signature(payload, session_id)
+            if refusal is not None:
+                _log(action=action, refused=json.loads(refusal["body"])["error"])
+                return refusal
+        answer = _invoke(payload, session_id)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one honest 502
         # The error CODE goes to the client, never the message: botocore
         # messages carry ARNs and account ids, and the page has no use for

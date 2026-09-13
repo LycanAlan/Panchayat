@@ -111,6 +111,8 @@ Invoke-Aws iam put-role-policy --role-name $RoleName --policy-name invoke-runtim
 $roleArn = (Invoke-Aws iam get-role --role-name $RoleName).Role.Arn
 
 Write-Host '4/5  function'
+# --timeout 120 below must equal LAMBDA_TIMEOUT_S in handlers/web_api.py, whose
+# runtime-call timeouts are sized to finish inside it.
 $envFile = Join-Path $work 'env.json'
 Write-Ascii $envFile ('{"Variables":{"PANCHAYAT_RUNTIME_ARN":"' + $runtimeArn + '"}}')
 if (Test-Aws lambda get-function --function-name $FunctionName) {

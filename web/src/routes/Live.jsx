@@ -42,15 +42,19 @@ function when(iso) {
 
 const HINTS = {
   no_such_case: 'No case with that id on this runtime. Case ids come from a report made on this site.',
-  runtime_unavailable: 'The runtime did not answer. A cold start can take a few seconds, so try again.',
+  runtime_unavailable:
+    'The runtime did not answer in time. A cold start can take a few seconds. If you were signing, read the file again first: the signature may have landed.',
   runtime_not_configured: 'The web Lambda has no runtime to call. That is a deploy problem, not yours.',
+  not_yours_to_sign: 'Only the household chosen to carry this filing can sign it, and that is not this browser.',
+  case_lapsed: 'This case has lapsed, so its draft can no longer be signed.',
+  nothing_to_sign: 'That draft is no longer waiting for a signature. Read the file again.',
 }
 
 function Failure({ code }) {
   return (
     <div className="live-failure">
       <p className="mono ink-terracotta">{code}</p>
-      <p className="sans dim">{HINTS[code] ?? 'The request did not complete. Nothing was signed or filed.'}</p>
+      <p className="sans dim">{HINTS[code] ?? 'The request did not complete.'}</p>
     </div>
   )
 }
@@ -158,7 +162,7 @@ function CaseFile({ caseId }) {
   const sign = async (key) => {
     setSigning(key)
     try {
-      await approve(key)
+      await approve(caseId, key)
       await load()
     } catch (err) {
       setError(err.message)

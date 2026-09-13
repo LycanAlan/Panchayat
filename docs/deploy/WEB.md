@@ -68,6 +68,10 @@ After `npm run build`, http://127.0.0.1:8787 is the production page end to end.
 - Chromium via Playwright at 1440 px and 390 px: report → trace → live file →
   **Sign**. `signed_by` was recorded and the signature queue emptied. No page
   errors, no console errors, no failed requests.
+- After the review fixes, against the live runtime on `case_ece3850e1406`:
+  approve with no household → 400, as a stranger household → 403, on the
+  dormant `case_09d7e10dbf35` → 409, as the owner → 200 signed. In Chromium
+  the owner still signs cleanly, and an empty field cannot be submitted.
 - **Not verified:** the deployed Lambda itself, which does not exist yet, and
   its role path. The same `_invoke` code ran locally under `ali`'s
   credentials.
@@ -79,19 +83,36 @@ After `npm run build`, http://127.0.0.1:8787 is the production page end to end.
 - **Allowlisted fields per action.** `case_id` never reaches a report:
   `run_request_path()` would use it, letting a visitor write into someone
   else's case.
-- **Strings only, body ≤ 8 KB, text ≤ 2,000 characters.**
-- **No botocore retries.** A report mints a case, so a retried read timeout
-  would file twice (hard rule 5).
+- **A signature only from the chosen household, only on a live case.** Before
+  forwarding `approve`, the door calls `get_case` with the browser's household
+  id. It forwards only if that filing is waiting with `yours: true` and the
+  case is not `dormant`, `withdrawn` or `resolved`. The runtime's `approve`
+  checks neither. Reproduced on 13 Sep before the check existed: a request
+  carrying only a case id signed `case_c01e6284febb` as
+  `mem_stranger_review`.
+- **Strings only, body ≤ 8 KB, text ≤ 2,000 characters.** An empty field
+  sends nothing; the placeholder is never filed.
+- **No botocore retries, and timeouts that fit.** A report mints a case, so a
+  retried read timeout would file twice (hard rule 5). Connect 3 s + read
+  55 s, twice for an approve, stays under the 120 s Lambda. botocore's default
+  connect timeout alone is 60 s. When a call times out, the page says the
+  report *may* have landed instead of inviting a second one.
 - **Report text is never logged.**
 
 ## What it does not do
 
-**Authenticate anyone.** Anyone with the URL can report, read any case whose id
-they hold, and sign any draft they can see. The institutions are simulators,
-so nothing reaches a real authority. But the Gemini quota and EventBridge
-schedules can be spent by strangers. Before sharing the URL widely, consider
-reserved concurrency on the function (`lambda:PutFunctionConcurrency`, not in
-the policy above).
+**Authenticate anyone.** There is no login. The household id stands in: it is
+minted at random in the reporter's browser and no read action returns it. A
+case id lets you read that case, including the draft text. Signing it also
+takes the household id. That is a bearer token, not an identity. The
+institutions are simulators, so nothing reaches a real authority.
+
+**Throttle anyone.** This account's Lambda concurrency limit is **10**
+(`get-account-settings`, 13 Sep), so reserved concurrency cannot be set at
+all. Those 10 are shared with `panchayat-watchdog`. A flood of reports on the
+site delays Watchdog wakes; EventBridge Scheduler retries them, so they come
+late rather than never. A quota increase is the real fix, and it needs
+someone with Service Quotas access.
 
 ## What the live page shows honestly, and why
 
@@ -103,9 +124,11 @@ the policy above).
      browser-signed cases: 749 ms and 5 ms, nothing done.
   2. Even redeployed, submit reaches desks that run only on localhost, and
      returns UNREACHABLE.
-- **A lapsed draft is not offered for signing.** The page hides the button on
-  `dormant`, `withdrawn` and `resolved` cases. The server still accepts that
-  signature (the UNSIGNED bug); the UI covers it, the bug is still there.
+- **A lapsed draft cannot be signed through the site.** The page hides the
+  button on `dormant`, `withdrawn` and `resolved` cases, and the door refuses
+  the request with 409. The runtime's `approve()` still accepts it from any
+  caller with AWS credentials (the UNSIGNED bug). The bug is fenced off, not
+  fixed.
 - **`/live` lists open cases only**, the `list_cases` limit in
   `graph/read_api.py`.
 - **"No model ran" on a one-problem report is true.** `IntakeAgent.parse()`

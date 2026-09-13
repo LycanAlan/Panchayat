@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
+import types
 
 import pytest
 
@@ -169,6 +171,120 @@ def test_report_text_is_never_logged(runtime, capsys):
     _post({"action": "report", "text": "my mother is ill and the tap is dry",
            "segment": "ward12-4thcross"})
     assert "mother" not in capsys.readouterr().out
+
+
+def test_runtime_calls_fit_inside_the_lambda(monkeypatch):
+    """An approve makes two runtime calls. Both at their worst must end before
+    the Lambda does, or the caller gets a bare 502 with no body and the log
+    line is never written. botocore's default connect timeout alone is 60 s."""
+    seen: dict = {}
+
+    class Body:
+        def read(self):
+            return b'{"ok": true}'
+
+    class Client:
+        def invoke_agent_runtime(self, **kwargs):
+            seen["call"] = kwargs
+            return {"response": Body()}
+
+    def client(service, region_name, config):
+        seen.update(service=service, region=region_name, config=config)
+        return Client()
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=client))
+    monkeypatch.setattr(web_api, "_client", None)
+    monkeypatch.setenv("PANCHAYAT_RUNTIME_ARN", ARN)
+
+    assert web_api._invoke({"action": "health"}, "s" * 33) == {"ok": True}
+    cfg = seen["config"]
+    assert 2 * (cfg.connect_timeout + cfg.read_timeout) < web_api.LAMBDA_TIMEOUT_S
+    assert cfg.retries["total_max_attempts"] == 1
+    assert seen["region"] == "ap-south-2"
+    assert seen["call"]["agentRuntimeArn"] == ARN
+
+
+# --------------------------------------------------------------- signatures
+
+APPROVE = {"action": "approve", "idempotency_key": "k1", "member_id": "mem_1",
+           "case_id": "case_1", "household_id": "hh_1"}
+
+
+def _signing_runtime(monkeypatch, *, yours=True, status="drafted", key="k1",
+                     case_error=None):
+    """A runtime whose get_case answers the door's question about one filing."""
+    calls: list[dict] = []
+
+    def fake(payload, session_id):
+        calls.append(payload)
+        if payload.get("action") == "get_case":
+            if case_error:
+                return {"error": case_error, "case_id": payload["case_id"]}
+            return {"case": {"case_id": payload["case_id"], "status": status},
+                    "filings": [],
+                    "awaiting_signature": [{"idempotency_key": key, "yours": yours}]}
+        return {"signed": True}
+
+    monkeypatch.setenv("PANCHAYAT_RUNTIME_ARN", ARN)
+    monkeypatch.setattr(web_api, "_invoke", fake)
+    return calls
+
+
+def test_a_signature_needs_the_case_and_the_household(runtime):
+    resp = _post({"action": "approve", "idempotency_key": "k1", "member_id": "mem_1"})
+    assert resp["statusCode"] == 400
+    assert runtime == []
+
+
+def test_the_chosen_household_signs(monkeypatch):
+    calls = _signing_runtime(monkeypatch)
+    resp = _post(APPROVE)
+
+    assert resp["statusCode"] == 200
+    assert [c["action"] for c in calls] == ["get_case", "approve"]
+    # The door asked about THIS household, not about the case in general.
+    assert calls[0]["household_id"] == "hh_1"
+
+
+def test_a_stranger_cannot_sign(monkeypatch):
+    """Reproduced live on 13 Sep before this check: a case id alone signed a
+    household's draft as `mem_stranger_review`."""
+    calls = _signing_runtime(monkeypatch, yours=False)
+    resp = _post(APPROVE)
+
+    assert resp["statusCode"] == 403
+    assert _json(resp)["error"] == "not_yours_to_sign"
+    assert [c["action"] for c in calls] == ["get_case"]
+
+
+@pytest.mark.parametrize("status", sorted(web_api.LAPSED))
+def test_nobody_signs_a_lapsed_case(monkeypatch, status):
+    calls = _signing_runtime(monkeypatch, status=status)
+    resp = _post(APPROVE)
+
+    assert resp["statusCode"] == 409
+    assert _json(resp)["error"] == "case_lapsed"
+    assert [c["action"] for c in calls] == ["get_case"]
+
+
+def test_a_key_from_another_case_is_refused(monkeypatch):
+    """Your own case, someone else's filing key: `yours` is about the filing
+    on THIS case, so a key not waiting there is not signable through it."""
+    calls = _signing_runtime(monkeypatch, key="a_different_filing")
+    resp = _post(APPROVE)
+
+    assert resp["statusCode"] == 409
+    assert _json(resp)["error"] == "nothing_to_sign"
+    assert [c["action"] for c in calls] == ["get_case"]
+
+
+def test_an_unknown_case_is_refused(monkeypatch):
+    calls = _signing_runtime(monkeypatch, case_error="no_such_case")
+    resp = _post(APPROVE)
+
+    assert resp["statusCode"] == 404
+    assert _json(resp)["error"] == "no_such_case"
+    assert [c["action"] for c in calls] == ["get_case"]
 
 
 def test_sessions_are_sticky_per_household_and_long_enough():

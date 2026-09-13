@@ -65,7 +65,30 @@ export function listCases() {
   return call({ action: 'list_cases', household_id: identity().household_id })
 }
 
-/** A named person approves one drafted filing. Rule 4's other half. */
-export function approve(idempotencyKey) {
-  return call({ action: 'approve', idempotency_key: idempotencyKey, member_id: identity().member_id })
+/**
+ * A named person approves one drafted filing. Rule 4's other half.
+ *
+ * The case and this browser's household travel with it, because the door
+ * checks that this household is the one chosen to carry the filing and that
+ * the case has not lapsed. The runtime behind it checks neither.
+ */
+export function approve(caseId, idempotencyKey) {
+  const me = identity()
+  return call({
+    action: 'approve',
+    case_id: caseId,
+    idempotency_key: idempotencyKey,
+    household_id: me.household_id,
+    member_id: me.member_id,
+  })
+}
+
+/**
+ * Whether a failed call may still have taken effect. A refusal from the door
+ * never reached the runtime. A timeout, a dropped connection or a Lambda that
+ * died without a body may have, and a report is not idempotent — so the page
+ * must not promise that nothing happened.
+ */
+export function outcomeUnknown(err) {
+  return !err?.data || err.data.error === 'runtime_unavailable'
 }

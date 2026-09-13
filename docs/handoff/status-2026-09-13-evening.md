@@ -178,10 +178,12 @@ caught because the smoke test *called* the model rather than reading about it.
 5. **The `UNSIGNED` bug**, still unowned. A DORMANT case keeps its filing in
    the signature queue, so the Digest will ask a person to sign paper for a
    complaint that already lapsed — and `approve()` would accept it, because it
-   validates the filing and never the case. The site hides the button on a
-   lapsed case; the server is unchanged.
+   validates the filing and never the case. The site refuses it at the door;
+   the runtime's `approve()` is unchanged.
 6. **No authentication**, still P1, and worse the day the site has a public
-   URL: anyone holding it can report, read a case by id, and sign.
+   URL: anyone holding it can report and read a case by id. Signing through
+   the site also takes the household id minted in the reporter's browser, a
+   bearer token rather than an identity.
 
 ## Two loose ends
 
