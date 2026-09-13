@@ -122,14 +122,14 @@ someone with Service Quotas access.
 
 ## What the live page shows honestly, and why
 
-- **Signed filings stay "Submitted: not yet".** Two reasons, both on the
-  Watchdog side:
-  1. The deployed `panchayat-watchdog` Lambda is from **12 Sep 20:35 UTC**,
-     before #34 merged. The runtime books the wake after a signature,
-     EventBridge delivers it, and the old code returns early. Measured on two
-     browser-signed cases: 749 ms and 5 ms, nothing done.
-  2. Even redeployed, submit reaches desks that run only on localhost, and
-     returns UNREACHABLE.
+- **Signed filings stay "Submitted: not yet", and that is now the honest
+  answer.** Until 16:45 UTC on 13 Sep the `panchayat-watchdog` Lambda ran
+  12 Sep code that ignored the wake a signature books; measured on two
+  browser-signed cases, it returned in 749 ms and 5 ms having done nothing.
+  After redeploying from `main`, a filing signed on this site at 16:46:11 was
+  picked up at 16:47 and logged `PAUSED watchdog -> endpoint unreachable,
+  clock held, retry in 1d`. The desks run only on localhost, so the case reads
+  `escalating` with its clock held.
 - **A lapsed draft cannot be signed through the site.** The page hides the
   button on `dormant`, `withdrawn` and `resolved` cases, and the door refuses
   the request with 409. The runtime's `approve()` still accepts it from any

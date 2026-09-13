@@ -5,9 +5,9 @@ ruff clean. Runtime version 10, READY, reasoning on Gemini.**
 
 The headline: **the deployed system now reasons, and the signature deadlock is
 fixed in code.** Both were broken this morning and neither was visible.
-**Correction, later the same evening:** the deadlock fix is only half deployed.
-The watchdog Lambda was never redeployed. See *The site, and the deploy gap it
-found*.
+**Correction, later the same evening:** the deadlock fix was only half
+deployed until the watchdog Lambda was redeployed at 16:45 UTC. See *The site,
+and the deploy gap it found*.
 
 ---
 
@@ -90,10 +90,13 @@ the signature. `handlers/web_api.py` is one Lambda that serves the build and
 forwards `POST /api`, because a browser cannot sign SigV4 and `ali` is refused
 CloudFront, API Gateway and Amplify. Details: `docs/deploy/WEB.md`.
 
-**Not deployed.** `lambda:GetFunctionUrlConfig` is denied for `ali`, so an
-admin has to attach `docs/deploy/web-deployer-policy.json` first. Everything
-else was proven from this machine against the live runtime, including in
-Chromium: report, trace, live file, signature recorded.
+**Deployed, with no admin step:**
+https://pcvsce443opuo4ma4wayk4bogi0btrkj.lambda-url.ap-south-1.on.aws/
+
+It is in ap-south-1 because Lambda Function URLs are not offered in
+ap-south-2. The error there, `Unable to determine service/operation name to be
+authorized`, looks like a permissions denial and is not one. `ali` had the
+rights all along.
 
 **And signing through it showed that #34 is only half deployed.** Two filings
 signed from the browser at 16:17–16:18 UTC booked their `retry_submit` wakes.
@@ -104,6 +107,14 @@ merged 13 Sep 11:41 UTC. The package was downloaded and checked: it has no
 `_tier_to_work`. The runtime half (approve books the wake) is live; the
 Watchdog half that acts on it is not. Rebuild per `docs/deploy/SETUP.md`
 Stage 2 and `update-function-code`.
+
+**Redeployed and verified the same evening.** The package was rebuilt from
+`origin/main` (`6675aa6`) with the same pins as 12 Sep (numpy 2.5.3, pyyaml
+6.0.3, python-dotenv 1.2.3), and `update-function-code` ran at 16:45:15 UTC. A
+filing signed on the public site at 16:46:11 was picked up at 16:47 and
+logged `PAUSED watchdog -> endpoint unreachable, clock held, retry in 1d`.
+`case_8a6526dc9911` now reads `escalating`, `sla_paused=true`, retry booked.
+The old package is kept locally if this ever needs rolling back.
 
 Even then a filing will not reach a desk. The desks still run only on
 localhost, so submit returns UNREACHABLE and the case pauses and retries. That
@@ -150,19 +161,16 @@ caught because the smoke test *called* the model rather than reading about it.
 | Runtime | v10 READY, ap-south-2, Gemini, real tokens |
 | Request path | live, reasoning, persisting |
 | Temporal path | live, EventBridge delivery **observed** |
-| Signature → submit | **half deployed**: the runtime books the wake, but the watchdog Lambda runs 12 Sep code and ignores it |
+| Signature → submit | **deployed and verified**: signature, wake, Watchdog tries the desk; desk unreachable, clock held, retry booked |
 | Institution desks | still localhost, the last wall |
-| Ambient / clustering | **cannot fire in production** |
-| Site | connected and proven locally against the live runtime; **not deployed**, needs one IAM grant |
+| Ambient / clustering | **deployed and running**: a claim crosses TAU, but nothing merges, because every report already has its own case and cross-case merge is an open group decision |
+| Site | **deployed**: Lambda URL in ap-south-1, calling the runtime in ap-south-2 |
 
 ## Next, in order
 
-1. **Redeploy the watchdog Lambda.** It is the missing half of #34, and
-   without it no signed filing is ever attempted. Rebuild the Stage 2 package
-   from `main` and `update-function-code`.
-2. **Deploy the site.** An admin attaches
-   `docs/deploy/web-deployer-policy.json` to `ali`, then run
-   `scripts/deploy_web.ps1`.
+1. **Redeploy the watchdog Lambda.** Done at 16:45 UTC and verified on a real
+   signed filing.
+2. **Deploy the site.** Done: `scripts/deploy_web.ps1`, no admin step.
 3. **Deploy the five desks.** AgentCore `serverProtocol` accepts `A2A`
    natively — checked, `['MCP', 'HTTP', 'A2A', 'AGUI']` — so they can be
    AgentCore runtimes on the same `direct_code_deploy` path, and we have quota
@@ -171,10 +179,13 @@ caught because the smoke test *called* the model rather than reading about it.
    Name them `panchayat-sim-*` and say "simulated counterparty" every time —
    an unlabelled `bwssb` on our account is a worse credibility problem than
    localhost ever was.
-4. **Ambient event-source mapping.** The package is built (47.1 MB zipped,
-   arm64, py3.12) but **nothing is deployed and no mapping exists** — verified
-   zero. Clustering, the thesis of this project, still cannot fire in
-   production. `handlers/ambient.py` is ready and the stream is on.
+4. **Cross-case merge for clustering.** `panchayat-ambient` and its stream
+   mapping were deployed at 16:52 UTC (`docs/deploy/ambient-lambda-policy.json`).
+   On a third report on 6th Main it logged `PATTERN 1 claim(s) on bwssb-tm-15
+   cross TAU`, then `that case is NOT absorbed ... cross-case merge is a group
+   decision`. DynamoDB confirms no case gained a household. Every report opens
+   its own case first, so until the group decides cross-case merge, clustering
+   runs and merges nothing. Kartik's lane.
 5. **The `UNSIGNED` bug**, still unowned. A DORMANT case keeps its filing in
    the signature queue, so the Digest will ask a person to sign paper for a
    complaint that already lapsed — and `approve()` would accept it, because it

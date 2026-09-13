@@ -1,0 +1,81 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTheClaimStream",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DescribeStream",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat/stream/*"
+    },
+    {
+      "Sid": "FindTheStream",
+      "Effect": "Allow",
+      "Action": "dynamodb:ListStreams",
+      "Resource": "*"
+    },
+    {
+      "Sid": "TheCaseTableAndItsIndex",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:TransactGetItems",
+        "dynamodb:ConditionCheckItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat",
+        "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat/index/GSI1"
+      ]
+    },
+    {
+      "Sid": "AnUpgradedCaseMayBookAWake",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:CreateSchedule",
+        "scheduler:GetSchedule",
+        "scheduler:DeleteSchedule"
+      ],
+      "Resource": "arn:aws:scheduler:ap-south-2:699073937307:schedule/default/pnc-*"
+    },
+    {
+      "Sid": "AndHandsEventBridgeTheRoleThatInvokesTheWatchdog",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::699073937307:role/panchayat-scheduler",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "scheduler.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:ap-south-2:699073937307:*"
+    },
+    {
+      "Sid": "EmbeddingsOnceTheAccountClears",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:699073937307:inference-profile/*"
+      ]
+    }
+  ]
+}

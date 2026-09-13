@@ -4,7 +4,7 @@ import { MASTHEAD } from '../data/indic.js'
 const COLOPHON = [
   'Deployed on Amazon Bedrock AgentCore Runtime · ap-south-2 · READY',
   'DynamoDB + EventBridge + Lambda · temporal path verified 13 Sep',
-  '522 tests · both storage backends · ruff clean',
+  '574 tests · both storage backends · ruff clean',
   'Institutions are calibrated simulators. Households are synthetic.',
 ]
 
