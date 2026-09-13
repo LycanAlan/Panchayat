@@ -260,10 +260,33 @@ class Watchdog:
             _trace("IGNORED", "watchdog",
                    "retry wake for a " + case.status.value + " case -- dropped")
             return
-        if not case.sla_paused:
+        if not case.sla_paused and case.status != CaseStatus.DRAFTED:
             # Not stuck any more. A wake scheduled a day ago can arrive after
             # a human has intervened, and climbing regardless would escalate a
             # healthy case a tier for no reason.
+            #
+            # DRAFTED IS THE SECOND WAY OF BEING STUCK, and it was not covered.
+            # `sla_paused` means "a filing did not land at a desk"; DRAFTED
+            # means "paper is sitting here unsent, waiting on a person". The
+            # first filing on a case is only ever the second kind -- the
+            # request path drafts tier 1 and books no retry, and nothing sets
+            # sla_paused because nothing has been submitted to fail.
+            #
+            # So the wake `digest.approve()` books on a signature arrived here
+            # and was dropped by this guard, and the case stayed DRAFTED
+            # forever.
+            #
+            # Checked rather than setting sla_paused on every fresh case,
+            # which was the first fix I tried and is worse: `stalled_cases()`
+            # -- the Digest's queue of cases a human has to rescue -- selects
+            # on exactly that flag. Every new complaint would have appeared as
+            # stuck the moment it was filed, which is the notification spam
+            # this agent exists to prevent.
+            #
+            # Safe against the stale wake this guard is for: climb() on a
+            # DRAFTED case works the tier the paper is already at
+            # (_tier_to_work), so a late wake submits the pending filing or
+            # finds it unsigned and re-queues it. It cannot escalate a tier.
             return
         self.climb(case.case_id, clock)
 
@@ -442,6 +465,65 @@ class Watchdog:
 
     # -------------------------------------------------------------climb
 
+    def _tier_to_work(self, case: Case) -> int:
+        """Which ladder tier this climb should act on.
+
+        THE FIRST FILING NEVER LEFT THE BUILDING WITHOUT THIS, and the whole
+        eleven-week pursuit hung off it.
+
+        `climb()` used to read `case.escalation_tier + 1` unconditionally.
+        That is right for a case that has already filed somewhere and is
+        moving up. It is wrong for the FIRST filing, because
+        `graph/request_path.py` drafts tier 1 itself and sets
+        `escalation_tier = 1` before anything has been submitted to anybody.
+        Advancing from there drafts tier 2 -- so the tier-1 letter a household
+        actually read and signed is orphaned, and the Assistant Engineer who
+        was supposed to receive it never hears from us at all. We would escalate
+        over the head of an office that was never written to.
+
+        Nothing caught it because it needs the whole chain to show up: the
+        request path drafts, a human signs, and only then does a wake reach
+        climb(). Every test drives `climb()` directly, which is exactly the
+        step that was missing.
+
+        THE RULE IS JUST WHAT DRAFTED ALREADY MEANS. A DRAFTED case has paper
+        sitting unsent, waiting on a person -- climb() sets that state itself
+        when it queues a draft for signature, and `_check_sla` refuses to
+        breach it because "submitted to nobody". So on a DRAFTED case the job
+        is to see whether that paper got signed and send it, NOT to draft new
+        paper one tier higher. Anything else has filed and is moving up.
+
+        This removes a special case rather than adding one. Both DRAFTED
+        producers land in the same place:
+
+            request path  drafts tier 1, escalation_tier 1  -> work tier 1
+            climb() pause drafts tier N+1, escalation_tier N -> work tier N+1
+
+        In both, the highest drafted tier is the unsent one, because climb()
+        deliberately does not advance the tier while it waits for a signature.
+
+        Defensive about `filings_for_case` in the same shape as
+        `_expire_unsigned_draft`: a backend that cannot answer must degrade to
+        the old behaviour rather than raise inside a wake.
+        """
+        if case.status != CaseStatus.DRAFTED:
+            return case.escalation_tier + 1
+
+        filings_for_case = getattr(self.db, "filings_for_case", None)
+        if filings_for_case is None:
+            return case.escalation_tier + 1
+
+        drafted = [f.tier for f in filings_for_case(case.case_id) or []]
+        if not drafted:
+            # DRAFTED with no filing at all. Nothing to send, so fall through
+            # to the normal advance and let climb() draft one.
+            return case.escalation_tier + 1
+
+        # Never go backwards. A case that has filed at tier 2 and is drafted
+        # at tier 3 must not be dragged back to a tier-1 row still in the
+        # table -- so the highest draft, floored at the current tier.
+        return max(max(drafted), case.escalation_tier)
+
     def climb(self, case_id: str, clock: Clock) -> int:
         """Advance one escalation tier. Ordered tasks with statutory
         deadlines. Returns the new tier.
@@ -474,7 +556,7 @@ class Watchdog:
             self._pause_and_retry(case, clock, "no jurisdiction entry")
             return case.escalation_tier
 
-        next_tier = case.escalation_tier + 1
+        next_tier = self._tier_to_work(case)
         step: EscalationStep | None = next(
             (s for s in entry.ladder if s.tier == next_tier), None)
         if step is None:
