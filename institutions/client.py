@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 from core.tags import Tag, emit
 from institutions.protocol import DeskReply, Outcome
@@ -47,6 +48,16 @@ ENDPOINT_ENV = {
     "payments": "PAYMENTS_ENDPOINT",
 }
 
+#: A desk deployed as an AgentCore runtime, addressed by ARN rather than URL:
+#: BWSSB_RUNTIME_ARN, WARD_RUNTIME_ARN, and so on. Set in the cloud, unset on a
+#: laptop, where the desks are local processes on their profile's port.
+#:
+#: WHY AN ARN AND NOT A URL. AgentCore fronts an A2A server with SigV4, so the
+#: caller must sign. Going through InvokeAgentRuntime (see `_via_runtime`) lets
+#: boto3 sign with the caller's role, which means the Watchdog Lambda needs no
+#: A2A client stack and no long-lived credential of ours exists to leak.
+RUNTIME_ARN_ENV = {desk: desk.upper() + "_RUNTIME_ARN" for desk in ENDPOINT_ENV}
+
 
 class InstitutionClient:
     """Talks to desks over A2A. Never in-process, never through our table."""
@@ -56,6 +67,8 @@ class InstitutionClient:
         self._endpoints = dict(endpoints or {})
         self._timeout = timeout
         self._agents: dict[str, object] = {}
+        #: boto3 client for desks deployed on AgentCore, built on first use.
+        self._runtime: object = None
 
     # ---------------------------------------------------------------- wiring
 
@@ -92,10 +105,99 @@ class InstitutionClient:
                 return joined
         return str(message if message is not None else result)
 
+    def runtime_arn_for(self, desk: str) -> str:
+        """The desk's AgentCore runtime ARN, or "" when it is a local process."""
+        return os.environ.get(RUNTIME_ARN_ENV.get(desk, ""), "").strip()
+
+    @staticmethod
+    def _jsonrpc_text(answer: object) -> str:
+        """The text an A2A server put in its JSON-RPC reply.
+
+        Three shapes are legal and all three appear in practice: a completed
+        task carries `result.artifacts[].parts[]`, a direct message carries
+        `result.parts[]`, and a task that is still speaking carries
+        `result.status.message.parts[]`. Reading only the first would turn a
+        perfectly good acceptance into "no usable answer", which pauses a
+        statutory clock against a filing that actually landed.
+
+        An `error` member yields "", and `send()` reports that as UNREACHABLE:
+        a desk that answered with a protocol error has filed nothing.
+        """
+        if not isinstance(answer, dict) or "error" in answer:
+            return ""
+        result = answer.get("result")
+        if not isinstance(result, dict):
+            return ""
+
+        groups = [result.get("parts")]
+        for artifact in result.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                groups.append(artifact.get("parts"))
+        status = result.get("status")
+        if isinstance(status, dict) and isinstance(status.get("message"), dict):
+            groups.append(status["message"].get("parts"))
+
+        texts = []
+        for parts in groups:
+            for part in parts or []:
+                if isinstance(part, dict) and part.get("text"):
+                    texts.append(str(part["text"]))
+        return "\n".join(texts)
+
+    def _via_runtime(self, desk: str, arn: str, instruction: str) -> str:
+        """One JSON-RPC round trip to a desk deployed on AgentCore.
+
+        Through InvokeAgentRuntime rather than an A2A client, because
+        AgentCore passes the JSON-RPC payload to the container unmodified and
+        boto3 signs the call with the caller's role. The Watchdog Lambda
+        therefore carries no A2A client stack, and there is no desk credential
+        of ours to leak.
+
+        Retries are off. `accept` is idempotent at the desk, but a retried read
+        timeout on `close` would be a second closure, and a desk that is slow
+        is downtime as far as the caller is concerned: UNREACHABLE, pause the
+        clock, come back.
+        """
+        import boto3
+        from botocore.config import Config
+
+        if self._runtime is None:
+            self._runtime = boto3.client(
+                "bedrock-agentcore",
+                region_name=arn.split(":")[3],
+                config=Config(connect_timeout=5, read_timeout=self._timeout,
+                              retries={"total_max_attempts": 1}),
+            )
+        body = {
+            "jsonrpc": "2.0",
+            "id": uuid.uuid4().hex,
+            "method": "message/send",
+            "params": {"message": {
+                "kind": "message",
+                "role": "user",
+                "messageId": uuid.uuid4().hex,
+                "parts": [{"kind": "text", "text": instruction}],
+            }},
+        }
+        # A fresh session per call. The desk's memory is its table, not the
+        # microVM (institutions/desk_store.py), so nothing is lost by letting
+        # the platform hand us any worker -- and a session id pinned per desk
+        # would serialise every household's filings behind one.
+        response = self._runtime.invoke_agent_runtime(
+            agentRuntimeArn=arn,
+            runtimeSessionId="panchayat-" + desk + "-" + uuid.uuid4().hex,
+            contentType="application/json",
+            accept="application/json",
+            payload=json.dumps(body).encode("utf-8"),
+        )
+        return self._jsonrpc_text(json.loads(response["response"].read()))
+
     def send(self, desk: str, instruction: str) -> DeskReply:
         """One A2A round trip. Any failure is UNREACHABLE, never an exception."""
+        arn = self.runtime_arn_for(desk)
         try:
-            result = self._agent(desk)(instruction)
+            text = (self._via_runtime(desk, arn, instruction) if arn
+                    else self._text_of(self._agent(desk)(instruction)))
         except Exception as exc:                       # noqa: BLE001
             # Deliberately broad. Every failure mode here -- connection refused,
             # timeout, model not authorised, malformed card -- means the same
@@ -103,7 +205,6 @@ class InstitutionClient:
             emit(Tag.A2A, "unreachable", desk=desk, error=type(exc).__name__)
             return DeskReply(Outcome.UNREACHABLE, detail=type(exc).__name__)
 
-        text = self._text_of(result)
         # Asked through the protocol, not with a substring test of our own: a
         # guard that matches more loosely than find() lets a reply through
         # here only to have find() return UNKNOWN, which does not pause the

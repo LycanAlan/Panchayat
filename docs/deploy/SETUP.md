@@ -587,9 +587,34 @@ an uncurated segment leaves it empty and those claims cannot corroborate).
 their own state** — that separation is the trust boundary, not decoration
 (CLAUDE.md: they must never touch our table).
 
-**For the demo, run them locally.** No cloud hosting required, and hosting them
-would not make the demo more convincing. `institutions/client.py` resolves each
-desk by environment variable, falling back to the port its profile declares:
+**`bwssb` is deployed, 13 Sep.** It runs as an AgentCore A2A server,
+`panchayat_desk_bwssb`, and a filing signed on the live site came back with
+ticket `BWSSB-100002`. The other four still run locally.
+
+```bash
+# one desk, one runtime. PANCHAYAT_DESK picks which.
+agentcore configure -n panchayat_desk_bwssb -e desk_app.py -p A2A -r ap-south-2 \
+  -dt direct_code_deploy -rt PYTHON_3_12 -rf requirements-prod.txt -ni -do -dm \
+  -er arn:aws:iam::699073937307:role/panchayat-desk-exec \
+  -s3 bedrock-agentcore-codebuild-sources-699073937307-ap-south-2
+agentcore launch --agent panchayat_desk_bwssb \
+  -env PANCHAYAT_DESK=bwssb -env PANCHAYAT_MODEL=gemini -env GEMINI_API_KEY=... \
+  -env PANCHAYAT_DESK_TABLE=panchayat-desks -env PANCHAYAT_TABLE=panchayat
+# then hand the ARN to the Watchdog as <DESK>_RUNTIME_ARN and redeploy it.
+```
+
+**Four things that will bite whoever deploys the other four.** The entrypoint
+must sit at the repo root (`desk_app.py`): configured as
+`institutions/a2a_runtime.py`, the toolkit records a Windows backslash and the
+endpoint fails with "entrypoint could not be found in your artifact" **after**
+creating the runtime. The agent name takes no hyphens. A desk needs its own
+execution role, because the main runtime's role can read our case table. And
+the Watchdog package must bundle `boto3` and allow 180s, since an AgentCore
+cold start plus a model call does not fit in 60.
+
+**Locally, they are still five processes.** `institutions/client.py` uses
+`<DESK>_RUNTIME_ARN` when set and otherwise resolves each desk by endpoint
+variable, falling back to the port its profile declares:
 
     WARD_ENDPOINT=http://localhost:9001
     WATER_ENDPOINT=http://localhost:9002     # the desk is "bwssb", the profile is water
