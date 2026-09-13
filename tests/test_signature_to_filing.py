@@ -287,3 +287,55 @@ def test_an_unreachable_desk_still_pauses_rather_than_pretending(reported):
     assert case.sla_paused, "the clock ran against a filing that never landed"
     assert case.status is not CaseStatus.TRACKING
     assert clock.actions.count("retry_submit") >= 1
+
+
+def test_the_retry_after_a_failed_send_resends_the_signed_letter(reported):
+    """The test above stopped one wake too early, which is how this hid.
+
+    The submit branch moves the case to ESCALATING before the send, and a
+    failure leaves it there. The next day's wake read that as "tier 1 already
+    filed" and drafted tier 2 to the Assistant Executive Engineer, while the
+    signed tier-1 letter sat with no ticket forever. Desks refuse and go down
+    by design, so this is a routine path, not an edge.
+    """
+    case_id, filing = reported
+    clock = RecordingClock()
+
+    digest.approve(filing.idempotency_key, "mem_sig", clock)
+    clock.t += timedelta(minutes=2)
+    Watchdog(submit=lambda f: False).handle(case_id, "retry_submit", clock)
+
+    sent: list = []
+    clock.t += timedelta(days=1)
+    Watchdog(submit=_accepting_desk(sent)).handle(case_id, "retry_submit", clock)
+
+    assert sent, "the retry sent nothing -- the signed letter was abandoned"
+    tier, authority, signed_by = sent[0]
+    assert tier == 1, "escalated over an office that never received tier 1"
+    assert "Assistant Engineer" in authority
+    assert signed_by == "mem_sig"
+    assert [f.tier for f in db.filings_for_case(case_id)] == [1], (
+        "a tier-2 draft was opened while tier 1 was still unsent")
+    case = db.get_case(case_id)
+    assert case.status is CaseStatus.TRACKING
+    assert case.escalation_tier == 1
+    assert not case.sla_paused
+
+
+def test_a_second_failed_send_still_reaches_a_person(reported):
+    """Resending the same tier must not reset the "again after a retry" signal.
+    Still stuck a day later is a fact nothing here can act on, so it pages."""
+    case_id, filing = reported
+    clock = RecordingClock()
+    down = Watchdog(submit=lambda f: False)
+
+    digest.approve(filing.idempotency_key, "mem_sig", clock)
+    clock.t += timedelta(minutes=2)
+    down.handle(case_id, "retry_submit", clock)
+    clock.t += timedelta(days=1)
+    down.handle(case_id, "retry_submit", clock)
+
+    case = db.get_case(case_id)
+    assert case.sla_paused
+    assert case_id in [c.case_id for c in db.stalled_cases()]
+    assert [f.tier for f in db.filings_for_case(case_id)] == [1]

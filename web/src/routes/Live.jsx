@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import Document from '../components/Document.jsx'
 import Icon from '../components/Icon.jsx'
@@ -20,6 +20,33 @@ import '../styles/live.css'
 
 /** A draft on a case in one of these states must not be offered for signing. */
 const LAPSED = new Set(['dormant', 'withdrawn', 'resolved'])
+
+/**
+ * The Watchdog files a signed draft about 100 s after the signature (a cold
+ * start plus a model call), so the page keeps reading while one is on its way.
+ * Past the cap a desk is probably down, and "Read it again" is the honest control.
+ */
+const WATCH_MS = 180_000
+const POLL_MS = 5_000
+
+/** Tier 4 is an RTI. agents/watchdog.py drafts it and never files it, so no ticket is coming. */
+const RTI_TIER = 4
+
+function onItsWay(f) {
+  return Boolean(f.signed_by) && !f.external_ref && f.tier < RTI_TIER
+}
+
+/** The Watchdog tried, the desk did not take it, and a retry is booked with the clock held. */
+function notTaken(c) {
+  return c.status === 'escalating' && c.sla_paused
+}
+
+function ticket(f, c, watching) {
+  if (f.external_ref) return { v: f.external_ref }
+  if (onItsWay(f) && notTaken(c)) return { v: '— desk did not take it · retry booked —', tone: 'terracotta' }
+  if (onItsWay(f) && watching) return { v: 'filing now…' }
+  return { v: '— none issued —' }
+}
 
 const IST = new Intl.DateTimeFormat('en-IN', {
   timeZone: 'Asia/Kolkata',
@@ -77,7 +104,7 @@ export default function Live() {
         <div className="page">
           <p className="meta">Live record · read from the deployed runtime</p>
           <p className="sans dim live-honest">
-            Not a fixture. Everything below came back from AgentCore when this page loaded.
+            Not a fixture. Everything below came back from AgentCore when this page last read it.
             The household is this browser, and the institutions are calibrated simulators,
             so nothing here reaches a real authority.
           </p>
@@ -145,25 +172,77 @@ function CaseFile({ caseId }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [signing, setSigning] = useState(null)
+  // Bumped by each signature so the watch restarts; expiredWatch records which one ran out.
+  const [watch, setWatch] = useState(0)
+  const [expiredWatch, setExpiredWatch] = useState(-1)
+  const latest = useRef(0)
 
-  const load = useCallback(async () => {
-    try {
-      setData(await getCase(caseId))
-      setError(null)
-    } catch (err) {
-      setError(err.message)
-    }
-  }, [caseId])
+  // Only the newest request may write, so a slow poll cannot put older state
+  // back over the reload a signature triggered. A quiet poll that fails keeps
+  // what is on screen and tries again; it does not raise a banner.
+  const load = useCallback(
+    async ({ quiet = false } = {}) => {
+      const mine = ++latest.current
+      try {
+        const next = await getCase(caseId)
+        if (mine !== latest.current) return
+        setData(next)
+        if (!quiet) setError(null)
+      } catch (err) {
+        if (mine === latest.current && !quiet) setError(err.message)
+      }
+    },
+    [caseId],
+  )
 
   useEffect(() => {
     load()
   }, [load])
+
+  const watching = Boolean(
+    data &&
+      expiredWatch !== watch &&
+      !LAPSED.has(data.case.status) &&
+      !notTaken(data.case) &&
+      data.filings.some(onItsWay),
+  )
+
+  // Above the early return, or React throws on the first render with data.
+  // A setTimeout chain rather than setInterval, so a slow cold start never
+  // stacks requests: each is a Lambda call against an account capped at 10
+  // concurrent executions, shared with the Watchdog filing this very ticket.
+  // Skipped while the tab is hidden for the same reason, and hidden time does
+  // not count toward the cap: someone who signs, switches tabs and comes back
+  // must still see the ticket land.
+  useEffect(() => {
+    if (!watching) return undefined
+    let reads = 0
+    let timer
+    let stopped = false
+    const tick = async () => {
+      if (document.visibilityState === 'visible') {
+        if (reads * POLL_MS >= WATCH_MS) {
+          setExpiredWatch(watch)
+          return
+        }
+        reads += 1
+        await load({ quiet: true })
+      }
+      if (!stopped) timer = setTimeout(tick, POLL_MS)
+    }
+    timer = setTimeout(tick, POLL_MS)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }, [watching, watch, load])
 
   const sign = async (key) => {
     setSigning(key)
     try {
       await approve(caseId, key)
       await load()
+      setWatch((w) => w + 1)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -252,7 +331,7 @@ function CaseFile({ caseId }) {
               { k: 'Signed by', v: f.signed_by ?? '— not signed —', tone: f.signed_by ? undefined : 'terracotta' },
               { k: 'Signed at', v: when(f.signed_at) },
               { k: 'Submitted', v: f.submitted_at ? when(f.submitted_at) : '— not yet —' },
-              { k: 'Ticket', v: f.external_ref ?? '— none issued —' },
+              { k: 'Ticket', ...ticket(f, c, watching) },
             ]}
           >
             <p className="live-body-text">{f.body}</p>
@@ -261,7 +340,7 @@ function CaseFile({ caseId }) {
       </div>
 
       <div className="live-actions">
-        <button type="button" className="micro live-refresh" onClick={load}>
+        <button type="button" className="micro live-refresh" onClick={() => load()}>
           Read it again
         </button>
         <Link to="/live" className="action">

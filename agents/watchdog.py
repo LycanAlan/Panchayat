@@ -505,8 +505,17 @@ class Watchdog:
         Defensive about `filings_for_case` in the same shape as
         `_expire_unsigned_draft`: a backend that cannot answer must degrade to
         the old behaviour rather than raise inside a wake.
+
+        ESCALATING + sla_paused is the same unsent paper, one step later. The
+        submit branch moves DRAFTED to ESCALATING before handing the filing to
+        the desk, and a failed send leaves it there. Reading that as "already
+        filed" made the next retry skip the signed tier-1 letter and draft
+        tier 2 over an office that never received anything. Nothing else
+        writes ESCALATING, and a send that lands writes TRACKING.
         """
-        if case.status != CaseStatus.DRAFTED:
+        unsent = (case.status == CaseStatus.DRAFTED
+                  or (case.status == CaseStatus.ESCALATING and case.sla_paused))
+        if not unsent:
             return case.escalation_tier + 1
 
         filings_for_case = getattr(self.db, "filings_for_case", None)
