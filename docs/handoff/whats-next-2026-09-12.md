@@ -99,7 +99,7 @@ is a group decision.
 
 ## P2 — grading, and things that bite later
 
-### 8. Blog post and video — Ali *(video moved to Raghav, 14 Sep)*
+### 8. Blog post and video — Ali
 
 +0.6 on a five-criterion scale, and always the thing that slips. Three moments
 for the video: grounded routing with the citation visible, the ambient upgrade,
@@ -146,7 +146,7 @@ Household row. A registry is a `core/types.py` + `core/store.py` change.
 
 | Who | Take |
 |---|---|
-| **Ali** | P0-3 deploy, then P0-2 signature capture, then trace UI, then blog + video *(video moved to Raghav, 14 Sep)* |
+| **Ali** | P0-3 deploy, then P0-2 signature capture, then trace UI, then blog + video |
 | **Raghav** | P0-1 `check_closure` trigger — propose the cadence, the group ratifies |
 | **Kartik** | P1-5 `stalled_cases` on store, then P1-4 ambient Lambda |
 | **Alakshendra** | routing accuracy number, hand `core/tags.py` to platform |

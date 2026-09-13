@@ -269,7 +269,6 @@ are tested and which are not.
 | Raghav | `agents/intake.py` | **DONE, merged** | `parse()`/`read_back()`, injectable model, no AWS creds needed to test |
 | Raghav | `agents/household.py` | **DONE, merged** | `build_swarm()`/`deliberate()`, dialysis fixture surfaces the elder's unstated deadline |
 | Raghav | `agents/warden.py` | **DONE, merged** | `minimise()`, `consent_covers()`, `check_inference_leak()` -- all adversarially tested |
-| Raghav | `video/` (demo video) | **IN PROGRESS, 14 Sep** | Owner moved from Ali to Raghav. Parts 1-2 (problem, architecture journey) rendered, 1:46 with voiceover. Next: screen recording of the live site. See `video/README.md`. |
 | Raghav | `agents/watchdog.py` | **DONE, merged. Fixed 14 Sep, PR #43** | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. Every pause books a retry wake, and a retry after a failed send resends the same tier. **Open:** REJECTED is resent and traced as unreachable; escalation bodies lack a citation. See 14 Sep. |
 | Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
