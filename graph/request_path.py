@@ -23,6 +23,7 @@ Lane: platform
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -100,6 +101,102 @@ def run_or_stub(real, fallback):
 # ------------------------------------------------------------------ nodes
 
 
+#: Cached per process, because building a Strands Agent resolves credentials
+#: and a client. `_UNSET` distinguishes "not tried yet" from "tried, and there
+#: is no model" -- with None alone every request would retry a provider that
+#: is not configured, on the household's request path.
+_UNSET = object()
+_intake_caller: Any = _UNSET
+
+
+def _intake_model():
+    """A `str -> str` callable for `IntakeAgent`, or None when no model exists.
+
+    WITHOUT THIS, NOTHING IN THE REQUEST PATH EVER CALLED A MODEL. `_intake`
+    used the module-level `intake.parse()`, which delegates to
+    `IntakeAgent()` built with no model at all -- so `_call_model` raised,
+    `parse()` swallowed it as designed, and every report fell back to the
+    deterministic split on "and"/";". Measured on the deployed runtime with
+    Gemini configured and a genuinely two-problem sentence: the split worked,
+    two needs came out, and `totalTokens` was still 0. The provider was live
+    and unreachable from here.
+
+    IntakeAgent takes `Callable[[str], str]` rather than a Strands model --
+    that is Raghav's frozen signature and it predates the model seam -- so
+    this is the adapter between the two. It belongs here rather than in
+    agents/intake.py: the seam is a composition concern, and the request path
+    is where composition happens.
+
+    EVERY FAILURE BECOMES RuntimeError, deliberately. `IntakeAgent.parse()`
+    already catches exactly that and falls back to the deterministic split,
+    which is the behaviour we want for a timeout, a bad key, a rate limit or
+    a retired model ID alike. Re-using its existing degradation beats adding
+    a second one, and a household reporting no water must never see a
+    stack trace because a free-tier quota ran out.
+
+    OPT-IN, VIA `PANCHAYAT_MODEL` BEING SET AT ALL. Not merely "whichever
+    provider the seam defaults to", and the difference is the whole reason
+    this gate exists: `get_model()` defaults to bedrock and `BedrockModel(...)`
+    CONSTRUCTS PERFECTLY WELL WITH NO CREDENTIALS -- it only fails when called.
+    So a naive "can I build a model?" check succeeds everywhere, including in
+    the offline suite, and puts a live network call on every report in a test
+    run CLAUDE.md promises needs no AWS. It also silently bypassed the module
+    function that `tests/test_request_path.py` patches, which is how this was
+    caught.
+
+    So the rule is explicit configuration: `PANCHAYAT_MODEL` set, and that
+    provider's credential present. Unset means the deterministic split, which
+    is exactly what the offline suite and a keyless deploy should both get.
+
+    Returns None when no provider is configured, so `parse()` is never even
+    asked for a model it cannot reach.
+    """
+    global _intake_caller
+    if _intake_caller is not _UNSET:
+        return _intake_caller
+
+    _intake_caller = None
+
+    provider = os.environ.get("PANCHAYAT_MODEL", "").strip().lower()
+    #: Provider -> the environment variables any of which proves a credential
+    #: exists. Bedrock's is the empty tuple: setting PANCHAYAT_MODEL=bedrock
+    #: IS the opt-in, because its credentials come from the AWS chain and
+    #: there is no variable to look for.
+    credentials = {
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "bedrock": (),
+    }
+    if provider not in credentials:
+        return None
+    wanted = credentials[provider]
+    if wanted and not any(os.environ.get(v) for v in wanted):
+        return None
+
+    try:
+        from strands import Agent
+
+        from core.models import get_model
+
+        # "cheap", not "reason". Splitting one sentence into distinct problems
+        # is classification; the deliberation in this system lives one node
+        # further down, in the household.
+        agent = Agent(model=get_model("cheap"), callback_handler=None)
+
+        def call(prompt: str) -> str:
+            try:
+                return str(agent(prompt))
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                raise RuntimeError("intake model call failed: " + str(exc)[:200]) from exc
+
+        _intake_caller = call
+    except Exception:  # noqa: BLE001
+        # No provider, no key, or no client installed. All three mean the same
+        # thing to this node and none is worth failing a report over.
+        _intake_caller = None
+    return _intake_caller
+
+
 def _intake(ctx: RequestContext) -> str:
     from agents import intake
 
@@ -116,8 +213,14 @@ def _intake(ctx: RequestContext) -> str:
     # only promised `list[dict]`, so no key schema was ever agreed, and the two
     # drifted: the stub said "summary" while intake emits "description", which
     # meant household.deliberate() -- which reads "description" -- saw nothing.
+    # Through a model-backed IntakeAgent when one is configured, and through
+    # the frozen module function when it is not. Both call the same parse();
+    # the only difference is whether `_call_model` has anything to call.
+    caller = _intake_model()
+    reader = intake.IntakeAgent(model=caller) if caller is not None else intake
+
     needs, stub = run_or_stub(
-        lambda: intake.parse(text, member),
+        lambda: reader.parse(text, member),
         lambda: [{"description": text or "no piped supply",
                   "member_id": member.member_id,
                   "raw_text": text}],
