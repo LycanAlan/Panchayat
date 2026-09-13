@@ -1,10 +1,11 @@
 # Panchayat — the site
 
-The public face of the case file. Five routes, one drawing, no UI library.
+The public face of the case file. Five routes that tell the story from
+fixtures, one route that reads the deployed runtime, one drawing, no UI library.
 
 ```bash
 npm install
-npm run dev      # vite, :5173
+npm run dev      # vite, :5173 — /api proxied to :8787, see below
 npm run build    # static output in dist/
 npm run preview
 npm run lint     # oxlint
@@ -14,13 +15,14 @@ npm run lint     # oxlint
 
 ```
 src/
-  routes/      Index · Case · Street · Process · About
+  routes/      Index · Case · Street · Process · About · Live
   components/  Masthead Footer StreetPlan HeroSection Document
                Stamp LegalClock Ladder ReportInput Icon Bits
-  data/        case · street · authorities · indic
+  data/        case · street · authorities · indic · segments
   styles/      reset · tokens · type · layout · paper · plan
-               components · pages
+               components · pages · live
   lib/         motion.js — Lenis + ScrollTrigger + reduced motion
+               api.js — the only file that touches the network
 ```
 
 ## Decisions worth knowing before you edit
@@ -60,9 +62,28 @@ and every CSS transition collapses. The page must be complete on first paint.
 
 ## Data
 
-Everything on these pages is a fixture in `src/data/`, shaped after
-`core/types.py`. Nothing fetches. The statutory windows, authorities and
-citations are real; the households are synthetic and the desks are calibrated
-simulators. `CORRELATION.semantic_available` is `false` on purpose and is
-surfaced in the UI — a cluster that hides which terms ran is claiming
-agreement it never computed.
+The story pages (`/`, `/case`, `/street`, `/process`, `/about`) render
+fixtures in `src/data/`, shaped after `core/types.py`. The statutory windows,
+authorities and citations are real; the households are synthetic and the desks
+are calibrated simulators. `CORRELATION.semantic_available` is `false` on
+purpose and is surfaced in the UI — a cluster that hides which terms ran is
+claiming agreement it never computed.
+
+**Two things are live, and they say so on the page.** The intake line on `/`
+sends a real report to the AgentCore runtime and replays the trace it wrote.
+`/live/:caseId` reads that case back, shows the draft, and takes the
+signature. Both go through `src/lib/api.js` to `POST /api`, and nothing else
+fetches.
+
+## Running against the real runtime
+
+`/api` is `handlers/web_api.py`, one Lambda that serves `dist/` and forwards
+to AgentCore, so the site and the API share an origin. Locally the same
+handler runs on :8787 with your AWS profile:
+
+```bash
+python scripts/web_api_local.py   # from the repo root
+cd web && npm run dev             # http://localhost:5173
+```
+
+Deploy with `scripts/deploy_web.ps1`. See `docs/deploy/WEB.md`.

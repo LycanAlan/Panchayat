@@ -1,0 +1,178 @@
+/* ===============================================================
+   The live file, and the live half of the intake line.
+   The one part of the site that reads the deployed runtime. Same
+   paper and rules as everything else; the new furniture is the
+   status ink, the signature row and the failure note.
+   =============================================================== */
+
+.live-honest {
+  max-width: var(--measure-wide);
+  margin-top: 0.6rem;
+}
+
+.live-title {
+  margin-block: 1.5rem 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.live-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 0.9rem 1.5rem;
+  margin: 0 0 3rem;
+  padding-block: 1rem;
+  border-block: 1px solid var(--ink);
+}
+
+.live-facts dt {
+  margin-bottom: 0.2rem;
+}
+
+.live-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- status ink ----
+   Indigo while the pursuit is running, terracotta once a deadline
+   has been missed, sage once resolved, faint when it lapsed. */
+[data-status='open'],
+[data-status='drafted'],
+[data-status='filed'],
+[data-status='tracking'] {
+  color: var(--indigo);
+}
+
+[data-status='breached'],
+[data-status='escalating'] {
+  color: var(--terracotta);
+}
+
+[data-status='resolved'] {
+  color: var(--sage);
+}
+
+[data-status='dormant'],
+[data-status='withdrawn'] {
+  color: var(--ink-faint);
+}
+
+.live-note {
+  margin-block: 1rem 2rem;
+}
+
+.live-sign {
+  max-width: var(--measure-wide);
+  margin-block: 1.5rem 2.5rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--indigo);
+}
+
+.live-sign[data-lapsed='yes'] {
+  border-left-color: var(--rule-strong);
+}
+
+.live-sign-quote {
+  margin: 0.8rem 0 1.1rem;
+  padding: 0.8rem 1rem;
+  background: var(--paper-deep);
+  white-space: pre-wrap;
+}
+
+.live-filings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 2rem;
+  margin-block: 1.5rem 3.5rem;
+}
+
+.live-body-text {
+  white-space: pre-wrap;
+}
+
+.live-list {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--ink);
+}
+
+.live-row {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) 6.5rem minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.85rem 0.25rem;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.live-row:hover {
+  background: var(--paper-deep);
+}
+
+.live-badge {
+  color: var(--marigold);
+}
+
+.live-failure {
+  max-width: var(--measure-wide);
+  margin-block: 1.5rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--terracotta);
+}
+
+.live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 2rem;
+  margin-top: 3rem;
+}
+
+.live-refresh {
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* ---- the intake line, live ---- */
+
+.intake-segment {
+  font: inherit;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule-strong);
+  padding: 0.1rem 0;
+  max-width: 100%;
+}
+
+.intake-segment:focus-visible {
+  outline: 1px solid var(--indigo);
+  outline-offset: 2px;
+}
+
+.intake-cite {
+  color: var(--ink-faint);
+}
+
+.intake-step[data-stub='yes'] .intake-step-k {
+  color: var(--ink-faint);
+}
+
+.intake-truth {
+  margin-top: 0.7rem;
+}
+
+.intake-failed {
+  color: var(--terracotta);
+}
+
+@media (max-width: 640px) {
+  .live-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+}

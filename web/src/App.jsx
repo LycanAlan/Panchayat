@@ -7,6 +7,7 @@ import Case from './routes/Case.jsx'
 import Street from './routes/Street.jsx'
 import Process from './routes/Process.jsx'
 import About from './routes/About.jsx'
+import Live from './routes/Live.jsx'
 import { useSmoothScroll, ScrollTrigger } from './lib/motion.js'
 
 const TITLES = {
@@ -15,6 +16,7 @@ const TITLES = {
   '/street': 'The street · Ward 12 layout — Panchayat',
   '/process': 'The process · seven stages — Panchayat',
   '/about': 'Boundaries — Panchayat',
+  '/live': 'Your reports · live — Panchayat',
 }
 
 function Page() {
@@ -22,7 +24,8 @@ function Page() {
 
   useEffect(() => {
     window.scrollTo(0, 0)
-    document.title = TITLES[pathname] ?? 'Panchayat'
+    document.title =
+      TITLES[pathname] ?? (pathname.startsWith('/live/') ? 'The live file — Panchayat' : 'Panchayat')
     // A route swap replaces every pinned section on the page; without
     // this the old triggers keep their stale measurements.
     const id = requestAnimationFrame(() => ScrollTrigger.refresh())
@@ -36,6 +39,8 @@ function Page() {
       <Route path="/street" element={<Street />} />
       <Route path="/process" element={<Process />} />
       <Route path="/about" element={<About />} />
+      <Route path="/live" element={<Live />} />
+      <Route path="/live/:caseId" element={<Live />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
