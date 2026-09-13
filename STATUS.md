@@ -11,6 +11,49 @@ Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
 Last updated: **13 Sep** by Kartik -- `feat/mesh-ambient-and-fixes`, see below
+Last updated: **14 Sep, 03:20** by Raghav -- PR #43, see below
+
+---
+
+## 14 Sep -- PR #43: a failed first send no longer escalates over the office (Raghav)
+
+**Merged.** `pytest` 588 passed, 37 skipped, ruff clean, web lints and builds.
+**Nothing live changes until a redeploy:** the Watchdog Lambda for (1), the web
+Lambda (`scripts/deploy_web.ps1`) for (2). Either can ship on its own.
+
+1. **The retry after a failed first send drafted tier 2 instead of resending
+   tier 1.** `climb()` moves DRAFTED to ESCALATING before handing the filing to
+   the desk, and a failed send left it there, so the next `retry_submit` read
+   the case as already filed. Reproduced: report, sign, desk refuses, next-day
+   retry -> nothing sent, tier 2 drafted to the AEE, and the signed tier-1
+   letter to the AE never resent. Desks refuse and go down by design, so this
+   was a routine path. `_tier_to_work` now treats ESCALATING + `sla_paused` as
+   unsent paper, same as DRAFTED. Two tests in
+   `tests/test_signature_to_filing.py`, both fail on the old code.
+2. **The case page shows the ticket arrive.** `web/src/routes/Live.jsx` is
+   **Kartik's lane and was merged before his review -- Kartik, please read it
+   and revert anything that is off.** While a signed filing has no ticket it
+   reads `get_case` every 5 s, and stops on the ticket, on escalating +
+   `sla_paused` (the desk did not take it), or after 36 visible reads. RTIs are
+   not watched. One request at a time and none from hidden tabs, because every
+   read shares the 10-execution Lambda cap with the Watchdog. Reads only fields
+   `get_case` already returns, so no API change.
+
+**Found in the same audit, still open:**
+
+- `core/clock.py` (Raghav): `ConflictException` is swallowed. A signature on a
+  tier-2+ draft books its +1 min wake under a schedule name already held by
+  `climb()`'s +1 day retry, so the filing waits up to a day. `VirtualClock`
+  names nothing, so the demo clock hides it.
+- `agents/watchdog.py` (Raghav): a REJECTED filing is resent with the same body
+  inside one wake, then paused as "endpoint unreachable".
+- `agents/watchdog.py::_draft_filing` (Raghav): escalation bodies carry no
+  statute citation (hard rule 3) and never say "duration", which
+  `Desk.accept()` screens on.
+- `web/src/lib/api.js` (Kartik): `report()` never sends `language`, so every
+  report reaches intake as `en`.
+- Windows only: `pytest` can error 13 tests with `PermissionError` on its temp
+  dir. Environmental, not code. Pass `--basetemp` to a writable directory.
 
 ---
 
@@ -88,9 +131,9 @@ covered that join before, and both of the worst bugs lived in it.
 | Collaborators not invited | Kartik, Alakshendra, Raghav cannot clone | — | Ali |
 | ~~`test_virtual_clock_compresses_a_statutory_week` fails 5/5~~ | — | **FIXED 10 Sep by Ali.** See note below. | closed |
 | ~~`Watchdog.climb()`'s `submit` seam and `institutions.client`'s filer have different shapes~~ | — | **CLOSED Day 3.** `institutions.client.build_submit()`. See the note below — the collapse rule I originally proposed in this file was wrong and would have defeated hard rule 4. | Alakshendra |
-| **A failed filing freezes the case permanently — blocks installing `build_submit()`** — `climb()` answers a falsey `submit` by setting `sla_paused=True` and returning early, and schedules **no wake** on that path; the only two `clock.schedule()` calls are on the success path, and `_check_sla()` short-circuits on `sla_paused`. So the case stops, for good, silently, and nobody is told. Harmless today only because `submit` still defaults to `lambda filing: True`. It becomes live the moment the real adapter is installed, and since nothing captures a signature yet, **every** filing returns NEEDS_HUMAN — so every case would freeze at its first escalation. Reproduced: `tests/test_submit_adapter.py::test_a_failed_filing_currently_freezes_the_case_permanently` (delete that test when it starts failing, that is the fix landing). Needs either the signature-capture step ahead of it, or a pause path that schedules a retry wake and surfaces to the Digest. | installing the institutions adapter; the eleven-week pursuit | `build_submit()` exists and is tested but is deliberately **not** wired as the default | Raghav (pause path) + Ali (capture/Digest) |
+| ~~A failed filing freezes the case permanently~~ | — | **CLOSED.** `_pause_and_retry()` books a `retry_submit` wake before persisting the pause and pages NEEDS_HUMAN on a repeat, and `build_submit()` is wired in `handlers/temporal.py`. The reproduction test is gone, which was the agreed signal. **14 Sep:** a retry after a failed first send now resends tier 1 instead of drafting tier 2 (PR #43). | closed |
 | **`case.escalation_tier` has two potential writers, no locking** -- Kartik's ambient `apply_upgrade()` and Raghav's `climb()` both read-modify-write it, and `put_case()` is a blind overwrite. Lost update or a double-escalation (files at the wrong tier/authority) are both real. Needs a decision: `climb()` as sole writer with `apply_upgrade` requesting rather than performing, or a conditional write on a version attribute. Same shape as the `put_case` stale-write hazard in Kartik's review -- likely one fix for both. | escalation correctness | none yet -- `climb()` writes the tier it read, does not attempt to resolve the race | Raghav + Kartik |
-| **No signing mechanism exists for ANY escalation tier, not just 1-3** -- Alakshendra asked whether tiers 1-3 auto-filing with no signature is intentional (sign once at intake) or a gap. Checked: `climb()` never sets `Filing.signed_by` for any tier, including tier 1. His `institutions/client.py` (branch `alakshendra/ladder-and-filing-client`, unmerged) already enforces hard rule 4 in `file()` -- an empty `signed_by` returns `Outcome.NEEDS_HUMAN` rather than filing. So once wired, every tier fails NEEDS_HUMAN forever, always, until something captures a household member's approval onto the `Filing` before `climb()` submits. Not a policy question (per-tier vs once) -- the capture step doesn't exist anywhere yet. Likely lands in Ali's `agents/digest.py` ("pings you when there's a real decision"). Separately: `submit`'s `bool` contract can't represent `DeskReply`'s outcome space -- `should_retry` is true only for `UNREACHABLE`, while `REJECTED` sets `should_pause_sla` but needs a human to supply missing particulars, not a blind resend. `climb()`'s current retry-twice logic would mishandle `REJECTED` once real replies flow through. Documented in code at the call site in `agents/watchdog.py::climb()`. | filing correctness once institutions/ merges | none -- `climb()` submits with `signed_by=None` always; harmless today only because the default `submit` stub is unconditional `True` | Raghav + Alakshendra + Ali |
+| **14 Sep update (Raghav):** the signing half below is **closed** -- `digest.approve()` records a named signature and books the wake that files it, and the live site signs through it. **Still open:** the `submit` bool half. `climb()` resends a REJECTED filing with the same body inside one wake and traces it as "endpoint unreachable"; `DeskReply.should_retry` is true only for UNREACHABLE. Original row, kept for history: ~~No signing mechanism exists for ANY escalation tier, not just 1-3~~ -- Alakshendra asked whether tiers 1-3 auto-filing with no signature is intentional (sign once at intake) or a gap. Checked: `climb()` never sets `Filing.signed_by` for any tier, including tier 1. His `institutions/client.py` (branch `alakshendra/ladder-and-filing-client`, unmerged) already enforces hard rule 4 in `file()` -- an empty `signed_by` returns `Outcome.NEEDS_HUMAN` rather than filing. So once wired, every tier fails NEEDS_HUMAN forever, always, until something captures a household member's approval onto the `Filing` before `climb()` submits. Not a policy question (per-tier vs once) -- the capture step doesn't exist anywhere yet. Likely lands in Ali's `agents/digest.py` ("pings you when there's a real decision"). Separately: `submit`'s `bool` contract can't represent `DeskReply`'s outcome space -- `should_retry` is true only for `UNREACHABLE`, while `REJECTED` sets `should_pause_sla` but needs a human to supply missing particulars, not a blind resend. `climb()`'s current retry-twice logic would mishandle `REJECTED` once real replies flow through. Documented in code at the call site in `agents/watchdog.py::climb()`. | filing correctness once institutions/ merges | none -- `climb()` submits with `signed_by=None` always; harmless today only because the default `submit` stub is unconditional `True` | Raghav + Alakshendra + Ali |
 
 **On that clock test** — Alakshendra's diagnosis was right and it is fixed.
 Worth knowing why it passed here and failed there: Windows' `monotonic()` has
@@ -221,16 +264,12 @@ are tested and which are not.
 | Alakshendra | `remedy.lookup()` cache | **FIXED, Day 3** | **Was the blocking item.** `lookup()` and `load_table()` returned the cached objects themselves, so one caller emptying a ladder stalled `climb()` process-wide — invisibly, because the next lookup still succeeded and returned the corrupted row. Both now deep-copy (24µs). 4 regression tests, including one level down: mutating a `ladder[0]` step. |
 | Alakshendra | `institutions.client.build_submit()` | **DONE, Day 3** | **The Watchdog seam is wired.** `build_submit(client=None, service="water") -> Callable[[Filing], bool]`. Lives in institutions/ so the temporal lane never imports it — there is a test asserting that. `tests/test_submit_adapter.py` drives a real `climb()` against a real client with only the desk's reply faked. |
 | Alakshendra | `agents/remedy.compose_filing()` | **DONE** | `(case, entry, facts, step=None) -> (body, missing_fields)`. Turns `required_fields` + what we know into filing text, or refuses with what is missing rather than filing something the desk will bounce. `affected_count` auto-fills from `case.corroboration`. Tested end to end against `Desk.accept()`'s own completeness check, not just against expectations. |
-| Raghav | `agents/intake.py` | not started | |
-| Raghav | `agents/household.py` | not started | |
-| Raghav | `agents/warden.py` | not started | |
-| Raghav | `agents/watchdog.py` | not started | |
 | Alakshendra | `institutions/` | **DONE** | 5 desks, one implementation. `python -m institutions.server bwssb`. Ports 9001-9005, agent cards verified. |
-| Raghav | `core/clock.py` | **DONE** (on `feat/household-time`, in review) | Naive-UTC helper + `asyncio.get_running_loop()` fix. Kept main's memoised `get_clock()` through the rebase. |
-| Raghav | `agents/intake.py` | **DONE** (on `feat/household-time`, in review) | `parse()`/`read_back()`, injectable model, no AWS creds needed to test |
-| Raghav | `agents/household.py` | **DONE** (on `feat/household-time`, in review) | `build_swarm()`/`deliberate()`, dialysis fixture surfaces the elder's unstated deadline |
-| Raghav | `agents/warden.py` | **DONE** (on `feat/household-time`, in review) | `minimise()`, `consent_covers()`, `check_inference_leak()` -- all adversarially tested |
-| Raghav | `agents/watchdog.py` | **DONE** (on `feat/household-time`, in review) | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. **Review blocker B1 fixed** — closure check now looks backward over a `closure_lookback_days` window (default 7, matching `sla_days`), was looking forward and could never fire. |
+| Raghav | `core/clock.py` | **DONE, merged** | Naive-UTC helper, memoised `get_clock()`, virtual wakes on `threading.Timer`. **Open (14 Sep):** a same-name schedule conflict is swallowed, so a newer wake can lose to an older one. |
+| Raghav | `agents/intake.py` | **DONE, merged** | `parse()`/`read_back()`, injectable model, no AWS creds needed to test |
+| Raghav | `agents/household.py` | **DONE, merged** | `build_swarm()`/`deliberate()`, dialysis fixture surfaces the elder's unstated deadline |
+| Raghav | `agents/warden.py` | **DONE, merged** | `minimise()`, `consent_covers()`, `check_inference_leak()` -- all adversarially tested |
+| Raghav | `agents/watchdog.py` | **DONE, merged. Fixed 14 Sep, PR #43** | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. Every pause books a retry wake, and a retry after a failed send resends the same tier. **Open:** REJECTED is resent and traced as unreachable; escalation bodies lack a citation. See 14 Sep. |
 | Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
 | Ali | AgentCore deploy | not started | **do this Day 2, not Day 4** |
