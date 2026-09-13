@@ -14,8 +14,19 @@ An unenforceable rule is decoration. This is the half that asks.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from core import db
+from core.clock import SchedulerNotConfigured
 from core.types import Case, CaseStatus, Claim, Filing
+
+#: How long after a signature the Watchdog is woken to actually submit.
+#: Not zero: EventBridge Scheduler rejects an `at()` in the past, and a clock
+#: skew of a few seconds between this process and the scheduler would make
+#: every approval fail. Not long either -- under the demo clock
+#: (TIME_SCALE=86400) one minute of case time is 0.7ms of real time, so the
+#: same constant is immediate in the demo and a courteous pause in production.
+SUBMIT_AFTER = timedelta(minutes=1)
 
 # Events that are worth one person's attention, and the ones that are not.
 # The distinction is the product: a neighbourhood that pings you about
@@ -213,7 +224,60 @@ def approve(idempotency_key: str, member_id: str, clock) -> tuple[bool, Filing |
             "4 puts the liability on a named person, so an anonymous approval "
             "is not an approval."
         )
-    return db.sign_filing(idempotency_key, member_id, clock.now())
+    signed, filing = db.sign_filing(idempotency_key, member_id, clock.now())
+    if signed and filing is not None:
+        _wake_the_watchdog(filing, clock)
+    return signed, filing
+
+
+def _wake_the_watchdog(filing: Filing, clock) -> None:
+    """A signature is an event. Something has to act on it.
+
+    WITHOUT THIS, SIGNING DID NOTHING AT ALL. The request path books exactly
+    one wake, `expire_draft`, and that wake's handler returns the moment it
+    sees the filing is signed -- correctly, because its job is to expire
+    UNSIGNED drafts. So the case sat at DRAFTED forever: never submitted,
+    never tracked, never escalated. A household signed the letter and the
+    letter went in a drawer.
+
+    The reason nothing caught it is that the only thing that books a
+    `check_sla` wake is `climb()`, and the only thing that reaches `climb()`
+    for a fresh case is a `check_sla` wake. A starter motor wired to run only
+    once the engine is already turning. Every test calls `climb()` directly
+    and so never needed the key.
+
+    THIS STILL DOES NOT SUBMIT, and that separation is the point rather than
+    an accident of where the code sits. Recording an approval and handing
+    paper to a public body are two different acts: collapsing them puts a
+    network call behind a click, makes a retry indistinguishable from a second
+    filing, and gives the household a spinner where an acknowledgement should
+    be. Booking a wake keeps them separate while making the second one
+    actually happen.
+
+    `retry_submit` rather than a new action, deliberately. Its handler already
+    does precisely this job -- re-enter `climb()`, which recomputes the step,
+    finds the signature and submits -- and `handlers/temporal.py` validates
+    incoming actions against `watchdog.ACTIONS`, so a schedule naming a verb
+    an older deploy does not understand is silently dropped. Reusing the verb
+    that already means "go and try to file this" costs nothing and adds no
+    deploy-ordering hazard.
+
+    Failure here must not cost the signature. `sign_filing` has already
+    committed: the person approved, and that fact is theirs. If no durable
+    timer exists the approval still stands, and the deployed system says so
+    out loud -- `SchedulerNotConfigured` is raised exactly when
+    WATCHDOG_LAMBDA_ARN or SCHEDULER_ROLE_ARN is unset, and the request path
+    already prints NO WAKE SCHEDULED on the trace for the same reason.
+    """
+    try:
+        clock.schedule(filing.case_id, clock.now() + SUBMIT_AFTER,
+                       "retry_submit")
+    except SchedulerNotConfigured:
+        # Offline and in the test suite this is the normal case, and it is
+        # not an error: the signature is recorded either way. Swallowed here
+        # and nowhere else -- a real scheduler outage on the Watchdog's own
+        # paths still raises, because there the wake IS the work.
+        pass
 
 
 _STALLED = {
