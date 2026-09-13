@@ -1,0 +1,25 @@
+Every morning in Bengaluru, somewhere, the water doesn't come.
+Inside one flat, every person feels it differently.
+For the father, it's the third day without supply.
+For the mother, an empty tank and nothing to cook with.
+For the grandmother, dialysis on Thursday.
+The whole building knows within fifteen minutes.
+But every household complains alone.
+Nobody has the stamina to chase the right office for eleven weeks, or to notice when a ticket is closed as resolved with no work done.
+Panchayat is a neighbourhood of agents.
+One household is enough to start a case, and every neighbour who reports the same fault makes it stronger.
+Here's the journey, built on Strands Agents and Amazon Bedrock AgentCore.
+Intake reads back what it heard, in the family's own language.
+Their three voices become one position.
+The Privacy Warden lets the urgency cross, and keeps the reason at home.
+Remedy looks up which office owns this pipe, and cites the rule.
+It never guesses.
+Nothing is filed until a named person signs.
+The filing reaches the water board's desk, agent to agent, and a ticket comes back.
+The Watchdog holds the statutory clock.
+Miss the deadline, and it climbs to the next officer.
+And if the office says resolved while the taps are still dry, the street's own reports dispute it.
+We don't fix pipes.
+We make sure someone does.
+Every household reports alone.
+The street gets the leverage.
