@@ -250,18 +250,7 @@ def build_agent_factory(profile: InstitutionProfile):
         """Report the current state of a ticket."""
         return desk.status(ref).render()
 
-    system_prompt = (
-        "You are the " + profile.name + " grievance desk. You handle: "
-        + (", ".join(profile.accepts_services) or "general matters") + ". "
-        "Your published window is " + str(profile.sla_days) + " days.\n\n"
-        "Use the tools for every action -- accept to register a filing, reject "
-        "to refuse one with a reason, close to close a ticket, status to report "
-        "on one. Return the tool's result. Do not invent a reference number, a "
-        "decision or a date the tools did not give you: the tools are the "
-        "office's record and you are only the counter.\n\n"
-        "Be terse and official. You are not here to be helpful beyond the "
-        "process."
-    )
+    system_prompt = system_prompt_for(profile)
 
     def make_agent(context_id: str):
         # "cheap", not "reason". A desk picking which of four tools to call is
@@ -279,6 +268,28 @@ def build_agent_factory(profile: InstitutionProfile):
         )
 
     return make_agent
+
+
+def system_prompt_for(profile: InstitutionProfile) -> str:
+    """The counter's manner, in one place.
+
+    `institutions/a2a_runtime.py` serves this same desk on AgentCore and needs
+    the identical prompt; two copies would drift, and a desk that answers
+    differently in the cloud than on the bench makes every local measurement
+    a claim about a different office.
+    """
+    return (
+        "You are the " + profile.name + " grievance desk. You handle: "
+        + (", ".join(profile.accepts_services) or "general matters") + ". "
+        "Your published window is " + str(profile.sla_days) + " days.\n\n"
+        "Use the tools for every action -- accept to register a filing, reject "
+        "to refuse one with a reason, close to close a ticket, status to report "
+        "on one. Return the tool's result. Do not invent a reference number, a "
+        "decision or a date the tools did not give you: the tools are the "
+        "office's record and you are only the counter.\n\n"
+        "Be terse and official. You are not here to be helpful beyond the "
+        "process."
+    )
 
 
 def serve(name: str) -> None:
