@@ -1,0 +1,147 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogStreams",
+        "logs:CreateLogGroup"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-2:699073937307:log-group:/aws/bedrock-agentcore/runtimes/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-2:699073937307:log-group:*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-2:699073937307:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Resource": "*",
+      "Action": "cloudwatch:PutMetricData",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "bedrock-agentcore"
+        }
+      }
+    },
+    {
+      "Sid": "CloudWatchLogsPutResourcePolicy",
+      "Effect": "Allow",
+      "Action": [
+        "logs:PutResourcePolicy"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-2:699073937307:log-group:/aws/bedrock-agentcore/runtimes/panchayat*"
+      ]
+    },
+    {
+      "Sid": "BedrockAgentCoreIdentityGetResourceApiKey",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetResourceApiKey"
+      ],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:token-vault/default",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:token-vault/default/apikeycredentialprovider/*",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default/workload-identity/*"
+      ]
+    },
+    {
+      "Sid": "BedrockAgentCoreIdentityGetCredentialProviderClientSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:ap-south-2:699073937307:secret:bedrock-agentcore-identity!default/oauth2/*",
+        "arn:aws:secretsmanager:ap-south-2:699073937307:secret:bedrock-agentcore-identity!default/apikey/*"
+      ]
+    },
+    {
+      "Sid": "BedrockAgentCoreIdentityGetResourceOauth2Token",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetResourceOauth2Token"
+      ],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:token-vault/default",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:token-vault/default/oauth2credentialprovider/*",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default/workload-identity/panchayat*"
+      ]
+    },
+    {
+      "Sid": "BedrockModelInvocation",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ApplyGuardrail"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:ap-south-2:699073937307:*"
+      ]
+    },
+    {
+      "Sid": "MarketplaceSubscribeOnFirstCall",
+      "Effect": "Allow",
+      "Action": [
+        "aws-marketplace:ViewSubscriptions",
+        "aws-marketplace:Subscribe"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:CalledViaLast": "bedrock.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "BedrockAgentCoreIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+      ],
+      "Resource": [
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:ap-south-2:699073937307:workload-identity-directory/default/workload-identity/panchayat*"
+      ]
+    },
+    {
+      "Sid": "AwsJwtFederation",
+      "Effect": "Allow",
+      "Action": "sts:GetWebIdentityToken",
+      "Resource": "*"
+    }
+  ]
+}

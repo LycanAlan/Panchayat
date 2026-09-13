@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TheDesksOwnTable",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat-desks"
+    },
+    {
+      "Sid": "NeverOurTable",
+      "Effect": "Deny",
+      "Action": "dynamodb:*",
+      "Resource": [
+        "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat",
+        "arn:aws:dynamodb:ap-south-2:699073937307:table/panchayat/*"
+      ]
+    },
+    {
+      "Sid": "ItsOwnLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": "arn:aws:logs:ap-south-2:699073937307:log-group:/aws/bedrock-agentcore/runtimes/*"
+    }
+  ]
+}
