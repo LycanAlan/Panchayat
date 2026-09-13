@@ -14,6 +14,12 @@ boto3>=1.43.90
 # Do NOT add opensearch, faiss or pgvector -- see the rejected-alternatives note.
 numpy>=2.5.3
 
+# Model provider while Bedrock's data plane is blocked account-wide.
+# PANCHAYAT_MODEL=gemini in core/models.py. Unpinned upper bound deliberately:
+# it is the client, not the model, and the model IDs are pinned in
+# core/models.py where every other ID lives.
+google-genai>=2.23.0
+
 # Config + data
 pyyaml>=6.0.3
 python-dotenv>=1.2.3

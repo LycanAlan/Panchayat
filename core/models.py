@@ -7,6 +7,7 @@ The model seam. Import from HERE, never construct a model in an agent file.
 Provider is chosen by one environment variable:
 
     PANCHAYAT_MODEL=bedrock     (default) Bedrock, us-east-1
+    PANCHAYAT_MODEL=gemini      Google AI Studio, needs GEMINI_API_KEY
     PANCHAYAT_MODEL=anthropic   Anthropic API directly, needs ANTHROPIC_API_KEY
 
 WHY
@@ -53,6 +54,24 @@ ANTHROPIC_IDS: dict[str, str] = {
     "cheap": "claude-haiku-4-5-20251001",
 }
 
+# Google AI Studio. BOTH IDS WERE CALLED, WITH TOOLS, BEFORE BEING WRITTEN
+# HERE -- the institution desks are a tool-calling agent and nothing else, so
+# "the model answers" is not the test that matters.
+#
+# `gemini-2.5-flash` is the ID every blog post and half the docs still name,
+# and it returns 404 for a new key: "no longer available to new users, use
+# models/gemini-3.6-flash". Exactly the Claude 3.5 trap already recorded in
+# CLAUDE.md, in a second vendor, found by calling it rather than reading about
+# it. Do not copy an ID from anywhere but this file.
+#
+# Pinned rather than the `gemini-flash-latest` alias, for the same reason
+# every other ID here is pinned: an alias moves under a demo. The cost is that
+# these retire too, and `probe()` is how you find out.
+GEMINI_IDS: dict[str, str] = {
+    "reason": "gemini-3.8-flash",
+    "cheap": "gemini-3.5-flash-lite",
+}
+
 MAX_TOKENS: dict[str, int] = {"reason": 4096, "cheap": 1024}
 
 
@@ -60,11 +79,20 @@ def provider_name() -> str:
     return os.environ.get("PANCHAYAT_MODEL", "bedrock").lower()
 
 
+#: Provider name -> its ID table. One place, so `model_id()` and `get_model()`
+#: can never disagree about which model a role resolves to -- a trace that
+#: names a different model from the one that answered is worse than no trace.
+_ID_TABLES: dict[str, dict[str, str]] = {
+    "bedrock": BEDROCK_IDS,
+    "anthropic": ANTHROPIC_IDS,
+    "gemini": GEMINI_IDS,
+}
+
+
 def model_id(role: Role = "reason") -> str:
     """The ID that will actually be called. Log this in traces -- 'which model
     answered' is the first question anyone asks of a transcript."""
-    table = ANTHROPIC_IDS if provider_name() == "anthropic" else BEDROCK_IDS
-    return table[role]
+    return _ID_TABLES.get(provider_name(), BEDROCK_IDS)[role]
 
 
 def get_model(role: Role = "reason", **overrides: Any):
@@ -101,10 +129,46 @@ def get_model(role: Role = "reason", **overrides: Any):
         cfg.update(overrides)
         return AnthropicModel(client_args={"api_key": key}, **cfg)
 
+    if provider == "gemini":
+        # Key first, THEN the optional import, for the same reason the
+        # anthropic branch does it: both are things you have to go and do,
+        # but only one of them is your fault.
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "PANCHAYAT_MODEL=gemini but GEMINI_API_KEY is unset. Get one "
+                "at aistudio.google.com/apikey. Never commit it -- the "
+                "pre-commit hook refuses .env, and it cannot refuse a key you "
+                "paste into a source file."
+            )
+        try:
+            from strands.models.gemini import GeminiModel
+        except ImportError as exc:
+            # ImportError, not ModuleNotFoundError: strands ships
+            # models/gemini.py unconditionally and it does `from google import
+            # genai` at module scope, so a missing client raises ImportError
+            # from a module that exists. Catching only ModuleNotFoundError
+            # here would let the raw error through with a message about
+            # `google` that names neither the package to install nor us.
+            raise RuntimeError(
+                "The gemini provider needs its client: pip install google-genai"
+            ) from exc
+
+        # max_tokens lives under `params`, not at the top level -- GeminiConfig
+        # is (context_window_limit, model_id, params, gemini_tools,
+        # use_native_token_count). Passing max_tokens= here is silently
+        # accepted as an unknown config key and does nothing.
+        cfg = {
+            "model_id": GEMINI_IDS[role],
+            "params": {"max_output_tokens": MAX_TOKENS[role]},
+        }
+        cfg.update(overrides)
+        return GeminiModel(client_args={"api_key": key}, **cfg)
+
     if provider != "bedrock":
         raise ValueError(
             "PANCHAYAT_MODEL=" + provider + " is not a provider we support. "
-            "Use 'bedrock' or 'anthropic'."
+            "Use 'bedrock', 'gemini' or 'anthropic'."
         )
 
     from strands.models.bedrock import BedrockModel
