@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import Icon from '../components/Icon.jsx'
 import { SectionHead, Facing } from '../components/Bits.jsx'
 import { DOES, DOES_NOT } from '../data/case.js'
+import { useScenario } from '../lib/scenario.jsx'
 import { useGsap, gsap } from '../lib/motion.js'
 
 const PRINCIPLES = [
@@ -44,6 +45,10 @@ const PRINCIPLES = [
 ]
 
 export default function About() {
+  const { scenario } = useScenario()
+  // The first refusal names the worked example's own trade, so it reads true
+  // on whichever case the reader came from.
+  const doesNot = [scenario.copy.doesNotFirst, ...DOES_NOT.slice(1)]
   const scope = useGsap((self, { reduced }) => {
     if (reduced) return
     self.add(() => {
@@ -83,7 +88,7 @@ export default function About() {
           <SectionHead n="§ 1" kicker="Scope" title="Both columns are the product." note="Read them together" />
           <Facing
             left={{ title: 'What this does', items: DOES }}
-            right={{ title: 'What it does not', items: DOES_NOT }}
+            right={{ title: 'What it does not', items: doesNot }}
           />
         </div>
       </section>
@@ -145,7 +150,7 @@ export default function About() {
             <section data-principle>
               <h3 className="label">Built and running</h3>
               <ul className="built-list">
-                <li>The institutional tail, end to end, on one ward of curated routing data.</li>
+                <li>The institutional tail, end to end, for water and for roads, on one ward of curated routing data.</li>
                 <li>Text intake in four languages, nine coordinating parts, one household graph.</li>
                 <li>The temporal path: scheduled wakes, breach detection, escalation, closure checks.</li>
                 <li>Calibrated institution simulators, reached across a boundary, holding their own state.</li>

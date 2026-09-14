@@ -5,41 +5,17 @@ import StreetPlan from '../components/StreetPlan.jsx'
 import ReportInput from '../components/ReportInput.jsx'
 import Icon from '../components/Icon.jsx'
 import { SectionHead } from '../components/Bits.jsx'
-import { CASE } from '../data/case.js'
 import { useGsap, gsap, ScrollTrigger, RISE } from '../lib/motion.js'
+import { useScenario } from '../lib/scenario.jsx'
 
-const COVER = [
-  { k: 'File', v: CASE.id },
-  { k: 'Ward', v: `${CASE.ward} · ${CASE.ward_name}` },
-  { k: 'Opened', v: '06 SEP 2026' },
-  { k: 'Status', v: CASE.status, tone: 'terracotta' },
-]
-
-const FIGURES = [
-  {
-    n: '15',
-    unit: 'times',
-    t: 'One pothole complaint in this city was opened and closed again, on the same stretch of road, with the road unchanged.',
-  },
-  {
-    n: '7',
-    unit: 'days',
-    t: 'The statutory window a household is expected to count, unaided, while doing everything else a week contains.',
-  },
-  {
-    n: '0',
-    unit: 'work orders',
-    t: 'Attached to the closure on this case. The ticket says the supply was restored. Nothing says anyone went.',
-  },
-]
-
-const REGISTER = [
+/** The file's contents. The first two lines belong to the worked example. */
+const register = (scenario) => [
   {
     to: '/case',
     n: '01',
     title: 'The case',
-    sub: 'PNC-2026-0912',
-    line: 'Lakshmi reports on the third morning. Eleven entries later, the desk stamps it closed and three houses are still dry.',
+    sub: scenario.CASE.id,
+    line: scenario.copy.registerCase,
     icon: 'document',
   },
   {
@@ -47,7 +23,7 @@ const REGISTER = [
     n: '02',
     title: 'The street',
     sub: 'Ward 12 layout',
-    line: 'Twenty-four properties, two mains. Read the drawing and the cluster stops being a coincidence.',
+    line: scenario.copy.registerStreet,
     icon: 'houses',
   },
   {
@@ -70,6 +46,16 @@ const REGISTER = [
 
 export default function Index() {
   const [stage, setStage] = useState(0)
+  const { scenario } = useScenario()
+  const { CASE, copy } = scenario
+  const COVER = [
+    { k: 'File', v: CASE.id },
+    { k: 'Ward', v: `${CASE.ward} · ${CASE.ward_name}` },
+    { k: 'Opened', v: copy.opened },
+    { k: 'Status', v: CASE.status, tone: 'terracotta' },
+  ]
+  const FIGURES = copy.figures
+  const REGISTER = register(scenario)
 
   const scope = useGsap((self, { reduced }) => {
     // Without the scroll triggers nothing would ever advance the
@@ -184,12 +170,7 @@ export default function Index() {
             </aside>
 
             <div className="prose">
-              <p className="opener">
-                When the water fails, the building group knows inside fifteen minutes. Nobody
-                needs to be told. What nobody has is the stamina to file against the right
-                body, hold a statutory clock for eleven weeks, notice the day it breaches, and
-                climb to the next authority with the record intact.
-              </p>
+              <p className="opener">{copy.recordOpener}</p>
               <p>
                 So complaints are filed and complaints are closed, and the two events have very
                 little to do with each other. A ticket is a sentence written by a desk about
@@ -217,16 +198,13 @@ export default function Index() {
         <div className="page">
           <SectionHead
             n="§ 2"
-            kicker="Drawing PNC-W12-01"
-            title="Next door is not the same as downstream."
-            note="4th Cross · 24 properties · 2 mains"
+            kicker={copy.preview.kicker}
+            title={copy.preview.title}
+            note={copy.preview.note}
           />
 
           <div className="preview-lead">
-            <p className="sub preview-claim">
-              Three households on this street share a fault. They are not neighbours.
-              The house between two of them has water, because it is on the other main.
-            </p>
+            <p className="sub preview-claim">{copy.preview.claim}</p>
             <Link to="/street" className="action action-indigo preview-link">
               Open the drawing
               <Icon name="arrowRight" size={15} />
@@ -240,10 +218,7 @@ export default function Index() {
           </div>
           <p className="micro plan-hint">Drawing is wider than this screen — drag it sideways.</p>
 
-          <p className="micro plan-caption">
-            Fig. 1 — Water supply layout, 4th Cross. Properties 9, 12 and 17 are served by Main A.
-            Property 11, which shares a wall with 12, is served by Main B and is unaffected.
-          </p>
+          <p className="micro plan-caption">{copy.preview.caption}</p>
         </div>
       </section>
 

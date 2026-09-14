@@ -1,9 +1,10 @@
 import { NavLink, Link, useLocation } from 'react-router-dom'
-import { CASE } from '../data/case.js'
 import { MASTHEAD } from '../data/indic.js'
+import { PROBLEMS } from '../data/scenarios.js'
+import { useScenario } from '../lib/scenario.jsx'
 
 const ENTRIES = [
-  { to: '/case', n: '01', label: 'Case', sub: 'PNC-2026-0912' },
+  { to: '/case', n: '01', label: 'Case', sub: null },
   { to: '/street', n: '02', label: 'Street', sub: 'Ward 12 layout' },
   { to: '/process', n: '03', label: 'Process', sub: 'Seven stages' },
   { to: '/about', n: '04', label: 'About', sub: 'Boundaries' },
@@ -15,6 +16,8 @@ const ENTRIES = [
  */
 export default function Masthead() {
   const { pathname } = useLocation()
+  const { problem, scenario, setProblem } = useScenario()
+  const { CASE } = scenario
 
   return (
     <header className="masthead">
@@ -22,6 +25,21 @@ export default function Masthead() {
         <div className="page masthead-strip-in">
           <span className="micro">Ward {CASE.ward} · {CASE.ward_name} · Bengaluru</span>
           <span className="micro masthead-strip-mid">Register of pursued complaints</span>
+          {/* Which worked example the story pages tell. A report from the
+              home page sets it too, for the service the household picked. */}
+          <span className="micro problem-switch" role="group" aria-label="Worked example">
+            {PROBLEMS.map((p) => (
+              <button
+                key={p.key}
+                type="button"
+                className="problem-switch-opt"
+                aria-pressed={problem === p.key}
+                onClick={() => setProblem(p.key)}
+              >
+                {p.switchLabel}
+              </button>
+            ))}
+          </span>
           <span className="micro">
             File {CASE.id} · <span className="ink-terracotta">{CASE.status}</span>
           </span>
@@ -43,7 +61,7 @@ export default function Masthead() {
             >
               <span className="index-n mono">{e.n}</span>
               <span className="index-label">{e.label}</span>
-              <span className="index-sub">{e.sub}</span>
+              <span className="index-sub">{e.sub ?? CASE.id}</span>
             </NavLink>
           ))}
         </nav>

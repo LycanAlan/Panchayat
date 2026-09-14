@@ -40,6 +40,15 @@ FIELD_LABELS: dict[str, str] = {
     "ward_number": "ward number",
     "flat_number": "flat number",
     "layout_name": "layout name",
+    "location": "location",
+}
+
+# Where one service needs a field to read differently. "Days without supply"
+# is right for a dry tap and wrong for a pothole, and a water letter that
+# already reads correctly must not change to fix a roads one -- so this
+# overrides per service rather than rewording FIELD_LABELS for everybody.
+SERVICE_FIELD_LABELS: dict[Service, dict[str, str]] = {
+    Service.ROADS: {"duration_days": "days the defect has stood"},
 }
 
 
@@ -196,8 +205,9 @@ class JurisdictionTable:
         return (Tail.INSTITUTIONAL, entry, entry.statute_ref)
 
 
-def _field_label(field: str) -> str:
-    return FIELD_LABELS.get(field, field.replace("_", " "))
+def _field_label(field: str, service: Service | None = None) -> str:
+    override = SERVICE_FIELD_LABELS.get(service, {}) if service is not None else {}
+    return override.get(field) or FIELD_LABELS.get(field, field.replace("_", " "))
 
 
 def _sentence_case(text: str) -> str:
@@ -260,7 +270,7 @@ def compose_filing(case: Case, entry: JurisdictionEntry, facts: dict,
         + ", segment " + case.segment + ".",
     ]
     for field in entry.required_fields:
-        lines.append(_sentence_case(_field_label(field)) + ": "
+        lines.append(_sentence_case(_field_label(field, case.service)) + ": "
                      + str(values[field]) + ".")
     if "affected_count" not in entry.required_fields:
         # Stated even where this authority does not demand it. Two reasons:

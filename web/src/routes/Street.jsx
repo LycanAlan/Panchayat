@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import StreetPlan from '../components/StreetPlan.jsx'
 import Icon from '../components/Icon.jsx'
 import { SectionHead } from '../components/Bits.jsx'
-import { HOUSES, PLAN, byNumber, CORROBORATING, DECOY } from '../data/street.js'
+import { useScenario } from '../lib/scenario.jsx'
 import { useGsap, useMediaQuery, ScrollTrigger } from '../lib/motion.js'
 
 // A pinned sheet plus a paragraph needs both height and width. Where
@@ -12,38 +12,11 @@ import { useGsap, useMediaQuery, ScrollTrigger } from '../lib/motion.js'
 // half-pinned layout is how text ends up hidden behind a diagram.
 const CANNOT_PIN = '(max-width: 900px), (max-height: 640px)'
 
-const BEATS = [
-  {
-    stage: 0,
-    n: '01',
-    head: 'Twenty-four houses, in the order the numbers run.',
-    body:
-      'This is the street as everyone holds it in their head: a row of doors, 12/01 at one end and 12/24 at the other. Nothing in this picture can tell you which two households share a fault.',
-  },
-  {
-    stage: 1,
-    n: '02',
-    head: 'Two mains, at two depths, laid seventeen years apart.',
-    body:
-      'Main A went in with the 1994 extension — 300 mm asbestos cement, 1.54 m down. Main B is 2011, ductile iron, deeper. Each property was teed into whichever was live the year it connected. Read the tag under each door number: that letter is the only thing that decides who shares a failure.',
-  },
-  {
-    stage: 2,
-    n: '03',
-    head: 'Follow the feeder, not the footpath.',
-    body:
-      'Trace Main A and the households on it surface: 09, 12 and 17. They are not adjacent. Nobody living in them would describe the other two as neighbours. Hydraulically they are one household with three taps.',
-  },
-  {
-    stage: 3,
-    n: '04',
-    head: 'Eleven has water. Eleven shares a wall with twelve.',
-    body:
-      'Number 11 is tagged B. Its service crosses over Main A without touching it and carries on down to its own feeder, and its supply never faltered. Any reading of this street that starts with proximity puts 11 in the cluster and leaves 17 out — and both of those are wrong.',
-  },
-]
-
 export default function Street() {
+  const { scenario } = useScenario()
+  const { HOUSES, PLAN, byNumber, CORROBORATING, DECOY } = scenario.DRAWING
+  const words = scenario.copy.street
+  const BEATS = words.beats.map((b, i) => ({ ...b, stage: i, n: String(i + 1).padStart(2, '0') }))
   const stacked = useMediaQuery(CANNOT_PIN)
   const [stage, setStage] = useState(0)
   const [probe, setProbe] = useState(null)
@@ -77,18 +50,13 @@ export default function Street() {
     <div ref={scope} className="street">
       <section className="band band-tight">
         <div className="page">
-          <p className="meta">Drawing PNC-W12-01 · sheet 1 of 1</p>
+          <p className="meta">{words.meta}</p>
           <h1 className="display street-title">
-            Geographic proximity
+            {words.title[0]}
             <br />
-            is not <em>infrastructure proximity.</em>
+            {words.title[1]}<em>{words.title[2]}</em>
           </h1>
-          <p className="lead">
-            Two households can share a wall and not share a pipe. Two households four doors
-            apart can share the same failure. Every clustering decision this system makes
-            rests on the second ordering, and the second ordering is invisible from the
-            street.
-          </p>
+          <p className="lead">{words.lead}</p>
         </div>
       </section>
 
@@ -165,7 +133,7 @@ export default function Street() {
           <SectionHead
             n="§ 2"
             kicker="Read it yourself"
-            title="Pick a house. See where its water comes from."
+            title={words.probeTitle}
             note="Hover, or tab through"
           />
 
@@ -188,13 +156,11 @@ export default function Street() {
                   <p className="mono probe-door">{h.door}</p>
                   <dl className="probe-facts">
                     <div>
-                      <dt className="micro">Feeder</dt>
-                      <dd className="mono">
-                        Main {h.feeder} · {h.feeder === 'A' ? PLAN.mainA.spec : PLAN.mainB.spec}
-                      </dd>
+                      <dt className="micro">{words.probe.line}</dt>
+                      <dd className="mono">{words.probe.lineValue(h, PLAN)}</dd>
                     </div>
                     <div>
-                      <dt className="micro">Invert</dt>
+                      <dt className="micro">{words.probe.depth}</dt>
                       <dd className="mono">{h.feeder === 'A' ? PLAN.mainA.depth : PLAN.mainB.depth}</dd>
                     </div>
                     <div>
@@ -202,12 +168,12 @@ export default function Street() {
                       <dd className="mono">
                         {[h.n - 1, h.n + 1]
                           .filter((n) => n >= 1 && n <= 24)
-                          .map((n) => `${String(n).padStart(2, '0')} — Main ${byNumber(n).feeder}`)
+                          .map((n) => `${String(n).padStart(2, '0')} — ${words.probe.either(byNumber(n).feeder)}`)
                           .join(' · ')}
                       </dd>
                     </div>
                     <div>
-                      <dt className="micro">Shares this main with</dt>
+                      <dt className="micro">{words.probe.shares}</dt>
                       <dd className="mono probe-shares">
                         {shares.map((n) => String(n).padStart(2, '0')).join(' · ')}
                       </dd>
@@ -216,10 +182,10 @@ export default function Street() {
                       <dt className="micro">State</dt>
                       <dd className={`mono ${CORROBORATING.includes(h.n) ? 'ink-terracotta' : ''}`}>
                         {CORROBORATING.includes(h.n)
-                          ? 'live claim · supply failed'
+                          ? words.probe.claim
                           : h.n === DECOY
-                            ? 'supply normal · other main'
-                            : 'supply normal'}
+                            ? words.probe.decoy
+                            : words.probe.plain}
                       </dd>
                     </div>
                   </dl>
@@ -227,14 +193,8 @@ export default function Street() {
               ) : (
                 <div className="probe-empty">
                   <Icon name="junction" size={30} />
-                  <p className="sans dim">
-                    Move across the elevation. Each property lights its own service line down
-                    to whichever main it is teed into.
-                  </p>
-                  <p className="micro">
-                    {onMainA} of {HOUSES.length} are on Main A. No two of them are next door
-                    to each other.
-                  </p>
+                  <p className="sans dim">{words.probe.empty}</p>
+                  <p className="micro">{words.probe.count(onMainA, HOUSES.length)}</p>
                 </div>
               )}
             </aside>
@@ -255,23 +215,9 @@ export default function Street() {
             </aside>
 
             <div className="prose">
-              <p className="opener">
-                Corroboration is the difference between one household with a story and a
-                street with a fault. A single dry tap is answerable — bad motor, empty sump,
-                unpaid bill. Three taps on one feeder is a hydraulic statement, and it is much
-                harder for a closure to sit on top of.
-              </p>
-              <p>
-                So the weight this system puts on topology is not decoration. Scoring on words
-                alone would have found 11 and 12 — same street, same phrasing, same hour — and
-                missed 17 entirely. The drawing is what stops that.
-              </p>
-              <p>
-                It also stops the opposite error. The house on the other main scores zero on
-                topology, so however similar its wording, it never joins the cluster. A
-                pressure complaint in a building that simply forgot to pay does not get to
-                stand behind somebody else&rsquo;s breach.
-              </p>
+              <p className="opener">{words.why[0]}</p>
+              <p>{words.why[1]}</p>
+              <p>{words.why[2]}</p>
             </div>
           </div>
 

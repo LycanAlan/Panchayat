@@ -1,12 +1,4 @@
-import { PLAN, HOUSES, VALVES, FAULT, INLET, SUBJECT, CORROBORATING, DECOY } from '../data/street.js'
-
-const { width: W, height: H, grade, chip, brace, mainA, mainB } = PLAN
-
-const feederY = (f) => (f === 'A' ? mainA.y : mainB.y)
-
-// Where a service drop leaves the property: below the feeder tag, so
-// the two never sit on top of each other.
-const DROP_TOP = chip + 16
+import { useScenario } from '../lib/scenario.jsx'
 
 /**
  * Ward 12, 4th Cross — water supply layout.
@@ -29,6 +21,16 @@ const DROP_TOP = chip + 16
  *   3  the closure is disputed — the same three, still dry
  */
 export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'plan' }) {
+  // The worked example decides what the two lanes are: water mains for
+  // Lakshmi's case, the two streets a row of plots opens onto for the
+  // pothole. Geometry, stages and notation are the same sheet.
+  const { scenario } = useScenario()
+  const { PLAN, HOUSES, VALVES, FAULT, INLET, SUBJECT, CORROBORATING, DECOY, text } = scenario.DRAWING
+  const { width: W, height: H, grade, chip, brace, mainA, mainB } = PLAN
+  const feederY = (f) => (f === 'A' ? mainA.y : mainB.y)
+  // Where a service drop leaves the property: below the feeder tag, so
+  // the two never sit on top of each other.
+  const DROP_TOP = chip + 16
   const lit = new Set(CORROBORATING)
 
   const houseState = (h) => {
@@ -48,7 +50,7 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
       data-stage={stage}
       viewBox={`0 0 ${W} ${H}`}
       role="img"
-      aria-label="Engineering layout of 4th Cross, Ward 12: twenty-four properties above grade, each tagged A or B for the water main it is connected to, and two distribution mains below grade. Numbers 9, 12 and 17 are on Main A. Number 11, next door to 12, is on Main B."
+      aria-label={text.aria}
     >
       <defs>
         <pattern id={`${id}-hatch`} width="9" height="9" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
@@ -73,28 +75,32 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
 
       {/* ---- title block ---------------------------------------- */}
       <g className="plan-title" transform="translate(34 40)">
-        <text className="plan-t1" y="0">WARD 12 · 4TH CROSS, DODDANEKKUNDI</text>
-        <text className="plan-t2" y="18">WATER SUPPLY LAYOUT · ELEVATION + BURIED SERVICES</text>
-        <text className="plan-t3" y="34">DRG. PNC-W12-01 · SHEET 1 OF 1 · N.T.S.</text>
+        <text className="plan-t1" y="0">{text.t1}</text>
+        <text className="plan-t2" y="18">{text.t2}</text>
+        <text className="plan-t3" y="34">{text.t3}</text>
       </g>
 
       {/* ---- legend: the drawing explains its own notation ------ */}
       <g className="plan-key" transform={`translate(${W - 364} 32)`}>
         <line className="key-a" x1="0" y1="0" x2="32" y2="0" />
-        <text className="plan-t2" x="44" y="4">MAIN A · {mainA.spec} · INVERT {mainA.depth}</text>
+        <text className="plan-t2" x="44" y="4">{text.keyA}</text>
 
         <line className="key-b" x1="0" y1="18" x2="32" y2="18" />
         <line className="key-b" x1="0" y1="23" x2="32" y2="23" />
-        <text className="plan-t2" x="44" y="25">MAIN B · {mainB.spec} · INVERT {mainB.depth}</text>
+        <text className="plan-t2" x="44" y="25">{text.keyB}</text>
 
         <g transform="translate(0 46)">
           <rect className="key-chip" x="0" y="-10" width="16" height="15" rx="2" />
           <text className="key-chip-t" x="8" y="1.4" textAnchor="middle">A</text>
-          <text className="plan-t3" x="26" y="1.4">FEEDER TAG</text>
-          <path className="key-valve" d="M150 -9 L164 1 L164 -9 L150 1 Z" />
-          <text className="plan-t3" x="171" y="1.4">VALVE</text>
+          <text className="plan-t3" x="26" y="1.4">{text.chip}</text>
+          {text.valve && (
+            <>
+              <path className="key-valve" d="M150 -9 L164 1 L164 -9 L150 1 Z" />
+              <text className="plan-t3" x="171" y="1.4">{text.valve}</text>
+            </>
+          )}
           <circle className="key-tee" cx="240" cy="-4" r="3.6" />
-          <text className="plan-t3" x="250" y="1.4">SERVICE TEE</text>
+          <text className="plan-t3" x="250" y="1.4">{text.tee}</text>
         </g>
       </g>
 
@@ -126,7 +132,7 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
               data-feeder={h.feeder}
               tabIndex={onProbe ? 0 : -1}
               role={onProbe ? 'button' : undefined}
-              aria-label={`Number ${h.door}, connected to Main ${h.feeder}`}
+              aria-label={text.houseAria(h)}
               onMouseEnter={onProbe ? () => onProbe(h.n) : undefined}
               onMouseLeave={onProbe ? () => onProbe(null) : undefined}
               onFocus={onProbe ? () => onProbe(h.n) : undefined}
@@ -166,7 +172,7 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
         {/* which house this file is about */}
         <g className="subject-flag">
           <path d={`M${subject.cx - 16} 126 V${subject.top - 16}`} />
-          <text x={subject.cx - 16} y="116" textAnchor="middle">12/12 — THIS CASE</text>
+          <text x={subject.cx - 16} y="116" textAnchor="middle">{text.subject}</text>
         </g>
       </g>
 
@@ -202,7 +208,7 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
         <g className="main" data-feeder="A">
           <line className="main-line" x1="18" y1={mainA.y} x2={W - 18} y2={mainA.y} pathLength="1" />
           <text className="plan-t3 main-label" x="26" y={mainA.y - 13}>
-            MAIN A · 300 mm AC · INVERT {mainA.depth}
+            {text.mainA}
           </text>
         </g>
 
@@ -212,7 +218,7 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
           <line className="main-line" x1="18" y1={mainB.y - 2.5} x2={W - 18} y2={mainB.y - 2.5} pathLength="1" />
           <line className="main-line" x1="18" y1={mainB.y + 2.5} x2={W - 18} y2={mainB.y + 2.5} pathLength="1" />
           <text className="plan-t3 main-label" x="26" y={mainB.y - 15}>
-            MAIN B · 250 mm DI · INVERT {mainB.depth}
+            {text.mainB}
           </text>
         </g>
 
@@ -257,27 +263,29 @@ export default function StreetPlan({ stage = 3, probe = null, onProbe, id = 'pla
             }
           />
           <text x={(first.cx + last.cx) / 2} y={brace + 19} textAnchor="middle">
-            09 · 12 · 17 — ONE FEEDER, ONE FAULT
+            {text.cluster}
           </text>
         </g>
 
         <g className="ann ann-decoy" transform={`translate(${HOUSES[DECOY - 1].cx} ${mainB.y})`}>
           <path d="M0 16 v28" className="ann-leader" />
           <text y="58" textAnchor="middle">
-            11 — NEXT DOOR TO 12. CROSSES MAIN A. TEED INTO MAIN B. HAS WATER.
+            {text.decoy}
           </text>
         </g>
       </g>
 
       {/* ---- depth dimension ------------------------------------ */}
-      <g className="plan-dim">
-        <line x1={W - 30} y1={grade} x2={W - 30} y2={mainB.y} />
-        <line x1={W - 36} y1={grade} x2={W - 24} y2={grade} />
-        <line x1={W - 36} y1={mainA.y} x2={W - 24} y2={mainA.y} />
-        <line x1={W - 36} y1={mainB.y} x2={W - 24} y2={mainB.y} />
-        <text className="plan-t3" x={W - 42} y={(grade + mainA.y) / 2} textAnchor="end">1.54</text>
-        <text className="plan-t3" x={W - 42} y={(mainA.y + mainB.y) / 2} textAnchor="end">2.70</text>
-      </g>
+      {text.dims && (
+        <g className="plan-dim">
+          <line x1={W - 30} y1={grade} x2={W - 30} y2={mainB.y} />
+          <line x1={W - 36} y1={grade} x2={W - 24} y2={grade} />
+          <line x1={W - 36} y1={mainA.y} x2={W - 24} y2={mainA.y} />
+          <line x1={W - 36} y1={mainB.y} x2={W - 24} y2={mainB.y} />
+          <text className="plan-t3" x={W - 42} y={(grade + mainA.y) / 2} textAnchor="end">{text.dims[0]}</text>
+          <text className="plan-t3" x={W - 42} y={(mainA.y + mainB.y) / 2} textAnchor="end">{text.dims[1]}</text>
+        </g>
+      )}
     </svg>
   )
 }

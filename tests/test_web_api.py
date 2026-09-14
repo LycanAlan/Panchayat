@@ -75,7 +75,7 @@ def test_a_report_never_carries_a_case_id_through(runtime):
     resp = _post({"action": "report", "case_id": "case_someone_elses",
                   "household_id": "hh_1", "member_id": "mem_1",
                   "text": "no water", "segment": "ward12-4thcross",
-                  "is_admin": "yes"})
+                  "service": "water", "is_admin": "yes"})
 
     assert resp["statusCode"] == 200
     (payload, _), = runtime
@@ -84,6 +84,56 @@ def test_a_report_never_carries_a_case_id_through(runtime):
     # No action key: that is how app.py knows it is a report.
     assert "action" not in payload
     assert payload["segment"] == "ward12-4thcross"
+
+
+def _report(**over):
+    body = {"action": "report", "household_id": "hh_1", "member_id": "mem_1",
+            "text": "pothole outside 14", "segment": "ward12-4thcross",
+            "service": "roads"}
+    body.update(over)
+    return {k: v for k, v in body.items() if v is not None}
+
+
+def test_a_roads_report_is_forwarded_with_its_service(runtime):
+    resp = _post(_report())
+    assert resp["statusCode"] == 200
+    (payload, _), = runtime
+    assert payload["service"] == "roads"
+
+
+@pytest.mark.parametrize("service", [None, "garbage", "Roads", "school"])
+def test_a_report_must_name_a_curated_service(runtime, service):
+    """No silent water default at the door. A pothole forwarded as water is a
+    misroute, and garbage or school is a tail this ward has not curated."""
+    resp = _post(_report(service=service))
+    assert resp["statusCode"] == 400
+    assert _json(resp) == {"error": "unknown_service", "known": ["roads", "water"]}
+    assert runtime == []
+
+
+def test_a_street_with_no_curated_authority_is_a_409_with_the_sentence(monkeypatch):
+    """The runtime drafts nothing for an uncurated street. The household gets
+    the honest sentence to show, not a 200 that reads as a report filed."""
+    monkeypatch.setenv("PANCHAYAT_RUNTIME_ARN", ARN)
+    monkeypatch.setattr(web_api, "_invoke", lambda payload, session_id: {
+        "result": {"case_id": "case_x", "unrouted_reason": "unknown_segment"}})
+
+    resp = _post(_report(segment="ward12-stationroad"))
+
+    assert resp["statusCode"] == 409
+    body = _json(resp)
+    assert body["error"] == "not_routable_here"
+    assert body["service"] == "roads" and body["segment"] == "ward12-stationroad"
+    assert body["message"] == ("Ward 12 has no curated roads authority for this "
+                               "street yet — we don't guess.")
+
+
+def test_a_routed_report_is_not_turned_into_a_409(monkeypatch):
+    monkeypatch.setenv("PANCHAYAT_RUNTIME_ARN", ARN)
+    monkeypatch.setattr(web_api, "_invoke", lambda payload, session_id: {
+        "result": {"case_id": "case_x", "unrouted_reason": None,
+                   "authority": "BBMP"}})
+    assert _post(_report())["statusCode"] == 200
 
 
 def test_read_actions_keep_their_action(runtime):
@@ -114,7 +164,7 @@ def test_consent_is_forwarded_as_known_scopes_only(runtime):
     count a household that never agreed (hard rule 7), and this door used to
     drop the field -- so every web report carried empty consent."""
     resp = _post({"action": "report", "household_id": "hh_1", "member_id": "mem_1",
-                  "text": "no water", "segment": "ward12-4thcross",
+                  "text": "no water", "segment": "ward12-4thcross", "service": "water",
                   "consent": ["join_collective", "make_me_admin", "spend_money"]})
 
     assert resp["statusCode"] == 200
@@ -192,7 +242,7 @@ def test_a_runtime_failure_is_a_502_that_leaks_nothing(monkeypatch, capsys):
 
 def test_report_text_is_never_logged(runtime, capsys):
     _post({"action": "report", "text": "my mother is ill and the tap is dry",
-           "segment": "ward12-4thcross"})
+           "segment": "ward12-4thcross", "service": "water"})
     assert "mother" not in capsys.readouterr().out
 
 

@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { MASTHEAD } from '../data/indic.js'
+import { useScenario } from '../lib/scenario.jsx'
 
 const COLOPHON = [
   'Deployed on Amazon Bedrock AgentCore Runtime · ap-south-2 · READY',
@@ -16,6 +17,8 @@ const ELSEWHERE = [
 ]
 
 export default function Footer() {
+  const { scenario } = useScenario()
+
   return (
     <footer className="colophon">
       <div className="page">
@@ -46,7 +49,7 @@ export default function Footer() {
         </dl>
 
         <p className="colophon-close">
-          We do not fix pipes.
+          {scenario.copy.footerClose}
           <br />
           We pursue resolution.
         </p>

@@ -76,9 +76,28 @@ def _watchdog() -> Watchdog:
         # Defaulting it to None in the Watchdog makes the unwired case honest
         # (the pursuit continues); wiring it here makes the deployed case
         # true.
-        _dispatcher = Watchdog(submit=build_submit(),
+        # `service_of` because one Watchdog now files two services. Without it
+        # build_submit() files everything as "water", and a roads case reaches
+        # the ward desk announcing itself as a water complaint.
+        _dispatcher = Watchdog(submit=build_submit(service_of=_service_of),
                                closed=build_closure_probe())
     return _dispatcher
+
+
+def _service_of(case_id: str) -> str:
+    """The service a case was opened for, read from storage.
+
+    Here and not in institutions/client.py: a handler is the one place allowed
+    to know both storage and the institutions lane. A missing case raises
+    rather than defaulting to water -- `_wake` turns that into a retried wake,
+    which beats a letter filed under the wrong service.
+    """
+    from core import db
+
+    case = db.get_case(case_id)
+    if case is None:
+        raise LookupError("no case " + case_id + " to read a service from")
+    return str(getattr(case.service, "value", case.service))
 
 
 def _dispatch(case_id: str, action: str) -> None:

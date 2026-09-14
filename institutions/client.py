@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Callable
 
 from core.tags import Tag, emit
 from institutions.protocol import DeskReply, Outcome
@@ -391,7 +392,8 @@ def build_filing_tool(client: InstitutionClient | None = None):
 
 
 def build_submit(client: InstitutionClient | None = None,
-                 service: str = "water"):
+                 service: str = "water",
+                 service_of: Callable[[str], str] | None = None):
     """Adapter for the Watchdog's `submit: Callable[[Filing], bool]` seam.
 
     It lives in this file and not in `agents/watchdog.py` on purpose: the
@@ -423,6 +425,15 @@ def build_submit(client: InstitutionClient | None = None,
     case it handles -- a second curated service needs a different seam, not a
     different default.
 
+    `service_of` IS THAT SEAM, now that roads are curated too. It maps a
+    case_id to its service and is asked once per filing, so one Watchdog files
+    a water case as "water" and a roads case as "roads". The composition point
+    (handlers/temporal.py) supplies it from storage, which keeps this lane free
+    of a storage import. When it is None, `service` is used exactly as before.
+    A `service_of` that raises is NOT caught: filing a roads letter as water
+    because a read failed is the misroute this project exists to prevent, and
+    the temporal handler already turns an exception into a retried wake.
+
     READ BEFORE INSTALLING THIS AS THE WATCHDOG'S DEFAULT
     `climb()` responds to a falsey submit by setting `sla_paused = True` and
     returning early, and it schedules no wake on that path -- the only two
@@ -448,7 +459,7 @@ def build_submit(client: InstitutionClient | None = None,
         reply = bound.file_for_authority(
             authority=filing.authority,
             case_id=filing.case_id,
-            service=service,
+            service=service_of(filing.case_id) if service_of is not None else service,
             body=filing.body,
             idempotency_key=filing.idempotency_key or filing.compute_key(),
             signed_by=filing.signed_by or "",

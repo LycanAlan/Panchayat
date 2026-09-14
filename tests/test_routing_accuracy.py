@@ -3,7 +3,14 @@
 Owner: Alakshendra
 """
 
-from eval.routing_accuracy import COMPLAINTS, TARGET, evaluate, keyword_extract, route
+from eval.routing_accuracy import (
+    COMPLAINTS,
+    ROADS_COMPLAINTS,
+    TARGET,
+    evaluate,
+    keyword_extract,
+    route,
+)
 
 
 def test_the_corpus_is_the_agreed_size():
@@ -31,3 +38,14 @@ def test_the_absorbed_village_does_not_go_to_bwssb():
 def test_a_pothole_on_a_curated_street_is_not_a_water_filing():
     assert route("Huge pothole on station road, two-wheelers falling daily.",
                  keyword_extract) is None
+
+
+def test_the_roads_corpus_holds_the_gate_and_declines_what_it_should():
+    r = evaluate(ROADS_COMPLAINTS)
+    assert r["accuracy"] >= TARGET, r["failures"]
+    assert r["declined_correctly"] == r["declined_total"]
+
+
+def test_a_pothole_full_of_water_is_still_a_road():
+    assert route("Water pooling in the pothole on 4th cross, cannot see how deep it is.",
+                 keyword_extract) == "BBMP"

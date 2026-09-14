@@ -1,4 +1,4 @@
-import { LADDER } from '../data/authorities.js'
+import { useScenario } from '../lib/scenario.jsx'
 
 /**
  * The escalation ladder. A vertical stile with a rung per authority,
@@ -7,7 +7,8 @@ import { LADDER } from '../data/authorities.js'
  * them, and each rung carries the instrument it stands on.
  */
 export default function Ladder() {
-  const rungs = [...LADDER].reverse()
+  const { scenario } = useScenario()
+  const rungs = [...scenario.LADDER].reverse()
 
   return (
     <ol className="ladder" aria-label="Escalation ladder">

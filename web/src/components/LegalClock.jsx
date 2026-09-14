@@ -1,4 +1,4 @@
-import { FILING } from '../data/case.js'
+import { useScenario } from '../lib/scenario.jsx'
 
 /**
  * The statutory window, drawn as a ruled scale rather than a
@@ -6,6 +6,9 @@ import { FILING } from '../data/case.js'
  * with an edge, and the edge is the only part that matters.
  */
 export default function LegalClock({ elapsed = 7 }) {
+  const { scenario } = useScenario()
+  const { FILING } = scenario
+  const words = scenario.copy.clock
   const days = FILING.window_days
   const marks = Array.from({ length: days + 1 }, (_, i) => i)
   const breached = elapsed >= days
@@ -13,7 +16,7 @@ export default function LegalClock({ elapsed = 7 }) {
   return (
     <figure className="clock" data-breached={breached ? 'yes' : 'no'}>
       <figcaption className="clock-head">
-        <span className="label">Statutory window</span>
+        <span className="label">{words.label}</span>
         <span className="mono clock-rule">{FILING.rule}</span>
       </figcaption>
 
@@ -33,10 +36,10 @@ export default function LegalClock({ elapsed = 7 }) {
 
       <div className="clock-feet">
         <span className="mono">
-          10 SEP 09:14 · window opens
+          {words.opens}
         </span>
         <span className={`mono ${breached ? 'ink-terracotta' : ''}`}>
-          13 SEP 17:00 · {breached ? 'expired, fault live' : 'window closes'}
+          {words.closes} · {breached ? words.expired : 'window closes'}
         </span>
       </div>
     </figure>

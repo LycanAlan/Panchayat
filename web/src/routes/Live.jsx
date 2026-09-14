@@ -5,6 +5,8 @@ import Icon from '../components/Icon.jsx'
 import { SectionHead } from '../components/Bits.jsx'
 import { approve, getCase, identity, listCases } from '../lib/api.js'
 import { segmentName } from '../data/segments.js'
+import { SCENARIOS } from '../data/scenarios.js'
+import { useScenario } from '../lib/scenario.jsx'
 import '../styles/live.css'
 
 /**
@@ -221,6 +223,14 @@ function CaseFile({ caseId }) {
   useEffect(() => {
     load()
   }, [load])
+
+  // A live roads case links to "How a case runs"; the story it opens should
+  // be the pothole one, not Lakshmi's tank.
+  const { setProblem } = useScenario()
+  const service = data?.case?.service
+  useEffect(() => {
+    if (service && SCENARIOS[service]) setProblem(service)
+  }, [service, setProblem])
 
   const watching = Boolean(
     data &&

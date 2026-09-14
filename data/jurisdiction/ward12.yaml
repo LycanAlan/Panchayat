@@ -1,4 +1,5 @@
-# Panchayat jurisdiction table -- Ward 12, water services.
+# Panchayat jurisdiction table -- Ward 12, water services, and roads on the four
+# streets we demonstrate on.
 #
 # CURATED, NEVER GENERATED. The Remedy Agent may return one of these entries or
 # say it does not know. It may not invent an authority. A hallucinated body
@@ -45,6 +46,23 @@
 #                                deducted from the responsible officer's salary
 #   Karnataka Apartment Ownership Act, 1972
 #                                maintenance of common services pending handover
+#
+#   Bruhat Bengaluru Mahanagara Palike Act, 2020 (Karnataka Act 53 of 2020)
+#                                roads only. Read against the gazetted text:
+#                                s.210(3) public streets vest in the Corporation
+#                                and are maintained under the Zonal Commissioner;
+#                                s.211(1) the Zonal Commissioner shall cause them
+#                                to be levelled and repaired, suo motu or on a
+#                                Ward Committee's request; s.368 a Grievance
+#                                Redressal Authority whose "grievances" include
+#                                "maintenance of Road", Rs 250/day up to Rs 25,000
+#                                on an officer who wilfully neglects the duty;
+#                                s.369(4)(a) remedied within ninety days.
+#
+# Roads carry NO Sakala tier. No notified Sakala service for pothole repair could
+# be found, and a tier we cannot cite is left out rather than filled in. The
+# first two windows are BBMP's own stated one-week turnaround for a pothole
+# complaint, not a statutory day count, and the descriptions say so.
 #
 # Helplines: BWSSB 1915. BBMP 1533.
 #
@@ -129,6 +147,31 @@ ladders:
       window_days: 30
       statute_ref: "Right to Information Act 2005, section 6 application to the PIO"
       description: "Asks BWSSB whether the layout was ever handed over. Usually the whole answer."
+
+  # Roads. Every authority below contains "BBMP" or "RTI", so
+  # institutions/routing.yaml sends the first three tiers to the ward desk and
+  # the fourth to no desk at all -- no routing change was needed.
+  bbmp_roads: &ladder_bbmp_roads
+    - tier: 1
+      authority: "BBMP Assistant Engineer, ward office (roads)"
+      window_days: 7
+      statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.211(1): public streets to be levelled and repaired"
+      description: "First filing, on the ward's grievance counter. Seven days is BBMP's own stated turnaround for a pothole, not a statutory count"
+    - tier: 2
+      authority: "BBMP Executive Engineer, zonal office (roads)"
+      window_days: 7
+      statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.210(3): public streets maintained under the Zonal Commissioner"
+      description: "Reopen at the zone with the ward ticket, its closure remark and the live claims that contradict it"
+    - tier: 3
+      authority: "BBMP Grievance Redressal Authority (roads)"
+      window_days: 90
+      statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.368: a grievance includes maintenance of road; s.369(4)(a) remedy within ninety days"
+      description: "Quasi-judicial. Rs 250 a day, up to Rs 25,000, on an officer who wilfully neglected the duty"
+    - tier: 4
+      authority: "RTI application (drafted only, never filed by the system)"
+      window_days: 30
+      statute_ref: "Right to Information Act 2005, section 6 application to the PIO"
+      description: "Asks for the work order and site photographs behind each closure of this ticket"
 
 entries:
 
@@ -528,3 +571,69 @@ entries:
     helpline: "Layout maintenance desk. 1915 applies only after handover."
     ladder: *ladder_developer
     aliases: ["brookefield extension", "brookefield extn", "brookefield layout"]
+
+  # -- roads, BBMP -- the demo streets only ------------------------------------
+  # A carriageway is BBMP's, whichever trunk main runs under it, so these do not
+  # share the water entries' feeder ids. feeder_id is the street itself: two
+  # households reporting the same hole on one street are one fault, and a hole
+  # on the next cross street is not -- core/scoring.py scores that adjacency at
+  # 0.15, well under TAU.
+  #
+  # BWSSB is the standing wrong answer, most often when the hole is full of
+  # water. Water standing in a pothole does not make the pothole BWSSB's.
+  #
+  # Streets not listed here have no roads entry on purpose. The door answers
+  # 409 not_routable_here for them rather than inventing an office; adding one
+  # is the same recipe, curated by hand.
+  #
+  # `location` is required because a pothole has no RR number: the particulars
+  # a ward engineer needs are where it is, how long it has stood, and how many
+  # households it reaches.
+
+  - service: roads
+    segment: ward12-4thcross
+    feeder_id: bbmp-rd-4thcross
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 7
+    statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.211(1): public streets to be levelled and repaired"
+    required_fields: [location, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp_roads
+    aliases: ["4th cross", "4th cross road", "fourth cross"]
+
+  - service: roads
+    segment: ward12-1ststage
+    feeder_id: bbmp-rd-1ststage
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 7
+    statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.211(1): public streets to be levelled and repaired"
+    required_fields: [location, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp_roads
+    aliases: ["1st stage", "first stage"]
+
+  - service: roads
+    segment: ward12-2ndstage
+    feeder_id: bbmp-rd-2ndstage
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 7
+    statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.211(1): public streets to be levelled and repaired"
+    required_fields: [location, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp_roads
+    aliases: ["2nd stage", "second stage"]
+
+  - service: roads
+    segment: ward12-8thmain
+    feeder_id: bbmp-rd-8thmain
+    authority: BBMP
+    not_authority: [BWSSB]
+    sla_days: 7
+    statute_ref: "Bruhat Bengaluru Mahanagara Palike Act 2020, s.211(1): public streets to be levelled and repaired"
+    required_fields: [location, duration_days, affected_count]
+    helpline: "1533"
+    ladder: *ladder_bbmp_roads
+    aliases: ["8th main", "8th main road", "eighth main"]

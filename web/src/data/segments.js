@@ -84,6 +84,14 @@ export const SEGMENTS = [
 
 export const DEFAULT_SEGMENT = 'ward12-4thcross'
 
+/**
+ * The streets with a curated roads entry in data/jurisdiction/ward12.yaml.
+ * Every other street can still be picked for a pothole: the door answers that
+ * Ward 12 has no curated roads authority there, rather than the page hiding
+ * the street or the runtime inventing an office.
+ */
+export const ROADS_SEGMENTS = ['ward12-4thcross', 'ward12-1ststage', 'ward12-2ndstage', 'ward12-8thmain']
+
 const NAMES = Object.fromEntries(SEGMENTS.flatMap((g) => g.streets.map((s) => [s.id, s.name])))
 
 export function segmentName(id) {
