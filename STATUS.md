@@ -11,7 +11,39 @@ Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
 Last updated: **13 Sep** by Kartik -- `feat/mesh-ambient-and-fixes`, see below
-Last updated: **14 Sep, 20:30** by Ali -- PR #50, see below
+Last updated: **14 Sep, 21:30** by Ali -- PR #51, see below
+
+---
+
+## 14 Sep -- PR #51: no writer overwrites another's case (Ali, in Kartik's and Raghav's lanes)
+
+**Kartik: `core/store.py`, `core/memstore.py`. Raghav: `agents/watchdog.py`.**
+Read it and revert anything off. 622 passed on memory; the same files pass
+on the DynamoDB backend against a local table (moto server mode -- see the
+handoff for the one-line setup; nobody had run the parity suite before).
+
+- `put_case` was a whole-item overwrite from ten call sites in the Watchdog
+  and two in the request path. A wake read a case, drafted for seconds, and
+  wrote it back -- reverting whatever the merge or a signature wrote in
+  between. `absorb_case`'s docstring said so: closed in one direction only.
+- Every `CASE#/META` row carries `version`. `get_case` remembers what it
+  saw; `put_case` writes only if that is still the row's version, else
+  raises `db.Contended`; membership, absorb and split bump it too. Three
+  read states kept apart -- never read / no row / unversioned -- because
+  collapsing two of them is what took the desks down this morning. Old rows
+  migrate on first write. `core/contention.py` has the rule.
+- **memstore now stores and returns cases as copies**, like rows. It handed
+  back the live object, so a refused write still "landed" there, and every
+  backend divergence this week was some version of that. If a test of yours
+  relied on `get_case(id) is case`, it was relying on the divergence.
+- The Watchdog reloads and redoes a wake on `Contended` (3 attempts, then
+  raises, trace `CONTENDED`). Two things that made true: ESCALATING is
+  unsent paper until a send lands, paused or not; and a filing that already
+  holds a ticket is never handed to the desk again -- an interrupted wake
+  finishes instead of drafting tier 2 (`_tier_to_work`, `climb`,
+  `_retry_submit`).
+- The request path's one whole-item write on an existing case retries the
+  same way (`_put_claim_on_case`).
 
 ---
 
