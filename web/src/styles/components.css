@@ -305,25 +305,35 @@ html[data-plate='ink'] .masthead-seam {
    Intake
    =============================================================== */
 
+/* The one thing a visitor can do on the home page, so it reads as a form
+   on the desk rather than a rule under the headline: a ruled box, a
+   field at reading size, and a button that is a button. Still paper —
+   a hard offset instead of a soft shadow, no gradient, no pill. */
 .intake {
-  margin-top: clamp(1.75rem, 4vh, 2.75rem);
-  border-top: 1px solid var(--ink);
-  padding-top: 0.85rem;
-  max-width: 34rem;
+  margin-top: clamp(1.25rem, 3vh, 2rem);
+  max-width: 36rem;
+}
+
+.intake-form {
+  border: 1.5px solid var(--ink);
+  background: #fdfaf4;
+  box-shadow: 5px 5px 0 var(--paper-sunk);
+  padding: 0.95rem 1.1rem 0.85rem;
 }
 
 .intake-label {
   display: block;
-  margin-bottom: 0.45rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.75rem;
   color: var(--ink);
 }
 
 .intake-line {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  border-bottom: 1px solid var(--rule-strong);
-  padding-bottom: 0.5rem;
+  gap: 0.75rem;
+  border-bottom: 1.5px solid var(--ink-muted);
+  padding-bottom: 0.65rem;
   flex-wrap: wrap;
   transition: border-color 0.3s var(--ease-paper);
 }
@@ -341,12 +351,12 @@ html[data-plate='ink'] .masthead-seam {
   flex: 1 1 14rem;
   min-width: 0;
   font-family: var(--serif);
-  font-size: 1.12rem;
-  padding: 0.2rem 0;
+  font-size: 1.28rem;
+  padding: 0.35rem 0;
 }
 
 .intake-field::placeholder {
-  color: var(--ink-faint);
+  color: var(--ink-muted);
   font-style: italic;
 }
 
@@ -356,12 +366,46 @@ html[data-plate='ink'] .masthead-seam {
 
 .intake-submit {
   flex: none;
-  border-bottom-width: 0;
+  min-height: 2.75rem;
+  padding: 0.8em 1.15em;
+  font-size: 0.75rem;
+  color: var(--paper);
+  background: var(--indigo);
+  border: 0;
+  transition: gap 0.3s var(--ease-paper), background-color 0.25s var(--ease-paper);
 }
 
+.intake-submit:hover {
+  color: var(--paper);
+  background: var(--indigo-deep);
+}
+
+.intake-submit:focus-visible {
+  outline: 2px solid var(--marigold);
+  outline-offset: 2px;
+}
+
+/* Disabled until something is typed, but still plainly a button: a
+   faded-out control on first load is the thing nobody could find. */
 .intake-submit:disabled {
-  opacity: 0.4;
-  cursor: default;
+  opacity: 0.78;
+  cursor: not-allowed;
+}
+
+.intake-submit:disabled:hover {
+  gap: 0.6em;
+  background: var(--indigo);
+}
+
+@media (max-width: 520px) {
+  .intake-form {
+    padding: 0.85rem 0.9rem 0.75rem;
+    box-shadow: 3px 3px 0 var(--paper-sunk);
+  }
+  .intake-submit {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 .intake-foot {
