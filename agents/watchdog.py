@@ -21,9 +21,15 @@ from datetime import timedelta
 
 from core import db
 from core.clock import Clock, get_clock
+from core.contention import Contended
 from core.types import Case, CaseStatus, EscalationStep, Filing, JurisdictionEntry
 
 ACTIONS = ("check_sla", "check_closure", "expire_draft", "retry_submit")
+
+# How many times one wake re-reads and re-runs when another writer -- the
+# merge, a signature, the request path -- moved the case under it. Three is
+# a bounded lifetime for a whole-item write, not a strategy.
+CONTENTION_ATTEMPTS = 3
 
 # How long a case waits before another attempt at an institution that would
 # not answer. A day, because that is the timescale an office is down on, and
@@ -167,12 +173,28 @@ class Watchdog:
             raise ValueError(f"unknown watchdog action {action!r}, expected one of {ACTIONS}")
         clock = clock or get_clock()
 
-        case = self.db.get_case(case_id)
-        if case is None:
-            return  # withdrawn / merged away -- nothing to do
+        # RELOAD AND REDO when the case moved under this wake. put_case is
+        # conditioned on the version this wake read (core/contention.py), so
+        # a merge or a signature landing mid-wake fails the write instead of
+        # being reverted by it. Running the wake again is safe because every
+        # write before the put is idempotent by design: put_filing_once,
+        # the desk's idempotency key, the schedule name.
+        for attempt in range(CONTENTION_ATTEMPTS):
+            case = self.db.get_case(case_id)
+            if case is None:
+                return  # withdrawn / merged away -- nothing to do
+            try:
+                self._dispatch(case, action, clock)
+                return
+            except Contended as exc:
+                if attempt == CONTENTION_ATTEMPTS - 1:
+                    raise
+                _trace("CONTENDED", "watchdog",
+                       str(exc) + " -- reloading and running the wake again")
 
+    def _dispatch(self, case: Case, action: str, clock: Clock) -> None:
         if action == "check_closure":
-            self.reconcile_closure(case_id, clock=clock)
+            self.reconcile_closure(case.case_id, clock=clock)
         elif action == "check_sla":
             self._check_sla(case, clock)
         elif action == "expire_draft":
@@ -336,7 +358,13 @@ class Watchdog:
             _trace("IGNORED", "watchdog",
                    "retry wake for a " + case.status.value + " case -- dropped")
             return
-        if not case.sla_paused and case.status != CaseStatus.DRAFTED:
+        if not case.sla_paused and case.status not in (CaseStatus.DRAFTED,
+                                                        CaseStatus.ESCALATING):
+            # ESCALATING counts as stuck: only a send that lands writes
+            # TRACKING, so a case still ESCALATING when a wake arrives was
+            # interrupted mid-send (see _tier_to_work), and climb() finishes
+            # it without resending a letter that already holds a ticket.
+            #
             # Not stuck any more. A wake scheduled a day ago can arrive after
             # a human has intervened, and climbing regardless would escalate a
             # healthy case a tier for no reason.
@@ -582,15 +610,18 @@ class Watchdog:
         `_expire_unsigned_draft`: a backend that cannot answer must degrade to
         the old behaviour rather than raise inside a wake.
 
-        ESCALATING + sla_paused is the same unsent paper, one step later. The
-        submit branch moves DRAFTED to ESCALATING before handing the filing to
-        the desk, and a failed send leaves it there. Reading that as "already
-        filed" made the next retry skip the signed tier-1 letter and draft
-        tier 2 over an office that never received anything. Nothing else
-        writes ESCALATING, and a send that lands writes TRACKING.
+        ESCALATING is the same unsent paper, one step later -- paused or not.
+        The submit branch moves DRAFTED to ESCALATING before handing the
+        filing to the desk, and only a send that LANDS writes TRACKING. A
+        failed send leaves ESCALATING + sla_paused; a wake interrupted after
+        the send (a crash, or a Contended final write -- see handle()) leaves
+        ESCALATING alone. Reading either as "already filed" made the next
+        pass skip the signed tier-1 letter and draft tier 2 over an office
+        that had, or had not, received anything. Nothing else writes
+        ESCALATING. Whether the letter is re-SENT is climb()'s question, and
+        it answers it from the filing's ticket, not from this status.
         """
-        unsent = (case.status == CaseStatus.DRAFTED
-                  or (case.status == CaseStatus.ESCALATING and case.sla_paused))
+        unsent = case.status in (CaseStatus.DRAFTED, CaseStatus.ESCALATING)
         if not unsent:
             return case.escalation_tier + 1
 
@@ -780,8 +811,13 @@ class Watchdog:
                     + _refusal_reason(refused_before[-1]))
                 return case.escalation_tier
 
-            reachable = False
-            for _ in range(self.submit_attempts):
+            # A ticket already held for this letter means a previous pass
+            # sent it and recorded the desk's answer, then failed to write
+            # the case (interrupted, or Contended -- see handle()). Hard
+            # rule 5: never hand the desk a second copy. Finish the wake.
+            held = bool(filing.external_ref)
+            reachable = held
+            for _ in range(0 if held else self.submit_attempts):
                 if self._submit(filing):
                     reachable = True
                     break
@@ -821,7 +857,9 @@ class Watchdog:
 
             _trace("ESCALATED", "watchdog",
                    f"tier {step.tier} -> {step.authority}"
-                   + ("" if was_written else " (already drafted, not duplicated)"))
+                   + ("" if was_written else " (already drafted, not duplicated)")
+                   + (f" (ticket {filing.external_ref} already held, not resent)"
+                      if held else ""))
 
         case.sla_paused = False
         case.escalation_tier = step.tier
