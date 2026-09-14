@@ -108,6 +108,29 @@ def test_unknown_or_malformed_actions_are_refused(runtime, action):
     assert runtime == []
 
 
+def test_consent_is_forwarded_as_known_scopes_only(runtime):
+    """The one list field, and the reason clustering never fired from the
+    site: the request path reads payload["consent"], Anti-Abuse refuses to
+    count a household that never agreed (hard rule 7), and this door used to
+    drop the field -- so every web report carried empty consent."""
+    resp = _post({"action": "report", "household_id": "hh_1", "member_id": "mem_1",
+                  "text": "no water", "segment": "ward12-4thcross",
+                  "consent": ["join_collective", "make_me_admin", "spend_money"]})
+
+    assert resp["statusCode"] == 200
+    (payload, _), = runtime
+    assert payload["consent"] == ["join_collective", "spend_money"]
+
+
+def test_consent_that_is_not_a_list_of_strings_is_refused(runtime):
+    for bad in ("join_collective", [1, 2], {"join_collective": True}):
+        resp = _post({"action": "report", "text": "no water", "segment": "x",
+                      "consent": bad})
+        assert resp["statusCode"] == 400, bad
+        assert _json(resp)["field"] == "consent"
+    assert runtime == []
+
+
 def test_non_string_fields_are_refused(runtime):
     resp = _post({"action": "report", "text": {"$gt": ""}, "segment": "x"})
     assert resp["statusCode"] == 400

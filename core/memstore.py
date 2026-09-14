@@ -153,9 +153,59 @@ def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> Non
 #: import the DynamoDB module.
 _SPLIT_FROM = "split_from:"
 
+#: A cross-case merge, recorded on BOTH sides so it reads either way and can
+#: be reversed. "absorbed:<case>" on the survivor, "merged_into:<case>" on the
+#: withdrawn source. Same token text as core/store.py, pinned by contract test.
+_ABSORBED = "absorbed:"
+_MERGED_INTO = "merged_into:"
+
+#: Every merged_from token that is a NOTE about the case rather than a
+#: household:claim pair. Readers that attribute claims to households must skip
+#: all of these -- a note has a colon in it and would otherwise be read as a
+#: household called "absorbed".
+_NOTES = (_SPLIT_FROM, _ABSORBED, _MERGED_INTO)
+
+#: A source case may be absorbed only while nothing has left the building:
+#: no ticket, and (checked separately) no signature.
+_ABSORBABLE = frozenset((CaseStatus.OPEN, CaseStatus.DRAFTED))
+
+
+def absorb_case(survivor_id: str, source_id: str) -> bool:
+    """Fold `source` into `survivor`: withdraw it with provenance both ways.
+
+    True if this call did it; False if it could not or already had. Never
+    raises for "already withdrawn" -- the ambient path retries and a stream
+    record delivered twice must be a no-op.
+
+    Refuses a source that already holds a ticket or a signature. You cannot
+    un-file a complaint, and withdrawing a signed letter would discard a
+    person's signature; both cases stay alive and the trace stays loud.
+    """
+    source = _cases.get(source_id)
+    survivor = _cases.get(survivor_id)
+    if source is None or survivor is None or source_id == survivor_id:
+        return False
+    if source.status not in _ABSORBABLE:
+        return False
+    if survivor.status in {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}:
+        # Folding a live complaint into a closed case would lose it.
+        return False
+    if any(f.signed_by for f in filings_for_case(source_id)):
+        return False
+    source.status = CaseStatus.WITHDRAWN
+    if _MERGED_INTO + survivor_id not in source.merged_from:
+        source.merged_from.append(_MERGED_INTO + survivor_id)
+    if _ABSORBED + source_id not in survivor.merged_from:
+        survivor.merged_from.append(_ABSORBED + source_id)
+    return True
+
 
 def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def _is_absorbed(case: Case) -> bool:
+    return any(t.startswith(_MERGED_INTO) for t in case.merged_from)
 
 
 def _claims_of(case: Case, household_id: str,
@@ -184,16 +234,16 @@ def _claims_of(case: Case, household_id: str,
     """
     origin = case if origin is None else origin
     tagged = [t.split(":", 1)[1] for t in origin.merged_from
-              if not t.startswith(_SPLIT_FROM)
+              if not t.startswith(_NOTES)
               and t.startswith(household_id + ":")]
     if tagged or household_id not in origin.household_ids:
         return tagged
 
     attributed = {t.split(":", 1)[1] for t in origin.merged_from
-                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+                  if not t.startswith(_NOTES) and ":" in t}
     untagged = [h for h in origin.household_ids
                 if not any(t.startswith(h + ":") for t in origin.merged_from
-                           if not t.startswith(_SPLIT_FROM))]
+                           if not t.startswith(_NOTES))]
     if len(untagged) > 1:
         # Two households with no provenance: the claims cannot be attributed,
         # and guessing would hand one household another's claim.
@@ -259,7 +309,12 @@ def recurrence_count(feeder_id: str, service: Service, since: datetime) -> int:
                # in the direction that manufactures a pattern, which is the one
                # direction it must never drift. core/store.py achieves this by
                # writing no feeder index row for a split child.
-               and not _is_split_child(c))
+               and not _is_split_child(c)
+               # And a case absorbed by a merge is the same incident, not a
+               # prior one: twelve households on one outage are one failure
+               # of the main, not eleven earlier ones. core/store.py deletes
+               # the absorbed case's feeder index row for the same reason.
+               and not _is_absorbed(c))
 
 
 # --------------------------------------------------------------- consent

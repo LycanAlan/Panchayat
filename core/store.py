@@ -336,9 +336,119 @@ def _feeder_index_key(feeder_id: str, service, created_at: datetime,
 #: household ids are "hh_...", so the two cannot collide.
 _SPLIT_FROM = "split_from:"
 
+#: A cross-case merge, recorded on BOTH sides: "absorbed:<case>" on the
+#: survivor, "merged_into:<case>" on the withdrawn source. Same token text as
+#: core/memstore.py, pinned by the contract tests rather than a shared import.
+_ABSORBED = "absorbed:"
+_MERGED_INTO = "merged_into:"
+
+#: Every merged_from token that is a NOTE about the case rather than a
+#: household:claim pair. The attribution readers below skip all of them -- a
+#: note has a colon in it and would otherwise read as a household called
+#: "absorbed" holding a claim called "case_...".
+_NOTES = (_SPLIT_FROM, _ABSORBED, _MERGED_INTO)
+
+#: A source case may be absorbed only while nothing has left the building.
+_ABSORBABLE = (CaseStatus.OPEN, CaseStatus.DRAFTED)
+
 
 def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def _is_absorbed(case: Case) -> bool:
+    return any(t.startswith(_MERGED_INTO) for t in case.merged_from)
+
+
+def absorb_case(survivor_id: str, source_id: str) -> bool:
+    """Fold `source` into `survivor`: withdraw it with provenance both ways.
+
+    True if this call did it; False if it could not or already had. A stream
+    record delivered twice must be a no-op, so "already withdrawn" is False
+    and never an error.
+
+    ONE TRANSACTION, THREE WRITES, NEVER put_case. Three writers touch a Case
+    row and put_case is a whole-item overwrite. The withdrawal is conditioned
+    on the source still being absorbable, so a Watchdog that moved it first
+    wins and the case is left alone -- which is also the answer for a source
+    holding a ticket, since you cannot un-file a complaint. The survivor's
+    note lands in the same transaction so provenance can never be one-way
+    (hard rule 6). And the source's FEEDER# index row is deleted, because
+    recurrence_count() is answered from those rows and an absorbed case is
+    the same incident, not a prior one -- left in place, a twelve-house
+    outage would claim eleven earlier failures of the main.
+
+    The status change rewrites GSI1PK, because open_cases() is a query on
+    STATUS#<s> and a withdrawn case on the old key would still list as open
+    here and not on memstore.
+
+    WHAT THIS DOES NOT CLOSE, said plainly: the Watchdog's climb() reads a
+    case, drafts for seconds, then put_case()s the whole item. If that read
+    lands before this transaction and the put after, the put reverts the
+    withdrawal. The condition here closes the Watchdog-first ordering; the
+    other direction is the whole-item put_case hazard already open on
+    STATUS.md, and it is closed there, not here. Absorbing only OPEN/DRAFTED
+    keeps the window to the seconds a wake is actually handling the case.
+    """
+    if survivor_id == source_id:
+        return False
+    source = get_case(source_id)
+    survivor = get_case(survivor_id)
+    if source is None or survivor is None:
+        return False
+    if source.status not in _ABSORBABLE or survivor.status in _DONE:
+        return False
+    if any(f.signed_by for f in filings_for_case(source_id)):
+        return False
+
+    into, absorbed = _MERGED_INTO + survivor_id, _ABSORBED + source_id
+    writes: list[dict] = [
+        {"Update": {
+            "TableName": TABLE,
+            "Key": {"PK": "CASE#" + source_id, "SK": "META"},
+            "UpdateExpression": (
+                "SET #s = :withdrawn, GSI1PK = :gsi, "
+                "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+            "ConditionExpression": (
+                "attribute_exists(SK) AND #s IN (:open, :drafted) "
+                "AND NOT contains(merged_from, :token)"),
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {
+                ":withdrawn": CaseStatus.WITHDRAWN.value,
+                ":gsi": "STATUS#" + CaseStatus.WITHDRAWN.value,
+                ":open": CaseStatus.OPEN.value,
+                ":drafted": CaseStatus.DRAFTED.value,
+                ":empty": [], ":note": [into], ":token": into,
+            },
+        }},
+        {"Update": {
+            "TableName": TABLE,
+            "Key": {"PK": "CASE#" + survivor_id, "SK": "META"},
+            "UpdateExpression": (
+                "SET merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+            "ConditionExpression": (
+                "attribute_exists(SK) AND NOT contains(merged_from, :token)"),
+            "ExpressionAttributeValues": {
+                ":empty": [], ":note": [absorbed], ":token": absorbed,
+            },
+        }},
+    ]
+    if source.feeder_id:
+        writes.append({"Delete": {
+            "TableName": TABLE,
+            "Key": _feeder_index_key(source.feeder_id, source.service,
+                                     source.created_at, source.case_id),
+        }})
+    try:
+        _t().meta.client.transact_write_items(TransactItems=writes)
+    except ClientError as exc:
+        if _condition_failed(exc):
+            return False
+        raise
+    return True
+
+
+
 
 
 def _feeder_index_item(case: Case) -> dict | None:
@@ -365,7 +475,13 @@ def _feeder_index_item(case: Case) -> dict | None:
     this under-counts by one -- and under-counting costs leverage, while
     over-counting fabricates the evidence an escalation is built on.
     """
-    if not case.feeder_id or _is_split_child(case):
+    if not case.feeder_id or _is_split_child(case) or _is_absorbed(case):
+        # ABSORBED, TOO. absorb_case() deletes the row inside its transaction
+        # so the case stops counting as a prior failure of the main. Any
+        # later put_case on the withdrawn source -- the request path's re-run
+        # at graph/request_path.py:725, or the Watchdog's read-then-put --
+        # would otherwise write the row straight back, and DynamoDB would
+        # count the case again while memstore still excluded it.
         return None
     d = _feeder_index_key(case.feeder_id, case.service, case.created_at,
                           case.case_id)
@@ -547,16 +663,16 @@ def _claims_of(case: Case, household_id: str,
     """
     origin = case if origin is None else origin
     tagged = [t.split(":", 1)[1] for t in origin.merged_from
-              if not t.startswith(_SPLIT_FROM)
+              if not t.startswith(_NOTES)
               and t.startswith(household_id + ":")]
     if tagged or household_id not in origin.household_ids:
         return tagged
 
     attributed = {t.split(":", 1)[1] for t in origin.merged_from
-                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+                  if not t.startswith(_NOTES) and ":" in t}
     untagged = [h for h in origin.household_ids
                 if not any(t.startswith(h + ":") for t in origin.merged_from
-                           if not t.startswith(_SPLIT_FROM))]
+                           if not t.startswith(_NOTES))]
     if len(untagged) > 1:
         # More than one household without provenance: the claims cannot be
         # attributed and GUESSING would hand somebody else's claim to this

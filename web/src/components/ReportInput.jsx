@@ -26,6 +26,9 @@ const STEP_MS = 380
 export default function ReportInput() {
   const [value, setValue] = useState('')
   const [segment, setSegment] = useState(DEFAULT_SEGMENT)
+  // Unticked on purpose. Hard rule 7: aggregation happens only with the
+  // household's say-so, and a pre-ticked box is a say-so nobody gave.
+  const [joinCollective, setJoinCollective] = useState(false)
   // idle -> sending -> replay -> done, or sending -> failed
   const [phase, setPhase] = useState('idle')
   const [result, setResult] = useState(null)
@@ -41,7 +44,11 @@ export default function ReportInput() {
     if (phase !== 'idle' || !text) return
     setPhase('sending')
     try {
-      const r = await report({ text, segment })
+      const r = await report({
+        text,
+        segment,
+        consent: joinCollective ? ['join_collective'] : [],
+      })
       const n = r?.trace?.transitions?.length ?? 0
       setResult(r)
       if (prefersReducedMotion() || n === 0) {
@@ -99,6 +106,19 @@ export default function ReportInput() {
             <Icon name="arrowRight" size={15} />
           </button>
         </div>
+        <p className="micro intake-consent">
+          <label htmlFor="intake-join">
+            <input
+              id="intake-join"
+              type="checkbox"
+              checked={joinCollective}
+              onChange={(e) => setJoinCollective(e.target.checked)}
+              disabled={busy}
+            />{' '}
+            Count my household with neighbours reporting the same fault.
+            Only the fault and the street are shared, never what is inside the house.
+          </label>
+        </p>
         <p className="micro intake-foot">
           <label htmlFor="intake-segment">Ward 12 · Bengaluru · street </label>
           <select

@@ -43,7 +43,8 @@ def backend_name() -> str:
 # not against whatever they happen to define.
 REQUIRED = (
     "put_claim", "claims_in_window", "put_case", "get_case",
-    "add_household_to_case", "split_case", "append_consent", "live_consents",
+    "add_household_to_case", "split_case", "absorb_case", "append_consent",
+    "live_consents",
     "record_disclosure", "disclosure_history", "put_filing_once",
     "recurrence_count",
     # PROMOTED FROM OPTIONAL. Every one of these is now implemented by BOTH
@@ -114,6 +115,7 @@ put_case = _bind("put_case")
 get_case = _bind("get_case")
 add_household_to_case = _bind("add_household_to_case")
 split_case = _bind("split_case")
+absorb_case = _bind("absorb_case")
 append_consent = _bind("append_consent")
 live_consents = _bind("live_consents")
 record_disclosure = _bind("record_disclosure")
@@ -140,6 +142,7 @@ stalled_cases = _bind("stalled_cases")
 reset = _bind("reset")
 
 __all__ = [
+    "absorb_case",
     "add_household_to_case",
     "append_consent",
     "backend_name",

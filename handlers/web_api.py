@@ -74,12 +74,17 @@ READ_TIMEOUT_S = 55
 #: action -> the only fields forwarded for it. See the module docstring.
 FIELDS: dict[str, tuple[str, ...]] = {
     "report": ("household_id", "member_id", "text", "language", "segment",
-               "feeder_id", "service"),
+               "feeder_id", "service", "consent"),
     "get_case": ("case_id", "household_id"),
     "list_cases": ("household_id",),
     "approve": ("idempotency_key", "member_id", "case_id", "household_id"),
     "health": (),
 }
+
+#: The consent scopes the site may forward. Mirrors core.types.ConsentScope
+#: by value; the runtime validates again, this just refuses junk at the door.
+CONSENT_SCOPES = frozenset({"file_individual", "join_collective",
+                            "list_publicly", "spend_money"})
 
 #: Case states in which a draft must not be signed. Signing one hands a desk
 #: paper for a complaint the case already let go -- the UNSIGNED bug, which
@@ -224,10 +229,21 @@ def _api(event: dict) -> dict:
     if not isinstance(action, str) or action not in FIELDS:
         return _json(400, {"error": "unknown_action", "known": sorted(FIELDS)})
 
-    payload: dict[str, str] = {}
+    payload: dict[str, object] = {}
     for name in FIELDS[action]:
         value = body.get(name)
         if value is None:
+            continue
+        if name == "consent":
+            # THE ONE LIST FIELD, and the reason clustering never fired from
+            # the site: graph/request_path.py reads payload["consent"] and
+            # Anti-Abuse refuses to count a household that never agreed to be
+            # counted (hard rule 7). This door dropped the field, so every
+            # web report carried empty consent. Known scope names only; the
+            # request path reports and drops anything else, never guesses.
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                return _json(400, {"error": "field_not_list_of_strings", "field": name})
+            payload[name] = [v for v in value if v in CONSENT_SCOPES]
             continue
         if not isinstance(value, str):
             return _json(400, {"error": "field_not_string", "field": name})
