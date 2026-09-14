@@ -41,8 +41,31 @@ function notTaken(c) {
   return c.status === 'escalating' && c.sla_paused
 }
 
+/**
+ * The desk's refusals, oldest first. agents/watchdog.py appends one line per
+ * refusal to the filing's `response`, in the desk text protocol: the outcome
+ * word first, then ": reason". The reason is the only part a household can
+ * act on, so it is the part shown.
+ */
+function refusals(f) {
+  return (f.response ?? '')
+    .split('\n')
+    .filter((line) => line.startsWith('REJECTED'))
+    .map((line) => line.slice(line.indexOf(':') + 1).trim() || 'no reason given')
+}
+
+/** Mirrors agents/watchdog.py::REJECTIONS_BEFORE_HUMAN: one resend, then a person. */
+const REFUSALS_BEFORE_HUMAN = 2
+
 function ticket(f, c, watching) {
   if (f.external_ref) return { v: f.external_ref }
+  const refused = refusals(f)
+  if (onItsWay(f) && refused.length >= REFUSALS_BEFORE_HUMAN) {
+    return { v: `— refused ${refused.length}× · ${refused.at(-1)} · needs a person to resubmit —`, tone: 'terracotta' }
+  }
+  if (onItsWay(f) && refused.length > 0) {
+    return { v: `— refused · ${refused.at(-1)} · resending once tomorrow —`, tone: 'terracotta' }
+  }
   if (onItsWay(f) && notTaken(c)) return { v: '— desk did not take it · retry booked —', tone: 'terracotta' }
   if (onItsWay(f) && watching) return { v: 'filing now…' }
   return { v: '— none issued —' }

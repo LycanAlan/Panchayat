@@ -60,7 +60,7 @@ REQUIRED = (
     # ran the suite against a real engine. See issue #25.
     "get_claim", "open_cases", "revoke_consent", "filings_for_case",
     "get_filing", "unsigned_filings", "sign_filing", "stalled_cases",
-    "record_submission", "reset",
+    "record_submission", "record_rejection", "reset",
 )
 
 #: Nothing is optional any more. Kept as an empty tuple rather than deleted:
@@ -131,6 +131,7 @@ get_filing = _bind("get_filing")
 unsigned_filings = _bind("unsigned_filings")
 sign_filing = _bind("sign_filing")
 record_submission = _bind("record_submission")
+record_rejection = _bind("record_rejection")
 stalled_cases = _bind("stalled_cases")
 
 # NOT `lambda: None`. A silent no-op reset is worse than a missing one: the
@@ -163,6 +164,7 @@ __all__ = [
     "revoke_consent",
     "sign_filing",
     "record_submission",
+    "record_rejection",
     "split_case",
     "unsigned_filings",
 ]

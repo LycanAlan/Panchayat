@@ -36,6 +36,7 @@ SURFACES = {
     "closure_disputed",     # the institution says resolved and we disagree
     "sla_breached",         # the statutory window passed
     "needs_human",          # no desk exists for this authority
+    "desk_rejected",        # the desk answered no, with a reason to act on
 }
 
 STAYS_QUIET = {

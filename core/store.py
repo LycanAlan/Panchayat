@@ -1346,6 +1346,44 @@ def record_submission(idempotency_key: str, external_ref: str,
     return _filing_from(item) if item else None
 
 
+def record_rejection(idempotency_key: str, reply: str) -> Filing | None:
+    """Write back a refusal. Returns the stored filing, or None.
+
+    The memstore docstring has the reasoning; the shape is the same. Read
+    then update rather than a single expression because DynamoDB has no
+    string append: the read is of a row only the Watchdog writes, one wake
+    at a time, so there is no second writer to lose to.
+    """
+    ptr = _t().get_item(
+        Key={"PK": "FILING#" + idempotency_key, "SK": "META"}).get("Item")
+    if not ptr:
+        return None
+    case_id = ptr["case_id"]
+    key = {"PK": "CASE#" + case_id, "SK": "FILING#" + idempotency_key}
+    item = _t().get_item(Key=key).get("Item")
+    if not item:
+        return None
+
+    line = (reply or "").strip()
+    if line:
+        before = item.get("response") or ""
+        history = (before + "\n" + line) if before else line
+        try:
+            _t().update_item(
+                Key=key,
+                UpdateExpression="SET #resp = :resp",
+                ConditionExpression="attribute_exists(SK)",
+                ExpressionAttributeNames={"#resp": "response"},
+                ExpressionAttributeValues={":resp": history},
+            )
+        except ClientError as exc:
+            if not _condition_failed(exc):
+                raise
+            return None
+        item["response"] = history
+    return _filing_from(item)
+
+
 def filings_for_case(case_id: str) -> list[Filing]:
     items = _query_all(
         KeyConditionExpression=(

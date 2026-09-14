@@ -433,3 +433,23 @@ def record_submission(idempotency_key: str, external_ref: str,
     if response:
         filing.response = response
     return filing
+
+
+def record_rejection(idempotency_key: str, reply: str) -> Filing | None:
+    """Write back a refusal. Returns the stored filing, or None.
+
+    NOT record_submission with an empty reference. A refusal is not a
+    landing: `external_ref` stays empty and `submitted_at` stays unset,
+    because both mean "a ticket exists on the other side" to everything that
+    reads them. What a refusal adds is a line of history -- appended, never
+    overwritten, so the Watchdog can count how many times this letter has
+    been refused (agents/watchdog.py::REJECTIONS_BEFORE_HUMAN) and the case
+    page can show the desk's own words.
+    """
+    filing = _filings.get(idempotency_key)
+    if filing is None:
+        return None
+    line = (reply or "").strip()
+    if line:
+        filing.response = (filing.response + "\n" + line) if filing.response else line
+    return filing

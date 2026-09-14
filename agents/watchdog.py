@@ -31,6 +31,23 @@ ACTIONS = ("check_sla", "check_closure", "expire_draft", "retry_submit")
 # `if demo_mode:` anywhere, per hard rule 1.
 RETRY_AFTER_DAYS = 1
 
+# What a desk's refusal looks like on the filing. institutions/client.py's
+# adapter writes the desk's reply onto `filing.response` in the text protocol
+# every desk speaks (institutions/protocol.py::DeskReply.render): the outcome
+# word first, then the reference, then ": detail". The word is duplicated
+# here rather than imported for the reason _trace gives -- the temporal lane
+# does not import the institutions lane. tests/test_submit_adapter.py pins
+# the format from the other side.
+REJECTED_WORD = "REJECTED"
+
+# A refused letter is resent ONCE. An office that says "reference number does
+# not match our records" gets one second attempt with the same signed body:
+# that is a legitimate resubmission, and by our own desk profiles 15% of
+# refusals are pretext. A second refusal is a fact a person has to act on --
+# the desk wants something the letter does not contain -- and a third copy of
+# the same letter is the spam that gets both copies closed (hard rule 5).
+REJECTIONS_BEFORE_HUMAN = 2
+
 # A case in one of these is finished, and a wake that arrives afterwards must
 # not restart it. Same set core/memstore.open_cases() excludes.
 TERMINAL = frozenset({CaseStatus.RESOLVED, CaseStatus.WITHDRAWN,
@@ -52,6 +69,22 @@ def _trace(status: str, agent: str, detail: str) -> str:
     line = status.ljust(12) + agent.ljust(12) + "-> " + detail
     print(line)
     return line
+
+
+def _refusals(filing: Filing) -> list[str]:
+    """The desk's refusals recorded on this filing, oldest first, one line
+    each -- db.record_rejection appends them. Empty if it was never refused.
+    Read BEFORE submit(): the adapter overwrites `response` with the newest
+    reply, so afterwards the history is only in the table."""
+    return [line for line in (filing.response or "").splitlines()
+            if line.startswith(REJECTED_WORD)]
+
+
+def _refusal_reason(line: str) -> str:
+    """'REJECTED: reference number does not match' -> the part a person can
+    act on. A desk that gave no reason still gets an honest line."""
+    _, _, detail = line.partition(":")
+    return detail.strip() or "no reason given"
 
 
 class Watchdog:
@@ -77,15 +110,11 @@ class Watchdog:
         network flakiness -- a fixed small retry count is a reasonable
         placeholder against that model.
 
-        KNOWN LIMITATION: this is not the final policy. Alakshendra's real
-        client (institutions/client.py, unmerged branch
-        alakshendra/ladder-and-filing-client) returns a rich `DeskReply`
-        whose `should_retry` is true ONLY for UNREACHABLE -- REJECTED must
-        never be retried with the same body at all, it needs a human to
-        supply missing particulars. So once that client is wired in, retry
-        behaviour must key off `should_retry`, not a fixed attempt count.
-        See the long comment at the submit call site in climb() for the
-        full integration gap.
+        The count applies to a desk that did not answer. A desk that
+        REFUSED gets no second synchronous attempt: climb() reads the
+        outcome word the adapter leaves on `filing.response` and stops the
+        loop, then resends once on the next day's wake and after that holds
+        the case for a person (REJECTIONS_BEFORE_HUMAN).
         """
         self.db = store
         self._lookup = lookup
@@ -230,6 +259,52 @@ class Watchdog:
             _trace("PAUSED", "watchdog",
                    why + ", clock held, retry in "
                    + str(RETRY_AFTER_DAYS) + "d")
+
+    def _refused(self, case: Case, filing: Filing, clock: Clock,
+                 authority: str, reply: str, history: list[str]) -> None:
+        """The desk answered, and the answer was no.
+
+        Until this existed a refusal fell into the unreachable branch: the
+        trace said "endpoint unreachable" about a desk that had just spoken,
+        the desk's reason lived on a local variable and never reached the
+        table, and the next wake sent the same letter again -- every day.
+        One filing in seven, by BWSSB's own profile.
+
+        The reason is written to the filing first, so the case page can show
+        it and so the count survives the wake. `history` is the refusals
+        already stored, read before the send. Then the policy: one resend,
+        then a person (REJECTIONS_BEFORE_HUMAN).
+        """
+        reason = _refusal_reason(reply)
+        record = getattr(self.db, "record_rejection", None)
+        if record is not None:
+            # The adapter wrote the desk's reply onto the filing OBJECT. On
+            # memstore that object is the stored row, so the reply is already
+            # there once and appending would count this refusal twice --
+            # while DynamoDB decodes a fresh object and would count it once.
+            # Put the stored history back first; both backends then agree.
+            filing.response = "\n".join(history) or None
+            record(filing.idempotency_key, reply)
+        if len(history) + 1 >= REJECTIONS_BEFORE_HUMAN:
+            self._hold_for_person(case, clock, authority + " refused again: " + reason)
+            return
+        self._pause_and_retry(case, clock,
+                              authority + " refused: " + reason + " -- resubmitting once")
+
+    def _hold_for_person(self, case: Case, clock: Clock, why: str) -> None:
+        """Nothing more goes to this desk until a person changes the letter.
+
+        The same exit as the top of the ladder, for the same reason: waiting
+        changes nothing, so no wake is booked. `sla_paused` puts the case in
+        stalled_cases() -- the Digest's rescue queue -- which is what "tell
+        someone" means here, durably, rather than a log line nobody queries.
+        A wake that still arrives (one booked before the second refusal)
+        lands back here and sends nothing.
+        """
+        case.sla_paused = True
+        self.db.put_case(case)
+        _trace("NEEDS_HUMAN", "watchdog",
+               why + " -- nothing more is sent until a person resubmits")
 
     def _retry_submit(self, case: Case, clock: Clock) -> None:
         """Another attempt at a desk that would not answer.
@@ -663,16 +738,14 @@ class Watchdog:
             # self.submit_attempts times (two, synchronously, no backoff, by
             # default -- see the constructor docstring for why), then surface.
             #
-            # STILL OPEN, and not resolved here: `submit`'s bool cannot carry
-            # the DeskReply outcome space. `should_retry` is true ONLY for
-            # UNREACHABLE, while REJECTED needs a human to supply missing
-            # particulars rather than a blind resend of the same body.
-            # Collapsing those onto one bool and retrying them identically is a
-            # distinct bug, tracked in STATUS.md, and the seam shape affects
-            # Ali's graph wiring too -- so it is not decided unilaterally in
-            # this file.
+            # The bool cannot carry the DeskReply outcome space, and it does
+            # not have to: the adapter writes the desk's reply onto
+            # `filing.response` in the desk text protocol, and REJECTED is
+            # told apart from UNREACHABLE below by reading the outcome word
+            # (REJECTED_WORD). Settled 14 Sep by Ali; the seam's shape is
+            # unchanged, so nothing in the graph wiring moves.
             #
-            # ALSO STILL OPEN: build_submit() writes the desk's reference back
+            # STILL OPEN: build_submit() writes the desk's reference back
             # onto the Filing, and there is no filing-amend function in
             # core.db -- put_filing_once is write-once by design. The reference
             # reaches the trace and not the table. Nothing reads it back today;
@@ -694,12 +767,35 @@ class Watchdog:
                 case.status = CaseStatus.ESCALATING
                 self.db.put_case(case)
 
+            # A letter the desk has already refused twice is not sent again.
+            # Read off the STORED filing, before the adapter overwrites
+            # `response` with whatever the desk says this time.
+            refused_before = _refusals(filing)
+            if len(refused_before) >= REJECTIONS_BEFORE_HUMAN:
+                self._hold_for_person(
+                    case, clock,
+                    step.authority + " refused this letter "
+                    + str(len(refused_before)) + " times: "
+                    + _refusal_reason(refused_before[-1]))
+                return case.escalation_tier
+
             reachable = False
             for _ in range(self.submit_attempts):
                 if self._submit(filing):
                     reachable = True
                     break
+                if (filing.response or "").startswith(REJECTED_WORD):
+                    # A refusal is an answer, not an outage. The second
+                    # synchronous attempt exists for a portal that did not
+                    # respond; handing the same letter straight back to a
+                    # clerk who just refused it is the resend this policy
+                    # allows exactly once, and that once is tomorrow's wake.
+                    break
             if not reachable:
+                if (filing.response or "").startswith(REJECTED_WORD):
+                    self._refused(case, filing, clock, step.authority,
+                                  filing.response, refused_before)
+                    return case.escalation_tier
                 # A PAUSED case used to stop here forever: nothing on this path
                 # called clock.schedule(), and _check_sla() returns immediately
                 # while sla_paused is set. An eleven-week pursuit that silently

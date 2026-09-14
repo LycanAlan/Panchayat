@@ -116,6 +116,7 @@ _CASE_FIELDS = {
 _FILING_FIELDS = {
     "tier", "authority", "idempotency_key", "body", "signed_by",
     "signed_at", "submitted_at", "external_ref",
+    "response",   # the desk's own words -- a refusal reason is the one thing a household can act on
 }
 
 _AWAITING_FIELDS = {

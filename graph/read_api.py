@@ -121,6 +121,11 @@ def _filing_public(filing: Any) -> dict:
         "signed_at": _iso(filing.signed_at),
         "submitted_at": _iso(filing.submitted_at),
         "external_ref": filing.external_ref,
+        # The desk's own words, in the desk text protocol (outcome word
+        # first). A refused letter is the one state the page could not show
+        # before: it read as "desk did not take it" with no reason, and the
+        # reason is the only thing the household can act on.
+        "response": filing.response,
     }
 
 
