@@ -62,6 +62,9 @@
 
 .plate-statement {
   margin-top: clamp(1rem, 2.2vh, 1.5rem);
+  /* Capped by height as well as width. On a 768 px laptop the full
+     colossal size pushed the report form under the fold. */
+  font-size: min(var(--t-colossal), max(2.4rem, 9.5vh));
 }
 
 .plate-statement em {
