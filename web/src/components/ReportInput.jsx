@@ -3,10 +3,23 @@ import { Link } from 'react-router-dom'
 import Icon from './Icon.jsx'
 import { prefersReducedMotion } from '../lib/motion.js'
 import { outcomeUnknown, report } from '../lib/api.js'
-import { DEFAULT_SEGMENT, SEGMENTS } from '../data/segments.js'
+import { DEFAULT_SEGMENT, ROADS_SEGMENTS, SEGMENTS } from '../data/segments.js'
+import { SCENARIOS } from '../data/scenarios.js'
+import { useScenario } from '../lib/scenario.jsx'
 import '../styles/live.css'
 
-const EXAMPLE = 'No water in our tank for three days'
+/** A hint for each service, never a report. See the note on the component. */
+const EXAMPLE = {
+  water: 'No water in our tank for three days',
+  roads: 'Pothole outside 14, 4th Cross — bikes falling at night',
+}
+
+/**
+ * Words that suggest a road problem while Water is picked. Only ever a hint
+ * with a button: the household confirms the service. Guessing it silently
+ * would be a misroute nobody sees, which is the failure this exists to catch.
+ */
+const ROAD_WORDS = /\b(pot ?holes?|road|roads|tar\b|footpath|speed ?breaker|ಗುಂಡಿ|ರಸ್ತೆ|सड़क|गड्ढा)/i
 const STEP_MS = 380
 
 /**
@@ -24,8 +37,12 @@ const STEP_MS = 380
  * named officer.
  */
 export default function ReportInput() {
+  const { problem, setProblem } = useScenario()
   const [value, setValue] = useState('')
   const [segment, setSegment] = useState(DEFAULT_SEGMENT)
+  // Starts on whichever example the reader is looking at, and then it is
+  // the household's own choice.
+  const [service, setService] = useState(problem)
   // Unticked on purpose. Hard rule 7: aggregation happens only with the
   // household's say-so, and a pre-ticked box is a say-so nobody gave.
   const [joinCollective, setJoinCollective] = useState(false)
@@ -47,10 +64,13 @@ export default function ReportInput() {
       const r = await report({
         text,
         segment,
+        service,
         consent: joinCollective ? ['join_collective'] : [],
       })
       const n = r?.trace?.transitions?.length ?? 0
       setResult(r)
+      // Every story page now tells the example for what was just reported.
+      setProblem(service)
       if (prefersReducedMotion() || n === 0) {
         setShown(n)
         setPhase('done')
@@ -62,7 +82,8 @@ export default function ReportInput() {
       }
       timers.current.push(setTimeout(() => setPhase('done'), STEP_MS * n))
     } catch (err) {
-      setError({ code: err.message, unknown: outcomeUnknown(err) })
+      setError({ code: err.message, unknown: outcomeUnknown(err), message: err.data?.message })
+      if (err.message === 'not_routable_here') setProblem(service)
       setPhase('failed')
     }
   }
@@ -81,6 +102,8 @@ export default function ReportInput() {
   const tokens = result?.usage?.totalTokens ?? 0
   const stubbed = result?.stubbed_agents ?? []
   const opened = Boolean(result?.case_id && result?.case_status)
+  const suggestRoads = service === 'water' && ROAD_WORDS.test(value)
+  const curatedHere = service !== 'roads' || ROADS_SEGMENTS.includes(segment)
 
   return (
     <div className="intake" data-running={busy ? 'yes' : 'no'}>
@@ -89,14 +112,14 @@ export default function ReportInput() {
           What&rsquo;s broken?
         </label>
         <div className="intake-line">
-          <Icon name="tap" size={22} className="intake-icon" />
+          <Icon name={service === 'roads' ? 'survey' : 'tap'} size={22} className="intake-icon" />
           <input
             id="intake-field"
             className="intake-field"
             type="text"
             autoComplete="off"
             maxLength={2000}
-            placeholder={EXAMPLE}
+            placeholder={EXAMPLE[service]}
             value={value}
             onChange={(e) => setValue(e.target.value)}
             disabled={busy}
@@ -106,6 +129,30 @@ export default function ReportInput() {
             <Icon name="arrowRight" size={15} />
           </button>
         </div>
+        {suggestRoads && !busy && (
+          <p className="micro intake-hint">
+            Sounds like a road problem?{' '}
+            <button type="button" className="intake-hint-switch" onClick={() => setService('roads')}>
+              Report it under Roads &amp; potholes
+            </button>
+          </p>
+        )}
+        <p className="micro intake-foot intake-service">
+          <label htmlFor="intake-service">Problem </label>
+          <select
+            id="intake-service"
+            className="intake-segment"
+            value={service}
+            onChange={(e) => setService(e.target.value)}
+            disabled={busy}
+          >
+            {Object.values(SCENARIOS).map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </p>
         <p className="micro intake-consent">
           <label htmlFor="intake-join">
             <input
@@ -128,17 +175,45 @@ export default function ReportInput() {
             onChange={(e) => setSegment(e.target.value)}
             disabled={busy}
           >
-            {SEGMENTS.map((g) => (
-              <optgroup key={g.feeder} label={g.label}>
-                {g.streets.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
+            {service === 'roads' ? (
+              <>
+                <optgroup label="Curated for roads">
+                  {SEGMENTS.flatMap((g) => g.streets)
+                    .filter((s) => ROADS_SEGMENTS.includes(s.id))
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                </optgroup>
+                <optgroup label="Not curated for roads yet">
+                  {SEGMENTS.flatMap((g) => g.streets)
+                    .filter((s) => !ROADS_SEGMENTS.includes(s.id))
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                </optgroup>
+              </>
+            ) : (
+              SEGMENTS.map((g) => (
+                <optgroup key={g.feeder} label={g.label}>
+                  {g.streets.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))
+            )}
           </select>
         </p>
+        {!curatedHere && !busy && (
+          <p className="micro intake-foot intake-uncurated">
+            No curated roads authority on this street yet. Panchayat will say so rather than guess.
+          </p>
+        )}
         <p className="micro intake-foot">
           English, ಕನ್ನಡ, हिंदी or தமிழ் — whichever you actually speak
         </p>
@@ -200,9 +275,11 @@ export default function ReportInput() {
           {phase === 'failed' && error && (
             <>
               <p className="intake-step-v intake-failed">
-                {error.unknown
-                  ? `The runtime did not answer in time (${error.code}). The report may still have been filed, so look before sending it again.`
-                  : `Refused before it reached the runtime (${error.code}). Nothing was filed.`}
+                {error.code === 'not_routable_here' && error.message
+                  ? `${error.message} Nothing was filed.`
+                  : error.unknown
+                    ? `The runtime did not answer in time (${error.code}). The report may still have been filed, so look before sending it again.`
+                    : `Refused before it reached the runtime (${error.code}). Nothing was filed.`}
               </p>
               <div className="intake-done">
                 {error.unknown && (

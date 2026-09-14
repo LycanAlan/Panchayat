@@ -356,6 +356,56 @@ def test_the_whole_arc_a_desk_that_has_not_closed_it_leaves_it_running(outcome):
     assert case.status not in (CaseStatus.RESOLVED, CaseStatus.DORMANT)
 
 
+# ------------------------------------------------------------- the service
+
+class _RecordingDesk(InstitutionClient):
+    """Accepts everything and remembers which service each filing named."""
+
+    def __init__(self):
+        super().__init__()
+        self.services: list[str] = []
+
+    def file(self, desk, case_id, service, body, idempotency_key, signed_by):
+        self.services.append(service)
+        return DeskReply(Outcome.ACCEPTED, "WARD-100001")
+
+
+def _signed_filing(case_id):
+    return Filing(case_id=case_id, tier=1,
+                  authority="BBMP Assistant Engineer, ward office (roads)",
+                  body="Roads complaint.", signed_by="mem_a1b2c3")
+
+
+def test_a_roads_case_reaches_the_ward_desk_as_roads():
+    """One Watchdog files every service, so the service comes from the case,
+    not from a default fixed when the adapter was built."""
+    desk = _RecordingDesk()
+    services = {"case_road": "roads"}
+    submit = build_submit(client=desk, service_of=services.__getitem__)
+
+    assert submit(_signed_filing("case_road")) is True
+    assert desk.services == ["roads"]
+
+
+def test_water_is_unchanged_when_no_service_of_is_given():
+    desk = _RecordingDesk()
+    assert build_submit(client=desk)(_signed_filing("case_water")) is True
+    assert desk.services == ["water"]
+
+
+def test_a_service_lookup_that_fails_files_nothing():
+    """Filing a pothole as a water complaint because a read failed would be a
+    misroute. The error surfaces; the temporal handler retries the wake."""
+    desk = _RecordingDesk()
+
+    def unreadable(case_id):
+        raise LookupError(case_id)
+
+    with pytest.raises(LookupError):
+        build_submit(client=desk, service_of=unreadable)(_signed_filing("case_gone"))
+    assert desk.services == []
+
+
 # ------------------------------------------------------ the lane boundary
 
 def test_the_temporal_lane_does_not_import_the_institutions_lane():

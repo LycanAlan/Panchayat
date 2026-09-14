@@ -7,12 +7,16 @@ import Ladder from '../components/Ladder.jsx'
 import Icon from '../components/Icon.jsx'
 import Stamp from '../components/Stamp.jsx'
 import { SectionHead } from '../components/Bits.jsx'
-import { CASE, FILING, TIMELINE, CLAIMS, CORRELATION, CONTRADICTION } from '../data/case.js'
-import { REPORT, FORM, VOICES } from '../data/indic.js'
-import { NOT_THESE } from '../data/authorities.js'
+import { FORM } from '../data/indic.js'
+import { useScenario } from '../lib/scenario.jsx'
 import { useGsap, gsap, ScrollTrigger } from '../lib/motion.js'
 
 export default function Case() {
+  // Everything about the case comes from the worked example the reader is
+  // on; the template, the drawing stages and the scroll choreography do not.
+  const { scenario } = useScenario()
+  const { CASE, FILING, TIMELINE, CLAIMS, CORRELATION, CONTRADICTION, REPORT, VOICES, NOT_THESE } = scenario
+  const c = scenario.copy.caseFile
   const [elapsed, setElapsed] = useState(0)
   const [planStage, setPlanStage] = useState(2)
 
@@ -105,13 +109,16 @@ export default function Case() {
       {/* ---- file header ---------------------------------------- */}
       <section className="band band-tight case-cover">
         <div className="page">
-          <p className="meta">In the matter of a supply interruption · Ward {CASE.ward}</p>
+          <p className="micro worked-example">
+            Worked example · synthetic household · simulated desk · not live data
+          </p>
+          <p className="meta">{c.meta} · Ward {CASE.ward}</p>
           <h1 className="display case-title">
-            Lakshmi&rsquo;s tap,
+            {c.title[0]}
             <br />
-            and the eleven weeks
+            {c.title[1]}
             <br />
-            <em>nobody was counting.</em>
+            <em>{c.title[2]}</em>
           </h1>
           <dl className="case-facts">
             <div><dt className="micro">File</dt><dd className="mono">{CASE.id}</dd></div>
@@ -127,18 +134,14 @@ export default function Case() {
       <section className="band chapter" data-beat>
         <div className="page chapter-grid">
           <div className="chapter-date">
-            <span className="mono chapter-day">06</span>
-            <span className="mono chapter-month">SEP</span>
-            <span className="micro chapter-time">05:40</span>
+            <span className="mono chapter-day">{c.chapter.day}</span>
+            <span className="mono chapter-month">{c.chapter.month}</span>
+            <span className="micro chapter-time">{c.chapter.time}</span>
           </div>
 
           <div className="chapter-body">
-            <h2 className="display chapter-head">The tank is empty.</h2>
-            <p className="lead">
-              Third morning. The motor runs and pulls nothing. She checks the sump, the
-              valve, the neighbour&rsquo;s line. Then she says it out loud, in the language
-              she says everything else in.
-            </p>
+            <h2 className="display chapter-head">{c.chapterHead}</h2>
+            <p className="lead">{c.chapterLead}</p>
 
             <blockquote className="quote">
               <p className="kn quote-kn">{REPORT.kn}</p>
@@ -146,11 +149,7 @@ export default function Case() {
               <footer className="micro">{REPORT.by}</footer>
             </blockquote>
 
-            <p className="sans dim chapter-note">
-              This is a household position. It stays inside the household — her name, her
-              door number, what else is going on in that house. Only a claim crosses out of
-              it, and only once she has agreed to send one.
-            </p>
+            <p className="sans dim chapter-note">{c.chapterNote}</p>
           </div>
         </div>
       </section>
@@ -158,7 +157,7 @@ export default function Case() {
       {/* ---- jurisdiction --------------------------------------- */}
       <section className="band band-sunk">
         <div className="page">
-          <SectionHead n="§ 1" kicker="08 SEP · 11:02" title="Whose duty is this?" note="Looked up. Never generated." />
+          <SectionHead n="§ 1" kicker={c.jurKicker} title="Whose duty is this?" note="Looked up. Never generated." />
 
           <div className="ledger">
             <aside className="margin marginalia">
@@ -170,9 +169,9 @@ export default function Case() {
             <div className="jur">
               <div className="jur-hit" data-entry>
                 <span className="micro">Correct body</span>
-                <h3 className="sub">BWSSB — Sub-Division Office, Mahadevapura</h3>
+                <h3 className="sub">{c.correctBody}</h3>
                 <p className="mono jur-cite">{FILING.rule}</p>
-                <p className="mono jur-cite dim">Window: {FILING.window_days} working days from receipt</p>
+                <p className="mono jur-cite dim">{c.windowLine}</p>
               </div>
 
               <ul className="jur-not">
@@ -191,11 +190,11 @@ export default function Case() {
       {/* ---- the filing ----------------------------------------- */}
       <section className="band">
         <div className="page">
-          <SectionHead n="§ 2" kicker="10 SEP · 09:11" title="Her words become a filing." note="Form GR-1" />
+          <SectionHead n="§ 2" kicker={c.filingKicker} title={c.filingTitle} note={c.filingNote} />
 
           <div className="transform">
             <div className="transform-a" data-entry>
-              <Document kind="HOUSEHOLD POSITION · HELD" docRef="HH-12-0012" tilt={-0.6} creased>
+              <Document kind="HOUSEHOLD POSITION · HELD" docRef={CASE.household.id} tilt={-0.6} creased>
                 <p className="kn">{REPORT.kn}</p>
                 <p className="sans dim">{REPORT.gloss}</p>
               </Document>
@@ -215,19 +214,12 @@ export default function Case() {
                 tilt={0.5}
                 punched
                 fields={[
-                  { k: FORM.fields[0].en, v: 'Lakshmi (applicant)' },
+                  { k: FORM.fields[0].en, v: `${CASE.household.name} (applicant)` },
                   { k: FORM.fields[1].en, v: `${CASE.household.door}, ${CASE.street}, ${FORM.ward.en}` },
-                  { k: 'Nature of grievance', v: 'Complete loss of supply at premises — distribution main' },
-                  { k: 'Duration', v: 'Continuous since 04 SEP 2026 (06 days at filing)' },
-                  { k: 'Instrument', v: FILING.rule },
-                  { k: 'Relief sought', v: 'Site inspection, trace of feeder, restoration of supply' },
+                  ...c.filingFields,
                 ]}
               >
-                <p>
-                  The premises has had no supply for six days. Neighbouring properties on the
-                  same distribution main report the same failure. A trace of the feeder
-                  upstream of the isolation valve is requested.
-                </p>
+                <p>{c.filingBody}</p>
               </Document>
               <p className="micro transform-cap">Filed against a body that owes a duty.</p>
             </div>
@@ -240,13 +232,9 @@ export default function Case() {
         <div className="page">
           <div className="sign-grid">
             <div data-beat>
-              <p className="meta">10 SEP · 09:11</p>
-              <h2 className="display">Nothing is filed<br />until she signs it.</h2>
-              <p className="lead">
-                The draft is read back to her in Kannada, in full, including the sentence that
-                names her street. She can change it, hold it, or drop it. The liability for a
-                filing against a public body lands on the household, so the household decides.
-              </p>
+              <p className="meta">{c.signMeta}</p>
+              <h2 className="display">{c.signHead[0]}<br />{c.signHead[1]}</h2>
+              <p className="lead">{c.signLead}</p>
               <p className="sans dim">
                 A withdrawn household is not spoken for afterwards. Its claim leaves the
                 cluster, and anything already filed carries a correction.
@@ -256,15 +244,15 @@ export default function Case() {
             <div className="sign-doc" data-beat>
               <Document
                 kind="DECLARATION"
-                docRef="SIG-0912-A"
+                docRef={c.signRef}
                 authority="Read back in Kannada before signature"
                 tilt={-1.1}
-                signature={{ name: 'ಲಕ್ಷ್ಮಿ', at: '10 SEP 2026 · 09:11 IST' }}
+                signature={{ name: c.signName, at: c.signAt }}
                 annotation="read to me in full — I agree to send it"
                 fields={[
-                  { k: 'Applicant', v: 'Lakshmi · 12/12' },
+                  { k: 'Applicant', v: `${CASE.household.name} · ${CASE.household.door}` },
                   { k: 'Consent', v: 'Given, by name, before lodgement' },
-                  { k: 'Scope', v: 'Supply fault only. No income, health or arrears data.' },
+                  { k: 'Scope', v: c.signScope },
                 ]}
               />
             </div>
@@ -275,7 +263,7 @@ export default function Case() {
       {/* ---- the clock ------------------------------------------ */}
       <section className="band" data-clock-track>
         <div className="page">
-          <SectionHead n="§ 3" kicker="10–13 SEP" title="The statutory clock." note="7 working days" />
+          <SectionHead n="§ 3" kicker={c.clockKicker} title={c.clockTitle} note={c.clockNote} />
 
           <div className="clock-grid">
             <div className="clock-pin">
@@ -286,7 +274,7 @@ export default function Case() {
                   {String(elapsed).padStart(2, '0')} / 07
                 </span>
                 <span className="micro">
-                  {elapsed >= 7 ? 'window expired · fault live' : 'window open · no site visit recorded'}
+                  {elapsed >= 7 ? c.readoutExpired : c.readoutOpen}
                 </span>
               </div>
               <p className="micro clock-fine">
@@ -320,18 +308,14 @@ export default function Case() {
       <section className="band breach-band" data-beat>
         <div className="page breach-grid">
           <div className="breach-date">
-            <span className="mono chapter-day">13</span>
-            <span className="mono chapter-month">SEP</span>
-            <span className="micro chapter-time">17:00</span>
+            <span className="mono chapter-day">{c.breach.day}</span>
+            <span className="mono chapter-month">{c.breach.month}</span>
+            <span className="micro chapter-time">{c.breach.time}</span>
           </div>
           <div>
-            <h2 className="display ink-terracotta">Day 7 of 7.<br />Nobody came.</h2>
-            <p className="lead">
-              The window expires with the fault live. This is the moment the clock earns its
-              keep: no reply arrived, so nothing prompted anyone. The wake fires anyway,
-              reads the case, finds it still tracking, and marks the breach on the record.
-            </p>
-            <p className="mono breach-line">SLA-BREACH · 13 SEP 2026 17:00 IST · tier 1 · BWSSB-100001</p>
+            <h2 className="display ink-terracotta">{c.breachHead[0]}<br />{c.breachHead[1]}</h2>
+            <p className="lead">{c.breachLead}</p>
+            <p className="mono breach-line">{c.breachLine}</p>
           </div>
         </div>
       </section>
@@ -339,7 +323,7 @@ export default function Case() {
       {/* ---- escalation ----------------------------------------- */}
       <section className="band band-sunk">
         <div className="page">
-          <SectionHead n="§ 4" kicker="13 SEP · 17:00" title="The case climbs." note="Tier 1 → Tier 2" />
+          <SectionHead n="§ 4" kicker={c.climbKicker} title="The case climbs." note="Tier 1 → Tier 2" />
           <div className="ledger">
             <aside className="margin marginalia">
               <b>Carried up</b>
@@ -354,14 +338,14 @@ export default function Case() {
       {/* ---- the false closure ---------------------------------- */}
       <section className="band closure-band">
         <div className="page">
-          <SectionHead n="§ 5" kicker="13 SEP · 09:15" title="The desk answers." note="Eight hours before the deadline" />
+          <SectionHead n="§ 5" kicker={c.closureKicker} title="The desk answers." note={c.closureNote} />
 
           <div className="closure-grid">
             <div className="closure-doc" data-beat>
               <Document
                 kind="DISPOSAL MEMORANDUM"
                 docRef={CONTRADICTION.desk.ref}
-                authority="BWSSB Sub-Division Office, Mahadevapura"
+                authority={c.closureAuthority}
                 tilt={-1.4}
                 punched
                 creased
@@ -374,8 +358,8 @@ export default function Case() {
                 ]}
                 stamp={{
                   text: 'RESOLVED',
-                  sub: 'BWSSB · MAHADEVAPURA',
-                  date: '13 SEP 2026',
+                  sub: c.closureStampSub,
+                  date: CONTRADICTION.desk.stamped,
                   width: 300,
                   rotate: -7,
                 }}
@@ -385,16 +369,8 @@ export default function Case() {
             <div className="closure-say" data-beat>
               <p className="meta">What the ticket now says</p>
               <p className="sub closure-quote">&ldquo;{CONTRADICTION.desk.remark}&rdquo;</p>
-              <p className="sans dim">
-                In the grievance portal this case is finished. It leaves the pending queue, it
-                stops counting against anyone&rsquo;s numbers, and it will appear in a
-                quarterly figure as a complaint attended within the statutory window.
-              </p>
-              <p className="sans dim">
-                A household reading that page has no way to argue with it. It knows its own
-                tap is dry, and one dry tap against an official closure is a story about a
-                faulty motor.
-              </p>
+              <p className="sans dim">{c.closureSay[0]}</p>
+              <p className="sans dim">{c.closureSay[1]}</p>
             </div>
           </div>
         </div>
@@ -403,7 +379,7 @@ export default function Case() {
       {/* ---- the contradiction ---------------------------------- */}
       <section className="band" data-contradiction>
         <div className="page">
-          <SectionHead n="§ 6" kicker="13 SEP · 17:04" title="Except the street disagrees." note="3 live claims" />
+          <SectionHead n="§ 6" kicker={c.contraKicker} title="Except the street disagrees." note={`${CONTRADICTION.street.live_claims} live claims`} />
 
           <div className="plan-frame overflow-x">
             <div className="plan-scroll">
@@ -455,7 +431,7 @@ export default function Case() {
 
           <div className="voices">
             {VOICES.map((v) => (
-              <figure key={v.house} className="voice" data-ran={v.house === '12/11' ? 'other' : 'same'} data-entry>
+              <figure key={v.house} className="voice" data-ran={v.decoy ? 'other' : 'same'} data-entry>
                 <p className={`${v.script} voice-text`}>{v.text}</p>
                 <figcaption>
                   <span className="sans dim">{v.gloss}</span>
@@ -473,9 +449,9 @@ export default function Case() {
           <div className="page">
             <p className="climax-kicker micro">Finding</p>
             <p className="colossal climax-line">
-              You know your own tap.
+              {c.climax[0]}
               <br />
-              <em>You do not know your neighbours&rsquo;.</em>
+              <em>{c.climax[1]}</em>
             </p>
             <p className="mono climax-verdict">{CONTRADICTION.verdict}</p>
           </div>
@@ -492,15 +468,8 @@ export default function Case() {
               A case closes when the street agrees it is closed.
             </aside>
             <div className="prose">
-              <p className="opener">
-                The closure is recorded, and so is the contradiction. Both sit in the file,
-                and the file went up a tier rather than out of the system. The next window is
-                fifteen days, and it is already being counted.
-              </p>
-              <p>
-                What changed is not that a pipe was mended. It is that a stamp is no longer
-                the last word on it.
-              </p>
+              <p className="opener">{c.standsOpener}</p>
+              <p>{c.standsNext}</p>
             </div>
           </div>
 
@@ -508,7 +477,7 @@ export default function Case() {
             <Stamp
               text="DISPUTED"
               sub="PANCHAYAT · WARD 12"
-              date="13 SEP 2026"
+              date={c.standsStampDate}
               colour="var(--terracotta)"
               width={300}
               rotate={-5}

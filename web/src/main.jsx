@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
+import { ScenarioProvider } from './lib/scenario.jsx'
 
 import './styles/reset.css'
 import './styles/tokens.css'
@@ -22,7 +23,9 @@ if ('scrollRestoration' in history) {
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
+      <ScenarioProvider>
+        <App />
+      </ScenarioProvider>
     </BrowserRouter>
   </StrictMode>,
 )

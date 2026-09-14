@@ -12,6 +12,9 @@
  * is above the grade line, and what failed is below it.
  */
 
+import RoadSection from './RoadSection.jsx'
+import { useScenario } from '../lib/scenario.jsx'
+
 const G = 470 // finished ground level
 const MAIN = 790 // invert of Main A
 const L = 150 // left wall, outer face
@@ -19,6 +22,11 @@ const R = 470 // right wall, outer face
 const T = 14 // wall thickness
 
 export default function HeroSection() {
+  // The pothole case has its own section through the road, drawn to the
+  // same sheet. Water keeps this one.
+  const { scenario } = useScenario()
+  if (scenario.hero === 'roads') return <RoadSection />
+
   return (
     <svg
       className="sect"

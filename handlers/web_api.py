@@ -86,6 +86,15 @@ FIELDS: dict[str, tuple[str, ...]] = {
 CONSENT_SCOPES = frozenset({"file_individual", "join_collective",
                             "list_publicly", "spend_money"})
 
+#: The services a report may name, and how each reads in a sentence. Curated
+#: services only: Ward 12's jurisdiction table routes water, and roads on the
+#: streets we demonstrate on. Anything else is refused here as unknown_service
+#: rather than forwarded with a silent "water" -- a pothole filed as a water
+#: complaint is a misroute, and a misroute is the failure this project exists
+#: to prevent. Classifying the service from free text is deliberately not done:
+#: the household picks it, because a wrong guess would be silent.
+SERVICES: dict[str, str] = {"water": "water supply", "roads": "roads"}
+
 #: Case states in which a draft must not be signed. Signing one hands a desk
 #: paper for a complaint the case already let go -- the UNSIGNED bug, which
 #: the runtime's approve() does not check.
@@ -250,6 +259,10 @@ def _api(event: dict) -> dict:
         payload[name] = value
     if len(payload.get("text", "")) > MAX_TEXT_CHARS:
         return _json(413, {"error": "text_too_long", "limit_chars": MAX_TEXT_CHARS})
+    if action == "report" and payload.get("service") not in SERVICES:
+        # Missing counts as unknown. The runtime would default it to water,
+        # which is right for a trusted caller and wrong for a browser.
+        return _json(400, {"error": "unknown_service", "known": sorted(SERVICES)})
 
     # app.py's contract: no action means a household reporting.
     if action != "report":
@@ -275,8 +288,36 @@ def _api(event: dict) -> dict:
         return _json(502, {"error": "runtime_unavailable",
                            "kind": code or type(exc).__name__})
 
+    if action == "report":
+        refusal = _not_routable(payload, answer)
+        if refusal is not None:
+            _log(action=action, refused="not_routable_here", service=payload["service"])
+            return refusal
+
     _log(action=action, ok=True)
     return _json(200, answer)
+
+
+def _not_routable(payload: dict, answer: Any) -> dict | None:
+    """409 when the runtime found no curated authority for this street.
+
+    The request path records that as `unrouted_reason: "unknown_segment"` and
+    drafts nothing. Returned as a 200 it read as a report that went through;
+    the household deserves the plain sentence instead, and the page shows it
+    verbatim. Only that reason maps here: "no_segment" is a caller bug the
+    site cannot produce, and the others are ours to fix, not the household's.
+    """
+    result = answer.get("result") if isinstance(answer, dict) else None
+    if not isinstance(result, dict) or result.get("unrouted_reason") != "unknown_segment":
+        return None
+    service = payload["service"]
+    return _json(409, {
+        "error": "not_routable_here",
+        "service": service,
+        "segment": payload.get("segment", ""),
+        "message": ("Ward 12 has no curated " + SERVICES[service] + " authority "
+                    "for this street yet — we don't guess."),
+    })
 
 
 def _static(path: str) -> dict:

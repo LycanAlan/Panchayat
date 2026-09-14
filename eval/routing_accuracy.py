@@ -156,6 +156,31 @@ COMPLAINTS: list[tuple[str, str | None]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Roads, kept apart from the fifty above so that corpus stays the agreed size and
+# its number keeps meaning what it meant. Roads are curated on four demo streets
+# only (4th Cross, 1st Stage, 2nd Stage, 8th Main), so a pothole anywhere else
+# must still come back unresolved.
+#
+# The decoy is the one that matters: a hole full of water is still a road
+# defect. SERVICE_KEYWORDS checks roads before water, and this pins it, because
+# "water" in the complaint is exactly what would send it to BWSSB.
+# ---------------------------------------------------------------------------
+
+ROADS_COMPLAINTS: list[tuple[str, str | None]] = [
+    ("Huge pothole outside 14, 4th Cross. Bikes are falling every night.", BBMP),
+    ("4th cross road has a big pothole near the temple, patched last week and open again.", BBMP),
+    ("1st stage, road is broken near the bus stop, deep pothole.", BBMP),
+    ("Second stage main stretch full of potholes after the rain.", BBMP),
+    ("8th main road dug for cables and left like that, road is broken for two weeks.", BBMP),
+    # The decoy: water in the complaint, and still not a BWSSB filing.
+    ("Water pooling in the pothole on 4th cross, cannot see how deep it is.", BBMP),
+    # No roads entry for these streets. Correct answer: say so.
+    ("Pothole on station road near the railway gate.", None),
+    ("Kere mohalla, huge pothole in front of the school.", None),
+]
+
+
 def route(text: str, extract: Callable[[str], tuple[Service | None, str]]) -> str | None:
     """Complaint text -> authority, or None when we decline to guess."""
     service, segment = extract(text)
@@ -216,7 +241,17 @@ def main() -> None:
             print("  expected " + str(expected) + ", got " + str(got))
             print("    " + text)
 
-    if r["accuracy"] < TARGET:
+    roads = evaluate(ROADS_COMPLAINTS)
+    print("\nRouting accuracy -- Ward 12, roads (demo streets)")
+    print("  overall           " + str(roads["correct"]) + "/" + str(roads["total"])
+          + "  " + format(roads["accuracy"], ".0%"))
+    print("  declined to guess " + str(roads["declined_correctly"]) + "/"
+          + str(roads["declined_total"]))
+    for text, expected, got in roads["failures"]:
+        print("  expected " + str(expected) + ", got " + str(got))
+        print("    " + text)
+
+    if r["accuracy"] < TARGET or roads["accuracy"] < TARGET:
         print("\nBELOW TARGET (" + format(TARGET, ".0%") + "). Widen the table tonight,"
               " not on Thursday.")
         sys.exit(1)

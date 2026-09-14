@@ -3,7 +3,7 @@ import Icon from '../components/Icon.jsx'
 import Ladder from '../components/Ladder.jsx'
 import { SectionHead } from '../components/Bits.jsx'
 import { SPINE, PATHS } from '../data/case.js'
-import { JURISDICTION_NOTE } from '../data/authorities.js'
+import { useScenario } from '../lib/scenario.jsx'
 import { useGsap, gsap } from '../lib/motion.js'
 
 const STAGE_ICON = {
@@ -17,6 +17,8 @@ const STAGE_ICON = {
 }
 
 export default function Process() {
+  const { scenario } = useScenario()
+  const { JURISDICTION_NOTE } = scenario
   const scope = useGsap((self, { reduced }) => {
     if (reduced) return
     self.add(() => {
@@ -139,7 +141,7 @@ export default function Process() {
       {/* ---- jurisdiction --------------------------------------- */}
       <section className="band band-sunk">
         <div className="page">
-          <SectionHead n="§ 3" kicker="Routing" title="Looked up, never generated." note="31 curated entries" />
+          <SectionHead n="§ 3" kicker="Routing" title="Looked up, never generated." note={scenario.copy.process.routingNote} />
           <div className="ledger">
             <aside className="margin marginalia">
               <b>Hard rule 3</b>
@@ -162,6 +164,9 @@ export default function Process() {
       <section className="band">
         <div className="page">
           <SectionHead n="§ 4" kicker="Escalation" title="Where a case can climb." note="Five rungs" />
+          <p className="micro worked-example">
+            Worked example · {scenario.label.toLowerCase()} · {scenario.CASE.id} · not live data
+          </p>
           <Ladder />
           <p className="micro ladder-foot">
             Each rung is an authority with a window and an instrument behind it. A case

@@ -176,3 +176,74 @@
     gap: 0.15rem;
   }
 }
+
+/* ---- the worked-example switch, in the masthead strip ---- */
+
+.problem-switch {
+  display: inline-flex;
+  gap: 0.15rem;
+  border: 1px solid var(--rule-strong);
+  padding: 1px;
+}
+
+.problem-switch-opt {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  padding: 0.05rem 0.45rem;
+  cursor: pointer;
+}
+
+.problem-switch-opt[aria-pressed='true'] {
+  color: var(--paper);
+  background: var(--indigo);
+}
+
+.problem-switch-opt:focus-visible {
+  outline: 1px solid var(--indigo);
+  outline-offset: 1px;
+}
+
+html[data-plate='ink'] .problem-switch {
+  border-color: #3b342c;
+}
+
+/* ---- a fixture, labelled as one ---- */
+
+.worked-example {
+  display: inline-block;
+  margin-bottom: 0.6rem;
+  padding: 0.12rem 0.5rem;
+  border: 1px dashed var(--rule-strong);
+  color: var(--ink-muted);
+}
+
+/* ---- service picker, and the hint that never decides for anyone ---- */
+
+.intake-hint {
+  margin-top: 0.6rem;
+  color: var(--marigold);
+}
+
+.intake-hint-switch {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--indigo);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--indigo);
+  padding: 0;
+  cursor: pointer;
+}
+
+.intake-service {
+  margin-top: 0.75rem;
+}
+
+.intake-uncurated {
+  color: var(--terracotta);
+}

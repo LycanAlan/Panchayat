@@ -57,10 +57,14 @@ async function call(body) {
  * ['join_collective']. Nothing is implied: a report with no consent still
  * drafts a letter for signature, but the household is never counted alongside
  * neighbours (hard rule 7), so clustering cannot lift the case.
+ *
+ * `service` is what the household picked: 'water' or 'roads'. The door refuses
+ * anything else, and answers 409 not_routable_here, with a sentence to show,
+ * for a street that service has no curated authority on.
  */
-export async function report({ text, segment, consent = [] }) {
+export async function report({ text, segment, service = 'water', consent = [] }) {
   const data = await call({
-    action: 'report', ...identity(), text, segment, service: 'water', consent,
+    action: 'report', ...identity(), text, segment, service, consent,
   })
   return data.result
 }

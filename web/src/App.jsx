@@ -9,10 +9,10 @@ import Process from './routes/Process.jsx'
 import About from './routes/About.jsx'
 import Live from './routes/Live.jsx'
 import { useSmoothScroll, ScrollTrigger } from './lib/motion.js'
+import { useScenario } from './lib/scenario.jsx'
 
 const TITLES = {
   '/': 'Panchayat — a complaint closed is not a problem fixed',
-  '/case': 'The case · PNC-2026-0912 — Panchayat',
   '/street': 'The street · Ward 12 layout — Panchayat',
   '/process': 'The process · seven stages — Panchayat',
   '/about': 'Boundaries — Panchayat',
@@ -21,11 +21,24 @@ const TITLES = {
 
 function Page() {
   const { pathname } = useLocation()
+  const { scenario } = useScenario()
+
+  useEffect(() => {
+    document.title =
+      pathname === '/case'
+        ? `The case · ${scenario.CASE.id} — Panchayat`
+        : TITLES[pathname] ?? (pathname.startsWith('/live/') ? 'The live file — Panchayat' : 'Panchayat')
+  }, [pathname, scenario])
+
+  // Switching the story swaps text of different lengths under pinned
+  // sections, so their triggers must measure again.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => ScrollTrigger.refresh())
+    return () => cancelAnimationFrame(id)
+  }, [scenario])
 
   useEffect(() => {
     window.scrollTo(0, 0)
-    document.title =
-      TITLES[pathname] ?? (pathname.startsWith('/live/') ? 'The live file — Panchayat' : 'Panchayat')
     // A route swap replaces every pinned section on the page; without
     // this the old triggers keep their stale measurements.
     const id = requestAnimationFrame(() => ScrollTrigger.refresh())
