@@ -128,8 +128,28 @@ def _claim_of(record: Any):
                          "NEW_IMAGE or NEW_AND_OLD_IMAGES")
 
     item = _plain(image)
-    if not str(item.get("PK", "")).startswith(_CLAIM_PK):
-        raise _Skip("PK is " + str(item.get("PK", ""))[:24])
+    pk = str(item.get("PK", ""))
+
+    # A CASE row arriving is the second half of one report. The request path
+    # writes the claim at the Warden step and the case only later, after
+    # Remedy's model call -- so when this Lambda fires on the claim, the
+    # household's own case does not exist yet and there is nothing for the
+    # merge to absorb. Firing again on the case insert is what lets one fault
+    # on one street become one case (agents/pattern_watch.py::_absorb_own_case_of).
+    # Both passes are idempotent, so the claim pass costs nothing extra.
+    if pk.startswith("CASE#") and str(item.get("SK", "")) == "META":
+        claim_ids = item.get("claim_ids") or []
+        if not claim_ids:
+            raise _Skip("case row without a claim")
+        from core import db
+
+        claim = db.get_claim(str(claim_ids[0]))
+        if claim is None:
+            raise _Skip("case row names a claim that is not there yet")
+        return claim
+
+    if not pk.startswith(_CLAIM_PK):
+        raise _Skip("PK is " + pk[:24])
 
     # Imported here, not at module scope. core.store builds no client at
     # import, but the seam's rule is that only storage knows the encoding --

@@ -363,64 +363,88 @@ def absorb_case(survivor_id: str, source_id: str) -> bool:
     record delivered twice must be a no-op, so "already withdrawn" is False
     and never an error.
 
-    TWO CONDITIONAL WRITES, NOT A put_case. Three writers touch a Case row and
-    put_case is a whole-item overwrite; the Watchdog may be moving this very
-    case from DRAFTED to ESCALATING as the ambient pass reads it. So the
-    withdrawal is conditioned on the status still being absorbable, and if
-    the Watchdog got there first the condition fails and the case is left
-    alone -- which is also the answer for a source that already holds a
-    ticket, since you cannot un-file a complaint. A signed letter is checked
-    first for the same reason: it is a person's word, not ours to withdraw.
+    ONE TRANSACTION, THREE WRITES, NEVER put_case. Three writers touch a Case
+    row and put_case is a whole-item overwrite. The withdrawal is conditioned
+    on the source still being absorbable, so a Watchdog that moved it first
+    wins and the case is left alone -- which is also the answer for a source
+    holding a ticket, since you cannot un-file a complaint. The survivor's
+    note lands in the same transaction so provenance can never be one-way
+    (hard rule 6). And the source's FEEDER# index row is deleted, because
+    recurrence_count() is answered from those rows and an absorbed case is
+    the same incident, not a prior one -- left in place, a twelve-house
+    outage would claim eleven earlier failures of the main.
 
     The status change rewrites GSI1PK, because open_cases() is a query on
-    STATUS#<s> and a withdrawn case that kept its old key would still be
-    listed as open on this backend and not on memstore -- the divergence
-    class the seam exists to catch.
+    STATUS#<s> and a withdrawn case on the old key would still list as open
+    here and not on memstore.
+
+    WHAT THIS DOES NOT CLOSE, said plainly: the Watchdog's climb() reads a
+    case, drafts for seconds, then put_case()s the whole item. If that read
+    lands before this transaction and the put after, the put reverts the
+    withdrawal. The condition here closes the Watchdog-first ordering; the
+    other direction is the whole-item put_case hazard already open on
+    STATUS.md, and it is closed there, not here. Absorbing only OPEN/DRAFTED
+    keeps the window to the seconds a wake is actually handling the case.
     """
     if survivor_id == source_id:
         return False
+    source = get_case(source_id)
+    survivor = get_case(survivor_id)
+    if source is None or survivor is None:
+        return False
+    if source.status not in _ABSORBABLE or survivor.status in _DONE:
+        return False
     if any(f.signed_by for f in filings_for_case(source_id)):
         return False
-    try:
-        _t().update_item(
-            Key={"PK": "CASE#" + source_id, "SK": "META"},
-            UpdateExpression=(
+
+    into, absorbed = _MERGED_INTO + survivor_id, _ABSORBED + source_id
+    writes: list[dict] = [
+        {"Update": {
+            "TableName": TABLE,
+            "Key": {"PK": "CASE#" + source_id, "SK": "META"},
+            "UpdateExpression": (
                 "SET #s = :withdrawn, GSI1PK = :gsi, "
                 "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
-            ConditionExpression=(
+            "ConditionExpression": (
                 "attribute_exists(SK) AND #s IN (:open, :drafted) "
                 "AND NOT contains(merged_from, :token)"),
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {
                 ":withdrawn": CaseStatus.WITHDRAWN.value,
                 ":gsi": "STATUS#" + CaseStatus.WITHDRAWN.value,
                 ":open": CaseStatus.OPEN.value,
                 ":drafted": CaseStatus.DRAFTED.value,
-                ":empty": [],
-                ":note": [_MERGED_INTO + survivor_id],
-                ":token": _MERGED_INTO + survivor_id,
+                ":empty": [], ":note": [into], ":token": into,
             },
-        )
+        }},
+        {"Update": {
+            "TableName": TABLE,
+            "Key": {"PK": "CASE#" + survivor_id, "SK": "META"},
+            "UpdateExpression": (
+                "SET merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+            "ConditionExpression": (
+                "attribute_exists(SK) AND NOT contains(merged_from, :token)"),
+            "ExpressionAttributeValues": {
+                ":empty": [], ":note": [absorbed], ":token": absorbed,
+            },
+        }},
+    ]
+    if source.feeder_id:
+        writes.append({"Delete": {
+            "TableName": TABLE,
+            "Key": _feeder_index_key(source.feeder_id, source.service,
+                                     source.created_at, source.case_id),
+        }})
+    try:
+        _t().meta.client.transact_write_items(TransactItems=writes)
     except ClientError as exc:
         if _condition_failed(exc):
             return False
         raise
-    try:
-        _t().update_item(
-            Key={"PK": "CASE#" + survivor_id, "SK": "META"},
-            UpdateExpression=(
-                "SET merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
-            ConditionExpression="attribute_exists(SK) AND NOT contains(merged_from, :token)",
-            ExpressionAttributeValues={
-                ":empty": [],
-                ":note": [_ABSORBED + source_id],
-                ":token": _ABSORBED + source_id,
-            },
-        )
-    except ClientError as exc:
-        if not _condition_failed(exc):
-            raise
     return True
+
+
+
 
 
 def _feeder_index_item(case: Case) -> dict | None:

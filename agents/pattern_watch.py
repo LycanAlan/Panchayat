@@ -221,53 +221,26 @@ class PatternWatch:
             return None
 
         # A claim already live on a DIFFERENT case must not be pulled into
-        # this one. graph/request_path.py mints a fresh case per report, so
-        # twelve households reporting one outage open twelve cases on one
-        # feeder; merging their claims into cases[0] leaves the other eleven
-        # alive, each with its own deadline and tier, and Raghav's Watchdog
-        # files every one of them separately for the same fault. That is the
-        # duplicate that "reads as spam and gets both copies closed" (hard
-        # rule 5), with provenance split_case cannot reconcile (hard rule 6).
+        # this one: claims on cases other than the survivor are skipped as
+        # corroborators below. The TRIGGERING claim is exempt, deliberately.
+        # graph/request_path.py mints a fresh Case per report, so every
+        # request-path claim is spoken for by its own case; a version of this
+        # guard that applied to the trigger made on_new_claim return None for
+        # all of them and ambient clustering could never fire -- measured end
+        # to end, two households on one feeder produced no proposal.
         #
-        # What this actually needs is a CASE merge primitive -- withdraw the
-        # others with provenance -- which does not exist and is a group call.
-        # Until then the safe move is to leave them alone. Raised on STATUS.md.
+        # That own case is then ABSORBED by apply_upgrade once it exists
+        # (_absorb_own_case_of): the household joins the survivor, and its own
+        # case is withdrawn with provenance both ways. One fault, one case.
         spoken_for = {cid for c in cases if c.case_id != cases[0].case_id
                       for cid in c.claim_ids}
-
-        # THE TRIGGERING CLAIM IS DELIBERATELY NOT SUBJECT TO `spoken_for`,
-        # and a previous version of this guard that made it subject was WRONG
-        # in the most expensive way available: graph/request_path.py mints a
-        # fresh Case per report, so every request-path claim is spoken for by
-        # its own case, `on_new_claim` returned None for all of them, and
-        # ambient clustering could never fire at all. Measured end to end --
-        # two households on one feeder produced no proposal. TAU, the merge
-        # path, Anti-Abuse and the density thesis were all unreachable, and
-        # the eval harness could not see it because it calls apply_upgrade()
-        # directly.
-        #
-        # THE HAZARD IT WAS TRYING TO ADDRESS IS REAL AND IS STILL OPEN.
-        # The claim's own case stays alive with its own deadline and tier
-        # while its household joins cases[0], so the Watchdog can file both
-        # for one fault -- a duplicate under hard rule 5, with provenance
-        # split_case cannot reconcile under hard rule 6.
-        #
-        # The actual fix is for cases[0] to ABSORB the source case, which
-        # needs cross-case merge provenance. This file already says that is a
-        # group call and not to take it unilaterally, and it is right. So the
-        # hazard is made LOUD rather than silently traded for a product that
-        # does not cluster.
         if claim.claim_id in spoken_for:
             source = next((c.case_id for c in cases
                            if c.case_id != cases[0].case_id
                            and claim.claim_id in c.claim_ids), "")
-            emit(Tag.PATTERN, "trigger_already_on_a_case",
+            emit(Tag.PATTERN, "trigger_on_own_case",
                  case_id=cases[0].case_id, claim_id=claim.claim_id,
                  source_case_id=source)
-            _trace("MERGING", "pattern",
-                   "this claim is also on " + (source or "another case")
-                   + "; that case is NOT absorbed and may file separately "
-                     "-- cross-case merge is a group decision, see STATUS.md")
 
         scores, skipped = [], 0
         for other in self._candidates(claim, cases):
@@ -441,6 +414,13 @@ class PatternWatch:
                        " -- not absorbed, a filed complaint cannot be withdrawn")
                 emit(Tag.PATTERN, "not_absorbed", case_id=survivor.case_id,
                      source_case_id=other.case_id, status=other.status.value)
+                continue
+            if set(other.household_ids) - {claim.household_id}:
+                # Only the household's OWN case -- one roof, one claim. A case
+                # that already carries other households is a cluster of its
+                # own, and withdrawing it would orphan them.
+                emit(Tag.PATTERN, "not_absorbed", case_id=survivor.case_id,
+                     source_case_id=other.case_id, status="carries other households")
                 continue
             if absorb(survivor.case_id, other.case_id):
                 emit(Tag.PATTERN, "absorbed", case_id=survivor.case_id,

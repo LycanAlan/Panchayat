@@ -187,6 +187,9 @@ def absorb_case(survivor_id: str, source_id: str) -> bool:
         return False
     if source.status not in _ABSORBABLE:
         return False
+    if survivor.status in {CaseStatus.RESOLVED, CaseStatus.WITHDRAWN, CaseStatus.DORMANT}:
+        # Folding a live complaint into a closed case would lose it.
+        return False
     if any(f.signed_by for f in filings_for_case(source_id)):
         return False
     source.status = CaseStatus.WITHDRAWN
@@ -199,6 +202,10 @@ def absorb_case(survivor_id: str, source_id: str) -> bool:
 
 def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def _is_absorbed(case: Case) -> bool:
+    return any(t.startswith(_MERGED_INTO) for t in case.merged_from)
 
 
 def _claims_of(case: Case, household_id: str,
@@ -302,7 +309,12 @@ def recurrence_count(feeder_id: str, service: Service, since: datetime) -> int:
                # in the direction that manufactures a pattern, which is the one
                # direction it must never drift. core/store.py achieves this by
                # writing no feeder index row for a split child.
-               and not _is_split_child(c))
+               and not _is_split_child(c)
+               # And a case absorbed by a merge is the same incident, not a
+               # prior one: twelve households on one outage are one failure
+               # of the main, not eleven earlier ones. core/store.py deletes
+               # the absorbed case's feeder index row for the same reason.
+               and not _is_absorbed(c))
 
 
 # --------------------------------------------------------------- consent
