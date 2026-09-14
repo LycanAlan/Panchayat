@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
+from core.contention import NO_ROW, Contended
 from core.types import (
     Case,
     CaseStatus,
@@ -35,6 +36,16 @@ _consents: list[ConsentGrant] = []
 _disclosures: list[DisclosureRecord] = []
 _filings: dict[str, Filing] = {}          # idempotency_key -> Filing
 
+#: The same two facts core/store.py keeps, so this backend raises Contended
+#: under the same conditions and the retry paths run offline. `_version` is
+#: the row's version; `_seen` is what this process last read for it. The
+#: live object is mutated in place here, so a "stale" object is never
+#: actually stale on this backend -- Contended is raised anyway, because
+#: parity is the point: a test that passes here and fails on DynamoDB is
+#: the failure mode this project keeps finding.
+_version: dict[str, int] = {}
+_seen: dict[str, int] = {}
+
 
 def reset() -> None:
     """Wipe everything. Call in a test fixture, never in application code."""
@@ -43,6 +54,8 @@ def reset() -> None:
     _consents.clear()
     _disclosures.clear()
     _filings.clear()
+    _version.clear()
+    _seen.clear()
 
 
 # ---------------------------------------------------------------- claims
@@ -88,12 +101,47 @@ def claims_in_window(segment: str, service: Service, since: datetime) -> list[Cl
 
 # ----------------------------------------------------------------- cases
 
+def _row(case: Case) -> Case:
+    """A Case as a ROW, not as the caller's object. DynamoDB decodes a fresh
+    object on every read and stores a serialisation on every write, so a
+    caller's later mutation reaches the table only through put_case -- and a
+    put_case that is refused leaves the table untouched. Handing back the
+    live object broke both of those here: a refused write still "landed",
+    and every backend divergence this week was some version of that."""
+    return replace(case, claim_ids=list(case.claim_ids),
+                   household_ids=list(case.household_ids),
+                   merged_from=list(case.merged_from))
+
+
 def put_case(case: Case) -> None:
-    _cases[case.case_id] = case
+    """Whole-item write, conditioned on the version this process last read.
+    core/contention.py has the reasoning; core/store.py has the same rule."""
+    current = _version.get(case.case_id)
+    seen = _seen.get(case.case_id)
+    if current is None:
+        nxt = 1                                   # a create
+    elif seen is None or seen == NO_ROW:
+        raise Contended(case.case_id, seen, "written without being read")
+    elif seen != current:
+        raise Contended(case.case_id, seen, "another writer moved it")
+    else:
+        nxt = current + 1
+    _cases[case.case_id] = _row(case)
+    _version[case.case_id] = nxt
+    _seen[case.case_id] = nxt
 
 
 def get_case(case_id: str) -> Case | None:
-    return _cases.get(case_id)
+    case = _cases.get(case_id)
+    _seen[case_id] = _version[case_id] if case is not None else NO_ROW
+    return _row(case) if case is not None else None
+
+
+def _bump(case_id: str) -> None:
+    """A targeted update happened. The row moves on; what this process READ
+    does not -- so a put_case from an earlier read now says Contended, as it
+    does on DynamoDB, and the caller re-reads."""
+    _version[case_id] = _version.get(case_id, 0) + 1
 
 
 def stalled_cases(service: Service | None = None) -> list[Case]:
@@ -144,6 +192,7 @@ def add_household_to_case(case_id: str, household_id: str, claim_id: str) -> Non
     token = household_id + ":" + claim_id
     if token not in case.merged_from:
         case.merged_from.append(token)
+    _bump(case_id)
 
 
 #: Provenance for a case created BY a split, so recurrence_count() does not
@@ -197,6 +246,8 @@ def absorb_case(survivor_id: str, source_id: str) -> bool:
         source.merged_from.append(_MERGED_INTO + survivor_id)
     if _ABSORBED + source_id not in survivor.merged_from:
         survivor.merged_from.append(_ABSORBED + source_id)
+    _bump(source_id)
+    _bump(survivor_id)
     return True
 
 
@@ -289,6 +340,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             merged_from=[_SPLIT_FROM + case_id],
         )
         _cases[child.case_id] = child
+        _version[child.case_id] = 1
         new_ids.append(child.case_id)
 
         case.household_ids.remove(hh)
@@ -296,6 +348,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             if cid in case.claim_ids:
                 case.claim_ids.remove(cid)
         case.merged_from = [t for t in case.merged_from if not t.startswith(hh + ":")]
+        _bump(case_id)
     return new_ids
 
 

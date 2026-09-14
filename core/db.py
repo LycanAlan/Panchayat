@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import os
 
+from core.contention import Contended  # re-exported: callers depend on the seam
+
 _BACKEND = os.environ.get("PANCHAYAT_BACKEND", "memory").lower()
 
 # Named for the error messages: the backend is "dynamodb" but the module is
@@ -166,5 +168,6 @@ __all__ = [
     "record_submission",
     "record_rejection",
     "split_case",
+    "Contended",
     "unsigned_filings",
 ]
