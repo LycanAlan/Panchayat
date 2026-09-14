@@ -58,8 +58,13 @@ voice or the script:
 3. Re-time: `python tools/align_voiceover.py --narration narration-v2.txt --audio public/<file> --out src/film/vo2.json`
 4. Regenerate the music bed to the new length: `python tools/make_audio.py`
 
-Chosen voice: ElevenLabs **Riya K. Rao** (Indian English, female). ElevenLabs generation was
-failing on 14 Sep, so drafts use a local placeholder voice until it recovers.
+Voice: ElevenLabs **Riya Rao - Engaging & Encouraging Tutor** (`ZBagl2bR5Xv44f5Xpxn6`, Indian
+English, female), `eleven_multilingual_v2`, 2,944 credits. The raw take is 227 s; short pauses
+were inserted between beats (243 s) so cards and stamps have room to read, then re-aligned.
+
+If ElevenLabs generation fails through the Claude connector while the account itself works on
+elevenlabs.io, sign in to elevenlabs.io in the browser once; on 14 Sep that restored the
+connector's generation calls.
 
 ## Music and sound
 

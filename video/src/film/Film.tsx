@@ -8,7 +8,7 @@ import { Background, Close, FILM_END } from "./Part3";
 
 export const FPS = 30;
 export const FILM_FRAMES = Math.round(FILM_END * FPS);
-export const VO_FILE = "vo-placeholder.mp3";
+export const VO_FILE = "vo-riya.mp3";
 
 const WHOOSH = [7, 8, 9, 10, 11, 12, 13, 16, 19, 28, 29, 30, 32, 33, 34, 35].map((i) => S(i).start - 0.35);
 const STAMPS = [W(6, "CLOSED"), W(7, "RESOLVED"), W(27, "COMES") + 0.1, W(32, "RESOLVED"), W(32, "DISPUTE"), W(34, "CLOSE")];

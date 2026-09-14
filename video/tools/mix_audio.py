@@ -5,7 +5,7 @@ whooshes, stamps and pops land on the same frames as the visuals. Mixing outside
 avoids re-rendering every frame just to get audio. ffmpeg (the one Remotion bundles is a
 minimal build) only decodes each input; the mix itself is numpy.
 
-    python video/tools/mix_audio.py --voice public/vo-placeholder.mp3 --out out/soundtrack.wav
+    python video/tools/mix_audio.py --voice public/vo-riya.mp3 --out out/soundtrack.wav
 """
 
 import argparse
@@ -37,7 +37,7 @@ def decode(path: Path) -> np.ndarray:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--voice", default=str(VIDEO / "public" / "vo-placeholder.mp3"))
+    parser.add_argument("--voice", default=str(VIDEO / "public" / "vo-riya.mp3"))
     parser.add_argument("--timing", default=str(VIDEO / "src" / "film" / "vo2.json"))
     parser.add_argument("--public", default=str(VIDEO / "public"))
     parser.add_argument("--out", default=str(VIDEO / "out" / "soundtrack.wav"))

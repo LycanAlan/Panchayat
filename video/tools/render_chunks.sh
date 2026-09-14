@@ -31,7 +31,7 @@ while [ $start -lt $TOTAL ]; do
   start=$((end + 1)); idx=$((idx + 1))
 done
 echo "audio"
-VOICE="${VOICE:-public/vo-placeholder.mp3}"
+VOICE="${VOICE:-public/vo-riya.mp3}"
 python tools/mix_audio.py --voice "$VOICE" --out "$WORK/audio.wav" > "$WORK/audio.log" 2>&1 || { echo "FAILED audio"; exit 1; }
 echo "join"
 npx remotion ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$WORK/list.txt" -i "$WORK/audio.wav"   -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -movflags +faststart "$OUT" || { echo "FAILED join"; exit 1; }
