@@ -1,0 +1,19 @@
+SIGNAL
+intake → 1 need(s) from en text
+DELIBERATED
+household → 1 members reconciled, hard deadline none
+MINIMISED
+warden → claim emitted; withheld nothing
+ROUTED
+remedy → BWSSB (not BBMP) [BWSSB Citizen Charter, restoration of interrupted supply]
+DRAFTED
+file → BWSSB Assistant Engineer, sub-division office, tier 1, awaiting a human signature [BWSSB Citizen Charter, restoration of interrupted supply]
+UNCONSENTED
+file → draft holds: no recorded consent grant on this claim
+TRACKING
+watchdog → SLA 7d, breach at 2026-09-21 12:59 -- draft expires then unless someone signs it [BWSSB Citizen Charter, restoration of interrupted supply]
+
+NO MODEL RAN
+
+OPEN THE LIVE FILE
+CLEAR

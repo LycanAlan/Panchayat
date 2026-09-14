@@ -14,7 +14,9 @@ first.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -36,7 +38,7 @@ def load_audio(mp3: Path) -> np.ndarray:
         subprocess.run(
             ["npx", "remotion", "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
              "-i", str(mp3), "-ac", "1", "-ar", str(SAMPLE_RATE), str(wav)],
-            cwd=VIDEO, check=True, shell=True,
+            cwd=os.environ.get("REMOTION_DIR", str(VIDEO)), check=True, shell=True,
         )
         with wave.open(str(wav)) as w:
             frames = w.readframes(w.getnframes())
@@ -64,8 +66,14 @@ def align(tokens: list[int], blank: int, emission: torch.Tensor) -> list[tuple[i
 
 
 def main() -> None:
-    sentences = [s.strip() for s in (VIDEO / "narration.txt").read_text(encoding="utf-8").splitlines() if s.strip()]
-    audio = load_audio(VIDEO / "public" / "voiceover.mp3")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--narration", default=str(VIDEO / "narration.txt"))
+    parser.add_argument("--audio", default=str(VIDEO / "public" / "voiceover.mp3"))
+    parser.add_argument("--out", default=str(VIDEO / "src" / "vo_timing.json"))
+    args = parser.parse_args()
+
+    sentences = [s.strip() for s in Path(args.narration).read_text(encoding="utf-8").splitlines() if s.strip()]
+    audio = load_audio(Path(args.audio).resolve())
 
     processor = Wav2Vec2Processor.from_pretrained(MODEL)
     model = Wav2Vec2ForCTC.from_pretrained(MODEL).eval()
@@ -102,7 +110,7 @@ def main() -> None:
                     "words": [{"w": w, "s": s, "e": e} for w, (s, e) in ws]})
         print(f"{si:2d} {ws[0][1][0]:6.2f}-{ws[-1][1][1]:6.2f}  {sentence}")
 
-    (VIDEO / "src" / "vo_timing.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
 
 
 if __name__ == "__main__":

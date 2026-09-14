@@ -1,93 +1,73 @@
 # Demo video
 
-The submission video for the AWS Agents for Humans hackathon, Good Neighbor
-track. Code-rendered with [Remotion](https://www.remotion.dev), so every beat
-is reproducible and editable, and every word on screen is exact.
+The hackathon submission film, built in [Remotion](https://www.remotion.dev) so every beat
+is reproducible and every word on screen is exact. It uses the website's own design: cream
+paper, Newsreader / IBM Plex Sans / IBM Plex Mono, and the site's marigold, sage, indigo and
+terracotta, with soft warm glows instead of dark screens. Transitions take their cue from
+the Numtera launch video (zoom-blur whips, kinetic type, floating UI) without copying it.
 
-**Rules that shape it** (Devpost, checked 14 Sep): max 5 minutes, public on
-YouTube or Vimeo, must show the working project and pitch the problem, who it
-is for and why it matters. Voiceover without appearing on camera is allowed.
+**Devpost rules** (checked 14 Sep): max 5 minutes, public on YouTube or Vimeo, must show the
+working project and pitch the problem, who it is for and why it matters.
 **Deadline: Mon 14 Sep 2026, 5:00 pm PT = Tue 15 Sep, 5:30 am IST.**
 
-## Structure
+## Structure (about 4:20)
 
-| Part | Length | Status |
+| # | Beat | Narration lines |
 |---|---|---|
-| 1. Problem | 0:00 - 0:47 | **Done** (this folder) |
-| 2. Architecture demo | 0:47 - 1:46 | **Done** (this folder) |
-| 3. Screen recording of the live site | ~2 - 3 min | **Not started**, see below |
+| 1 | Complaint slips from six offices, all stamped CLOSED | 1-7 |
+| 2 | Three sourced facts: 15 times, 13.34 lakh, 2 in 3 | 8-10 |
+| 3 | The building knows in 15 minutes; nobody has time to chase | 11-13 |
+| 4 | Ink map: peninsular India to Bengaluru to the Ward 12 drawing | 14-16 |
+| 5 | Meet Panchayat, built on Strands Agents and AgentCore | 17-19 |
+| 6 | The live site: report, runtime trace, one card per agent, signature, A2A desk, refusal, ticket | 20-28 |
+| 7 | When nobody is asking: Watchdog ladder, Pattern Watch, Anti-Abuse, disputed closure, other desks | 29-34 |
+| 8 | Close and end card | 35-38 |
 
-`renders/panchayat-explainer-v3-share.mp4` is the current cut, compressed to
-fit GitHub. Render the full-quality master locally for the upload.
+## What is real, and what is labelled
 
-### Part 1, problem (Society scene)
-Night Earth, a pulse on Bengaluru, a dive into a four-tower society and one lit
-window. Father, mother and grandmother cards pop from it, each on its word;
-grandmother's is HIGH priority. Cards pop across the building, each draws its
-own line to "the right office?", a follow-up counter runs to week 11, and
-"CLOSED: RESOLVED" stamps land on taps that are still dry. Then Panchayat: one
-case opens, eleven neighbours' water cards merge into it (12 households), and
-other issues line up on the right sized by priority.
-
-**The merge carries a `DESIGN PREVIEW · live build opens one case per report`
-label.** Per `docs/handoff/status-2026-09-14.md`, the cross-case merge rule is
-not built; the live site mints a case per report. The video must not claim
-agreement the system did not compute.
-
-### Part 2, architecture (Journey scene)
-The case rides an S-shaped path through one cloud per agent: Intake (Kannada
-read-back), Household, Privacy Warden ("dialysis" blurs to "HIGH priority ·
-reason withheld"), Remedy (the real ladder entry: BWSSB Assistant Engineer,
-BWSSB Citizen Charter), Digest (a named signature), BWSSB desk over A2A (ticket
-BWSSB-100004, the real deployed ticket format), Watchdog (7-day window,
-breach, tier 2 to the Assistant Executive Engineer) and the closure check
-(desk says resolved, 9 new reports say dry, DISPUTED). Each cloud names the
-AWS piece behind it. Ends on "We don't fix pipes. We make sure someone does."
+- **Website footage is captured from the deployed site** (`tools/capture_flow.py`). One real
+  report was filed and signed on 14 Sep; the simulated BWSSB desk refused it and the site
+  shows "desk did not take it · retry booked". The ticket shown after it, `BWSSB-100004`, is
+  from an earlier live case on the same deployed desk, and the video says so on screen.
+- **The cross-case merge is not deployed.** The Pattern Watch merge carries an
+  `IN ROLLOUT · CROSS-CASE MERGE` tag while `MERGE_IS_LIVE` is `false` in
+  `src/film/kit2.tsx`. When the merge ships, capture it, drop the footage in, and flip the flag.
+- **Institution desks are calibrated simulators**, and the film says so.
+- **Facts carry their sources on screen:** Deccan Herald (BBMP Sahaaya, the pothole closed 15
+  times; BWSSB ~300 complaints a day, March 2024), The Tribune (RBI Ombudsman, 13.34 lakh
+  complaints, FY 2024-25), LocalCircles via NewsMeter (2 in 3 could not get help).
 
 ## Render
 
 ```bash
 cd video
 npm ci
-npm run studio      # preview and scrub
-npm run render      # out/panchayat-explainer.mp4, ~106 s, 1080p30, ~15 min
+npm run studio                     # preview and scrub, composition "Film"
+npx remotion render src/index.ts Film out/panchayat-film.mp4 --codec=h264 --crf=18 --timeout=120000
 ```
 
-Beats are timed from `src/vo_timing.json`. If you change `narration.txt`,
-regenerate `public/voiceover.mp3`, then re-time everything with:
+Fonts are self-hosted in `public/fonts` so a render never depends on reaching Google.
 
-```bash
-python video/tools/align_voiceover.py
-```
+## Voiceover and timing
 
-## Voiceover
+Every animation is keyed to the narrator's words through `src/film/vo2.json`. To change the
+voice or the script:
 
-ElevenLabs, `eleven_multilingual_v2`, voice **Ranbir Merchant - Warm &
-Friendly** (neutral Indian accent), 104.6 s, 1,409 credits. Pranab was the
-first choice but every Indian-accent library voice except a few needs the
-Creator plan; this one works on the current plan.
+1. Edit `narration-v2.txt` (one sentence per line; spell numbers out).
+2. Put the new audio in `public/` and set `VO_FILE` in `src/film/Film.tsx`.
+3. Re-time: `python tools/align_voiceover.py --narration narration-v2.txt --audio public/<file> --out src/film/vo2.json`
+4. Regenerate the music bed to the new length: `python tools/make_audio.py`
+
+Chosen voice: ElevenLabs **Riya K. Rao** (Indian English, female). ElevenLabs generation was
+failing on 14 Sep, so drafts use a local placeholder voice until it recovers.
+
+## Music and sound
+
+`tools/make_audio.py` synthesizes the music bed (a reflective progression for the problem that
+opens into a hopeful one at "Meet Panchayat") and the whoosh, stamp and pop effects. No
+third-party audio, so no licensing questions.
 
 ## Credits
 
-Earth day, night-lights and cloud textures: [Solar System Scope](https://www.solarsystemscope.com/textures/),
-CC BY 4.0, derived from NASA imagery. Fonts: Inter, JetBrains Mono, Noto Sans
-Kannada via Google Fonts.
-
-## Next: screen recording (Part 3)
-
-Planned shot list, recorded headlessly at 1920x1080 with Playwright against
-the deployed site:
-
-1. Home, type "No water in our tank for three days", 4th Cross, Report it.
-   The real runtime trace replays: intake, routing with its citation, draft.
-2. Open the live file: state, authority, statutory deadline, the draft body.
-3. Sign it. About 100 s later the Watchdog files it (cut in the edit).
-4. The ticket appears on the case page.
-
-**Before recording, a person must OK the live writes:** it adds one real case
-to the live table and the Watchdog files it with the simulated BWSSB desk.
-
-**The deployed site predates PR #43**, so the case page will not show the
-ticket arrive on its own; step 4 needs "Read it again" on camera unless the web
-Lambda is redeployed first (`scripts/deploy_web.ps1`, needs the AWS CLI and
-the `panchayat` AWS profile).
+India outline: Natural Earth via world-atlas (`tools/india_map.py`); the map frames the
+peninsula only. Fonts: Newsreader, IBM Plex Sans, IBM Plex Mono, Noto Serif Kannada (SIL OFL).
