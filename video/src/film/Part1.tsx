@@ -256,7 +256,7 @@ export const MapZoom: React.FC<{ t: number }> = ({ t }) => {
   const [bx, by] = MAP.bengaluru;
   const draw = eased(t, S(13).start - 0.2, S(13).start + 2.2);
   const toBlr = W(14, "BENGALURU");
-  const s = Math.exp(kf(t, [[S(13).start, Math.log(1.9)], [W(14, "WATER"), Math.log(2.3)], [toBlr + 0.2, Math.log(7)], [toBlr + 1.2, Math.log(16)]]));
+  const s = Math.exp(kf(t, [[S(13).start, Math.log(1.9)], [W(14, "WATER"), Math.log(2.3)], [toBlr + 0.2, Math.log(7)], [toBlr + 1.2, Math.log(9)]]));
   const cx = kf(t, [[S(13).start, 470], [W(14, "WATER"), 430], [toBlr + 0.2, bx], [toBlr + 1.2, bx]]);
   const cy = kf(t, [[S(13).start, 640], [W(14, "WATER"), 660], [toBlr + 0.2, by], [toBlr + 1.2, by]]);
   const toDrawing = ramp(t, toBlr + 0.9, toBlr + 1.6);

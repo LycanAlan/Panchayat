@@ -1,19 +1,22 @@
 import React from "react";
-import { AbsoluteFill, Easing, continueRender, delayRender, interpolate, staticFile } from "remotion";
-import fonts from "./fonts.json";
+import { AbsoluteFill, Easing, continueRender, delayRender, interpolate } from "remotion";
+import { FONT_DATA } from "./fontdata";
 
 // The website's own type system: Newsreader argues, Plex Sans labels, Plex Mono files.
-// Self-hosted from public/fonts so a render never depends on reaching Google.
+// Embedded in the bundle: a font fetch that never answers used to stall renders for good.
 if (typeof document !== "undefined") {
-  const handle = delayRender("Loading local fonts", { timeoutInMilliseconds: 120000 });
-  const loadOne = (f: (typeof fonts)[number], attempt = 0): Promise<void> =>
-    new FontFace(`PNC ${f.family}`, `url(${staticFile(f.file)}) format("woff2")`, { weight: f.weight, style: f.style })
-      .load()
-      .then((loaded) => {
-        document.fonts.add(loaded);
-      })
-      .catch(() => (attempt < 3 ? new Promise<void>((r) => setTimeout(r, 400)).then(() => loadOne(f, attempt + 1)) : undefined));
-  Promise.allSettled(fonts.map((f) => loadOne(f))).finally(() => continueRender(handle));
+  const handle = delayRender("Registering embedded fonts", { timeoutInMilliseconds: 60000 });
+  const faces = FONT_DATA.map((f) => {
+    const bin = atob(f.b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const face = new FontFace(`PNC ${f.family}`, bytes.buffer, { weight: f.weight, style: f.style });
+    document.fonts.add(face);
+    return face.load().catch(() => undefined);
+  });
+  const settle = Promise.all(faces).then(() => undefined);
+  const cap = new Promise<void>((r) => setTimeout(r, 8000));
+  Promise.race([settle, cap]).finally(() => continueRender(handle));
 }
 export const SERIF = "'PNC Newsreader', Georgia, serif";
 export const SANS = "'PNC IBMPlexSans', 'Segoe UI', sans-serif";
