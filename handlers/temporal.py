@@ -32,6 +32,7 @@ import json
 from typing import Any
 
 from agents.watchdog import ACTIONS, Watchdog
+from core import db
 from graph.trace import record as trace_record
 
 #: The Watchdog this Lambda drives, built once per container.
@@ -76,7 +77,16 @@ def _watchdog() -> Watchdog:
         # Defaulting it to None in the Watchdog makes the unwired case honest
         # (the pursuit continues); wiring it here makes the deployed case
         # true.
-        _dispatcher = Watchdog(submit=build_submit(),
+        # The case's own service reaches the desk. The adapter held ONE
+        # service for every filing while the table was water-only; with
+        # roads curated, a pothole filed as "water" is the misroute this
+        # project exists to catch. The closure keeps storage out of the
+        # institutions lane.
+        def service_of(case_id: str) -> str:
+            case = db.get_case(case_id)
+            return case.service.value if case else ""
+
+        _dispatcher = Watchdog(submit=build_submit(service_of=service_of),
                                closed=build_closure_probe())
     return _dispatcher
 

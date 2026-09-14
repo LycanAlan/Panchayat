@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Callable
 
 from core.tags import Tag, emit
 from institutions.protocol import DeskReply, Outcome
@@ -391,8 +392,18 @@ def build_filing_tool(client: InstitutionClient | None = None):
 
 
 def build_submit(client: InstitutionClient | None = None,
-                 service: str = "water"):
+                 service: str = "water",
+                 service_of: Callable[[str], str] | None = None):
     """Adapter for the Watchdog's `submit: Callable[[Filing], bool]` seam.
+
+    `service_of(case_id) -> "water" | "roads" | ...` is how a second curated
+    service reaches the desk without this lane reading our table: the
+    handler that composes the Watchdog (handlers/temporal.py) can look a
+    case up and passes a closure. When it is None, `service` is used for
+    every filing, which is what this build did while the table was
+    water-only. A closure that raises or returns "" falls back to `service`
+    and says so in the trace, because a filing must not fail on a lookup
+    about its own label.
 
     It lives in this file and not in `agents/watchdog.py` on purpose: the
     temporal lane must not import the institutions lane. The A2A boundary is
@@ -444,11 +455,22 @@ def build_submit(client: InstitutionClient | None = None,
 
     bound = client or InstitutionClient()
 
+    def _service_for(case_id: str) -> str:
+        if service_of is None:
+            return service
+        try:
+            found = service_of(case_id)
+        except Exception as exc:  # noqa: BLE001 - the label must not sink the filing
+            emit(Tag.FILING, "service_lookup_failed", case_id=case_id,
+                 fallback=service, error=type(exc).__name__)
+            return service
+        return str(found or service)
+
     def submit(filing: Filing) -> bool:
         reply = bound.file_for_authority(
             authority=filing.authority,
             case_id=filing.case_id,
-            service=service,
+            service=_service_for(filing.case_id),
             body=filing.body,
             idempotency_key=filing.idempotency_key or filing.compute_key(),
             signed_by=filing.signed_by or "",

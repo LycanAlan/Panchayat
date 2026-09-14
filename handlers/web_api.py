@@ -81,6 +81,13 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "health": (),
 }
 
+#: The services the door lets through, by value of core.types.Service. NOT
+#: every member of that enum: only the ones the curated table can route at
+#: least one street for. A service the table cannot route still produces an
+#: honest UNROUTED trace, but a value the runtime cannot even parse would be
+#: a 500 dressed as a report. Widen this when the data widens.
+SERVICES = frozenset({"water", "roads"})
+
 #: The consent scopes the site may forward. Mirrors core.types.ConsentScope
 #: by value; the runtime validates again, this just refuses junk at the door.
 CONSENT_SCOPES = frozenset({"file_individual", "join_collective",
@@ -250,6 +257,15 @@ def _api(event: dict) -> dict:
         payload[name] = value
     if len(payload.get("text", "")) > MAX_TEXT_CHARS:
         return _json(413, {"error": "text_too_long", "limit_chars": MAX_TEXT_CHARS})
+    if action == "report":
+        # No silent default. The client used to send "water" for every
+        # report, and a pothole became a BWSSB letter about a pothole -- the
+        # misroute this project exists to catch, produced by our own form.
+        service = payload.get("service")
+        if not service:
+            return _json(400, {"error": "service_required", "known": sorted(SERVICES)})
+        if service not in SERVICES:
+            return _json(400, {"error": "unknown_service", "known": sorted(SERVICES)})
 
     # app.py's contract: no action means a household reporting.
     if action != "report":

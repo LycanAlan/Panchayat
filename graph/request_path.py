@@ -927,6 +927,15 @@ def _unrouted_reason(ctx: RequestContext) -> str | None:
         return "remedy_stubbed"
     if ctx.tail is not None and ctx.tail is not Tail.INSTITUTIONAL:
         return "not_institutional"
+    # A THIRD data reason, kept apart from "unknown_segment": the street is
+    # curated, just not for this service. Reading "unknown_segment" for a
+    # pothole on a street with five water entries sends the fix to the wrong
+    # place and tells the household the wrong thing.
+    from agents import remedy
+
+    curated = remedy.services_for(segment)
+    if curated and ctx.claim.service.value not in curated:
+        return "service_not_curated"
     return "unknown_segment"
 
 

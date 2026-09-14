@@ -37,6 +37,7 @@ FIELD_LABELS: dict[str, str] = {
     "rr_number": "RR number",
     "duration_days": "days without supply",
     "affected_count": "households affected",
+    "location": "exact spot (house number or landmark)",   # roads: which pothole
     "ward_number": "ward number",
     "flat_number": "flat number",
     "layout_name": "layout name",
@@ -159,6 +160,14 @@ class JurisdictionTable:
     def aliases(self) -> dict[str, str]:
         self._live_entries  # noqa: B018  -- forces the load
         return dict(self._aliases)
+
+    def services_for(self, segment: str) -> list[str]:
+        """The services the table can route for one street, sorted. Empty
+        for a street it has never heard of. Lets a caller tell "unknown
+        street" from "known street, uncurated service" -- two different
+        fixes, and the second is the whole roads story."""
+        seg = (segment or "").strip().lower()
+        return sorted(svc for svc, s in self._live_entries if s == seg)
 
     # ---------------------------------------------------------------- query
 
@@ -333,6 +342,11 @@ def segment_aliases() -> dict[str, str]:
 def lookup(service, segment: str, feeder_id: str = "") -> JurisdictionEntry | None:
     """Read data/jurisdiction/*.yaml. NEVER ask a model to invent an authority."""
     return _default.lookup(service, segment, feeder_id)
+
+
+def services_for(segment: str) -> list[str]:
+    """Which services data/jurisdiction can route for this street."""
+    return _default.services_for(segment)
 
 
 def resolve(claim: Claim) -> tuple[Tail, JurisdictionEntry | None, str]:
