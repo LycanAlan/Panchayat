@@ -1,0 +1,38 @@
+A hospital queue that never moves.
+A power cut that lasts two days.
+A scholarship that never arrives.
+A bank refund that never comes.
+A pothole. A tap that runs dry.
+Every one of them was reported.
+And every one of them was marked closed.
+In Bengaluru, one pothole complaint was marked resolved at least fifteen times. The pothole was still there.
+In one year, India's banking ombudsman received over thirteen lakh complaints.
+In a national survey, two out of three people with a serious service problem could not get help.
+The problem isn't that nobody knows.
+When the water fails, the whole building knows in fifteen minutes.
+What nobody has is the time to find the right office, count the legal deadline, notice when it's missed, and push the complaint up the ladder, week after week.
+So we started where it hurts most.
+Water, in Ward twelve, Bengaluru.
+During the city's twenty twenty four water crisis, the water board received about three hundred complaints a day.
+Meet Panchayat.
+A team of AI agents that takes a household's complaint to the right office, and stays on the case until it is resolved.
+Built on Strands Agents and Amazon Bedrock AgentCore.
+Here it is, live.
+A resident writes what's wrong, in their own words.
+The Intake agent reads it back first, because a misheard complaint, chased for eleven weeks, helps no one.
+The Household agent brings the family's view together, so a grandmother's dialysis on Thursday makes the case urgent, even if nobody typed it.
+The Privacy Warden decides what leaves the home. The urgency goes out. The medical reason stays private.
+Remedy finds which office is responsible, from a verified jurisdiction table, and cites the rule. It never guesses.
+Nothing is filed until a real person signs. The Digest agent asks one member of the household, in their language, and waits.
+Once it's signed, the filing travels, agent to agent, to a simulated water board desk that keeps its own records.
+Desks refuse, or go quiet, just like real offices. Panchayat holds the clock and tries again, until a ticket number comes back.
+Now comes the part no resident has time for.
+The Watchdog holds the legal clock. If the office misses its seven day deadline, it prepares the escalation to the next officer, and then the next, and a person signs each step.
+Pattern Watch listens quietly. When neighbours on the same water line report the same fault, it joins them into one stronger case.
+Anti Abuse checks that every neighbour is real, has consented, and lives on that line, so the pressure stays honest.
+And if an office marks the case resolved while the taps are still dry, the street's own reports dispute it, and the case climbs again.
+We started with water. The same agents already speak to ward offices, schools, water tankers and payment desks.
+Offices close tickets.
+Panchayat keeps the case open until the water comes back.
+Every household reports alone.
+With Panchayat, the street gets the leverage.

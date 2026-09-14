@@ -1,0 +1,62 @@
+[
+ {
+  "family": "Newsreader",
+  "style": "normal",
+  "weight": "400",
+  "file": "fonts/Newsreader-normal-400-latin.woff2"
+ },
+ {
+  "family": "Newsreader",
+  "style": "normal",
+  "weight": "500",
+  "file": "fonts/Newsreader-normal-500-latin.woff2"
+ },
+ {
+  "family": "Newsreader",
+  "style": "italic",
+  "weight": "400",
+  "file": "fonts/Newsreader-italic-400-latin.woff2"
+ },
+ {
+  "family": "IBMPlexSans",
+  "style": "normal",
+  "weight": "400",
+  "file": "fonts/IBMPlexSans-normal-400-latin.woff2"
+ },
+ {
+  "family": "IBMPlexSans",
+  "style": "normal",
+  "weight": "500",
+  "file": "fonts/IBMPlexSans-normal-500-latin.woff2"
+ },
+ {
+  "family": "IBMPlexSans",
+  "style": "normal",
+  "weight": "600",
+  "file": "fonts/IBMPlexSans-normal-600-latin.woff2"
+ },
+ {
+  "family": "IBMPlexMono",
+  "style": "normal",
+  "weight": "400",
+  "file": "fonts/IBMPlexMono-normal-400-latin.woff2"
+ },
+ {
+  "family": "IBMPlexMono",
+  "style": "normal",
+  "weight": "500",
+  "file": "fonts/IBMPlexMono-normal-500-latin.woff2"
+ },
+ {
+  "family": "NotoSerifKannada",
+  "style": "normal",
+  "weight": "400",
+  "file": "fonts/NotoSerifKannada-normal-400-kannada.woff2"
+ },
+ {
+  "family": "NotoSerifKannada",
+  "style": "normal",
+  "weight": "500",
+  "file": "fonts/NotoSerifKannada-normal-500-kannada.woff2"
+ }
+]
