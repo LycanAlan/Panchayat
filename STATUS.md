@@ -11,7 +11,33 @@ Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
 Last updated: **13 Sep** by Kartik -- `feat/mesh-ambient-and-fixes`, see below
-Last updated: **14 Sep, 19:30** by Ali -- PR #48, see below
+Last updated: **14 Sep, 20:30** by Ali -- PR #50, see below
+
+---
+
+## 14 Sep -- PR #50: a desk that says no is not a desk that is down (Ali, in Raghav's lane)
+
+**Deployed** (watchdog Lambda, runtime v11, web) and verified on the live
+table. `pytest` 615 passed, ruff clean. **Raghav: `agents/watchdog.py` is
+yours** -- read it and revert anything off. Closes the "REJECTED is resent
+and traced as unreachable" row below.
+
+- BWSSB refuses 15% of well-formed filings on a pretext. That fell into
+  `climb()`'s unreachable branch: trace said "endpoint unreachable", the
+  desk's reason never reached the table, the same letter went out again
+  every day.
+- The Watchdog now reads the outcome word the adapter leaves on
+  `filing.response` (the desk text protocol -- no import across the lane)
+  and tells REJECTED from UNREACHABLE. The refusal is written to the filing
+  (`db.record_rejection`, both backends, appended so the count survives the
+  wake); the letter is resent **once** on the next day's wake; a second
+  refusal holds the case for a person (`sla_paused`, in `stalled_cases()`,
+  no wake, nothing more sent). Outages are unchanged, second synchronous
+  attempt included.
+- The case page shows the desk's words: *refused · <reason> · resending
+  once tomorrow* / *refused 2x · <reason> · needs a person to resubmit*.
+- Still open, said plainly: there is no flow for the person to amend and
+  re-sign the letter. The case sits in the rescue queue with the reason.
 
 ---
 
@@ -300,7 +326,7 @@ are tested and which are not.
 | Raghav | `agents/intake.py` | **DONE, merged** | `parse()`/`read_back()`, injectable model, no AWS creds needed to test |
 | Raghav | `agents/household.py` | **DONE, merged** | `build_swarm()`/`deliberate()`, dialysis fixture surfaces the elder's unstated deadline |
 | Raghav | `agents/warden.py` | **DONE, merged** | `minimise()`, `consent_covers()`, `check_inference_leak()` -- all adversarially tested |
-| Raghav | `agents/watchdog.py` | **DONE, merged. Fixed 14 Sep, PR #43** | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. Every pause books a retry wake, and a retry after a failed send resends the same tier. **Open:** REJECTED is resent and traced as unreachable; escalation bodies lack a citation. See 14 Sep. |
+| Raghav | `agents/watchdog.py` | **DONE, merged. Fixed 14 Sep, PR #43** | `reconcile_closure()`, `climb()`, dispatch, `withdraw()`. Every pause books a retry wake, and a retry after a failed send resends the same tier. **Open:** escalation bodies lack a citation. ~~REJECTED is resent and traced as unreachable~~ -- closed 14 Sep, PR #50. |
 | Ali | `graph/request_path.py` | **DONE (spine)** | Runs end to end on stubs, no AWS, no model. `run_request_path(payload)`. |
 | Ali | `agents/digest.py` | not started | |
 | Ali | AgentCore deploy | not started | **do this Day 2, not Day 4** |
