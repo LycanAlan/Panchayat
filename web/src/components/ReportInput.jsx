@@ -11,7 +11,7 @@ import '../styles/live.css'
 /** A hint for each service, never a report. See the note on the component. */
 const EXAMPLE = {
   water: 'No water in our tank for three days',
-  roads: 'Pothole outside 14, 4th Cross — bikes falling at night',
+  roads: 'Deep pothole outside our gate',
 }
 
 /**
