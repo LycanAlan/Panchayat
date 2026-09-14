@@ -33,6 +33,7 @@ import numpy as np
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+from core.contention import NO_ROW, UNVERSIONED, Contended
 from core.types import (
     Case,
     CaseStatus,
@@ -49,6 +50,15 @@ from core.types import (
 )
 
 TABLE = os.environ.get("PANCHAYAT_TABLE", "panchayat")
+
+#: case_id -> the `version` this process last READ for it (NO_ROW,
+#: UNVERSIONED, or n). put_case() and every targeted update condition on it.
+#: Deliberately NOT advanced by the targeted updates: after one, the object a
+#: caller read earlier is stale, and the next put_case must say so rather
+#: than write it back. get_case() refreshes it. Per process, which in a
+#: Lambda is per warm container -- harmless, because every path here reads
+#: before it writes (the Watchdog reloads on every wake by its own rule).
+_versions: dict[str, int] = {}
 
 _table = None
 
@@ -392,60 +402,75 @@ def absorb_case(survivor_id: str, source_id: str) -> bool:
     """
     if survivor_id == source_id:
         return False
-    source = get_case(source_id)
-    survivor = get_case(survivor_id)
-    if source is None or survivor is None:
-        return False
-    if source.status not in _ABSORBABLE or survivor.status in _DONE:
-        return False
-    if any(f.signed_by for f in filings_for_case(source_id)):
-        return False
-
     into, absorbed = _MERGED_INTO + survivor_id, _ABSORBED + source_id
-    writes: list[dict] = [
-        {"Update": {
-            "TableName": TABLE,
-            "Key": {"PK": "CASE#" + source_id, "SK": "META"},
-            "UpdateExpression": (
-                "SET #s = :withdrawn, GSI1PK = :gsi, "
-                "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
-            "ConditionExpression": (
-                "attribute_exists(SK) AND #s IN (:open, :drafted) "
-                "AND NOT contains(merged_from, :token)"),
-            "ExpressionAttributeNames": {"#s": "status"},
-            "ExpressionAttributeValues": {
-                ":withdrawn": CaseStatus.WITHDRAWN.value,
-                ":gsi": "STATUS#" + CaseStatus.WITHDRAWN.value,
-                ":open": CaseStatus.OPEN.value,
-                ":drafted": CaseStatus.DRAFTED.value,
-                ":empty": [], ":note": [into], ":token": into,
-            },
-        }},
-        {"Update": {
-            "TableName": TABLE,
-            "Key": {"PK": "CASE#" + survivor_id, "SK": "META"},
-            "UpdateExpression": (
-                "SET merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
-            "ConditionExpression": (
-                "attribute_exists(SK) AND NOT contains(merged_from, :token)"),
-            "ExpressionAttributeValues": {
-                ":empty": [], ":note": [absorbed], ":token": absorbed,
-            },
-        }},
-    ]
-    if source.feeder_id:
-        writes.append({"Delete": {
-            "TableName": TABLE,
-            "Key": _feeder_index_key(source.feeder_id, source.service,
-                                     source.created_at, source.case_id),
-        }})
-    try:
-        _t().meta.client.transact_write_items(TransactItems=writes)
-    except ClientError as exc:
-        if _condition_failed(exc):
+    for _attempt in range(_MEMBERSHIP_ATTEMPTS):
+        source = get_case(source_id)
+        survivor = get_case(survivor_id)
+        if source is None or survivor is None:
             return False
-        raise
-    return True
+        if source.status not in _ABSORBABLE or survivor.status in _DONE:
+            return False
+        if into in source.merged_from or absorbed in survivor.merged_from:
+            return False   # already done, by us or by an earlier delivery
+        if any(f.signed_by for f in filings_for_case(source_id)):
+            return False
+
+        # Both rows carry the version guard, so a Watchdog wake that wrote
+        # either one between these reads and this transaction fails it, and
+        # the loop re-reads -- rather than the merge silently losing to a
+        # whole-item put, or the put silently losing to the merge.
+        s_guard, s_values, s_next = _version_guard(source_id)
+        v_guard, v_values, v_next = _version_guard(survivor_id)
+        writes: list[dict] = [
+            {"Update": {
+                "TableName": TABLE,
+                "Key": {"PK": "CASE#" + source_id, "SK": "META"},
+                "UpdateExpression": (
+                    "SET #s = :withdrawn, GSI1PK = :gsi, version = :next, "
+                    "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+                "ConditionExpression": (
+                    "attribute_exists(SK) AND " + s_guard
+                    + " AND #s IN (:open, :drafted) "
+                    "AND NOT contains(merged_from, :token)"),
+                "ExpressionAttributeNames": {"#s": "status"},
+                "ExpressionAttributeValues": {
+                    ":withdrawn": CaseStatus.WITHDRAWN.value,
+                    ":gsi": "STATUS#" + CaseStatus.WITHDRAWN.value,
+                    ":open": CaseStatus.OPEN.value,
+                    ":drafted": CaseStatus.DRAFTED.value,
+                    ":empty": [], ":note": [into], ":token": into,
+                    ":next": s_next, **s_values,
+                },
+            }},
+            {"Update": {
+                "TableName": TABLE,
+                "Key": {"PK": "CASE#" + survivor_id, "SK": "META"},
+                "UpdateExpression": (
+                    "SET version = :next, "
+                    "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+                "ConditionExpression": (
+                    "attribute_exists(SK) AND " + v_guard
+                    + " AND NOT contains(merged_from, :token)"),
+                "ExpressionAttributeValues": {
+                    ":empty": [], ":note": [absorbed], ":token": absorbed,
+                    ":next": v_next, **v_values,
+                },
+            }},
+        ]
+        if source.feeder_id:
+            writes.append({"Delete": {
+                "TableName": TABLE,
+                "Key": _feeder_index_key(source.feeder_id, source.service,
+                                         source.created_at, source.case_id),
+            }})
+        try:
+            _t().meta.client.transact_write_items(TransactItems=writes)
+        except ClientError as exc:
+            if not _condition_failed(exc):
+                raise
+            continue   # something moved; the re-read at the top decides
+        return True
+    return False
 
 
 
@@ -506,9 +531,29 @@ def put_case(case: Case) -> None:
     A re-route -- a case genuinely moved from one feeder to another, which is a
     correction rather than routine -- is the only case that still moves the
     key, and the returned old image is what catches it.
+
+    CONDITIONAL ON THE VERSION THIS PROCESS READ (core/contention.py). A
+    whole-item write from a stale read raises Contended instead of reverting
+    whatever the merge, a signature or another wake wrote in between. The
+    caller reloads and redoes -- agents/watchdog.py::handle does, and every
+    write before it in a wake is idempotent by design, which is what makes
+    that safe.
     """
-    old = _t().put_item(
-        Item=_case_item(case), ReturnValues="ALL_OLD").get("Attributes")
+    condition, values, nxt = _version_guard(case.case_id)
+    item = _case_item(case)
+    item["version"] = nxt
+    kwargs: dict[str, Any] = {"Item": item, "ReturnValues": "ALL_OLD",
+                              "ConditionExpression": condition}
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
+    try:
+        old = _t().put_item(**kwargs).get("Attributes")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise Contended(case.case_id, _versions.get(case.case_id),
+                            "put_case is a whole-item write") from exc
+        raise
+    _versions[case.case_id] = nxt
 
     new_row = _feeder_index_item(case)
     if new_row is not None:
@@ -524,7 +569,29 @@ def put_case(case: Case) -> None:
 
 def get_case(case_id: str) -> Case | None:
     item = _t().get_item(Key={"PK": "CASE#" + case_id, "SK": "META"}).get("Item")
-    return _case_from(item) if item else None
+    if not item:
+        _versions[case_id] = NO_ROW
+        return None
+    _versions[case_id] = _int(item.get("version")) or UNVERSIONED
+    return _case_from(item)
+
+
+def _version_guard(case_id: str) -> tuple[str, dict, int]:
+    """(condition, values, next) for a write to CASE#<id>/META, from what this
+    process last read. Three states, kept apart on purpose -- see
+    core/contention.py for the outage that came from collapsing two of them.
+
+    Never read here (None) and NO_ROW both mean "this must be a create":
+    the row must not exist. A process that writes a case it never read is
+    either minting one (graph/request_path.py) or making the blind
+    overwrite this exists to stop, and the condition tells the two apart.
+    """
+    seen = _versions.get(case_id)
+    if seen is None or seen == NO_ROW:
+        return "attribute_not_exists(SK)", {}, 1
+    if seen == UNVERSIONED:
+        return "attribute_exists(SK) AND attribute_not_exists(version)", {}, 1
+    return "version = :seen", {":seen": seen}, seen + 1
 
 
 #: Terminal. A case in one of these is not open and nothing is chasing it.
@@ -718,13 +785,18 @@ def _membership_update(case_id: str, before: Case, after: Case) -> dict:
     """
     values = {":new_" + k: getattr(after, k) for k in _MEMBERSHIP}
     values.update({":old_" + k: getattr(before, k) for k in _MEMBERSHIP})
+    # And the version, so a whole-item write by the Watchdog between this
+    # read and this transaction fails it (the loop re-reads and retries) --
+    # and so that a stale put_case AFTER it fails on its own guard.
+    guard, guard_values, nxt = _version_guard(case_id)
+    values.update(guard_values, **{":next_version": nxt})
     return {"Update": {
         "TableName": TABLE,
         "Key": {"PK": "CASE#" + case_id, "SK": "META"},
         "UpdateExpression": "SET " + ", ".join(
-            k + " = :new_" + k for k in _MEMBERSHIP),
+            [k + " = :new_" + k for k in _MEMBERSHIP] + ["version = :next_version"]),
         "ConditionExpression": " AND ".join(
-            ["attribute_exists(SK)"]
+            ["attribute_exists(SK)", guard]
             + [k + " = :old_" + k for k in _MEMBERSHIP]),
         "ExpressionAttributeValues": values,
     }}
@@ -864,7 +936,7 @@ def split_case(case_id: str, household_ids: list[str]) -> list[str]:
             )
 
             items = [
-                {"Put": {"TableName": TABLE, "Item": _case_item(child)}},
+                {"Put": {"TableName": TABLE, "Item": {**_case_item(child), "version": 1}}},
                 {"Put": {"TableName": TABLE, "Item": _member_item(
                     child.case_id, hh, claim_ids)}},
                 _membership_update(case_id, before, after),
@@ -1423,6 +1495,9 @@ def _reset_is_allowed(endpoint: str | None) -> bool:
 def reset() -> None:
     """Wipe the table. Call in a test fixture, NEVER in application code.
 
+    Also forgets every version this process read: after the rows are gone,
+    a remembered version is a lie that would make the next create fail.
+
     This is the one Scan in the module, and it is here because the alternative
     is worse: tests/conftest.py resets between tests, and with no real reset on
     this backend the table accumulates rows across runs until
@@ -1453,6 +1528,7 @@ def reset() -> None:
             "PANCHAYAT_ALLOW_DESTRUCTIVE_RESET=yes if you mean it."
         )
 
+    _versions.clear()
     start: dict | None = None
     while True:
         kwargs: dict[str, Any] = {"ProjectionExpression": "PK, SK"}

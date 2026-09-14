@@ -693,6 +693,28 @@ def _file(ctx: RequestContext) -> str:
     return "file: " + ("drafted" if written else "duplicate suppressed")
 
 
+def _put_claim_on_case(case, claim_id: str, attempts: int = 3) -> None:
+    """The one whole-item write the request path makes on an EXISTING case.
+
+    put_case is conditioned on the version that was read (core/contention.py),
+    and the ambient merge may be writing this very row. On Contended: re-read,
+    re-append, retry. Bounded, because a report must not hang on a race it
+    can only lose to a writer that is also adding this household's claim.
+    """
+    for attempt in range(attempts):
+        try:
+            db.put_case(case)
+            return
+        except db.Contended:
+            if attempt == attempts - 1:
+                raise
+            case = db.get_case(case.case_id)
+            if case is None:
+                return
+            if claim_id not in case.claim_ids:
+                case.claim_ids.append(claim_id)
+
+
 def _open_or_load_case(ctx: RequestContext, entry: JurisdictionEntry):
     """Never clobber a live case.
 
@@ -722,7 +744,7 @@ def _open_or_load_case(ctx: RequestContext, entry: JurisdictionEntry):
                 # claim. Hard rule 6 is about undoing merges, not undoing the
                 # original report.
                 existing.claim_ids.append(ctx.claim.claim_id)
-                db.put_case(existing)
+                _put_claim_on_case(existing, ctx.claim.claim_id)
             else:
                 db.add_household_to_case(existing.case_id,
                                          ctx.claim.household_id,

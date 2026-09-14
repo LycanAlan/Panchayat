@@ -485,6 +485,9 @@ class PatternWatch:
         # event STATUS.md and the cross-lane handoff both name as the agreed
         # escalation hand-off to Raghav's climb(). Offline, it silently never
         # arrived. An int copied before the writes cannot alias anything.
+        # (Since 14 Sep memstore hands back a copy -- core/memstore.py::_row
+        # -- so the two backends agree here too. The snapshot stays: it is
+        # right on both.)
         corroboration_before = case.corroboration
         joined = 0
         for claim_id in proposal.candidate_claim_ids:
