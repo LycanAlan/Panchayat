@@ -20,7 +20,7 @@ while [ $start -lt $TOTAL ]; do
     for attempt in 1 2 3; do
       echo "chunk $idx frames $start-$end attempt $attempt"
       if npx remotion render build Film "$part" --frames=$start-$end --muted --scale=$SCALE --codec=h264 --crf=$CRF \
-           --timeout=90000 --concurrency=4 --log=error > "$WORK/part$idx.log" 2>&1; then
+           --timeout=90000 --concurrency=3 --log=error > "$WORK/part$idx.log" 2>&1; then
         break
       fi
       rm -f "$part"
@@ -31,8 +31,8 @@ while [ $start -lt $TOTAL ]; do
   start=$((end + 1)); idx=$((idx + 1))
 done
 echo "audio"
-npx remotion render build Film "$WORK/audio.wav" --codec=wav --log=error > "$WORK/audio.log" 2>&1 || { echo "FAILED audio"; exit 1; }
+VOICE="${VOICE:-public/vo-placeholder.mp3}"
+python tools/mix_audio.py --voice "$VOICE" --out "$WORK/audio.wav" > "$WORK/audio.log" 2>&1 || { echo "FAILED audio"; exit 1; }
 echo "join"
-npx remotion ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$WORK/list.txt" -i "$WORK/audio.wav" \
-  -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -movflags +faststart "$OUT" || { echo "FAILED join"; exit 1; }
+npx remotion ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i "$WORK/list.txt" -i "$WORK/audio.wav"   -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -movflags +faststart "$OUT" || { echo "FAILED join"; exit 1; }
 echo "DONE $OUT"

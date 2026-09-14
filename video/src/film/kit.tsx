@@ -1,22 +1,17 @@
 import React from "react";
-import { AbsoluteFill, Easing, continueRender, delayRender, interpolate } from "remotion";
+import { AbsoluteFill, Easing, interpolate } from "remotion";
 import { FONT_DATA } from "./fontdata";
 
 // The website's own type system: Newsreader argues, Plex Sans labels, Plex Mono files.
-// Embedded in the bundle: a font fetch that never answers used to stall renders for good.
+// Registered from in-memory bytes, which Chrome decodes on construction: no fetch and no
+// delayRender. A delayRender here stalled long renders whenever a render tab was recycled.
 if (typeof document !== "undefined") {
-  const handle = delayRender("Registering embedded fonts", { timeoutInMilliseconds: 60000 });
-  const faces = FONT_DATA.map((f) => {
+  for (const f of FONT_DATA) {
     const bin = atob(f.b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const face = new FontFace(`PNC ${f.family}`, bytes.buffer, { weight: f.weight, style: f.style });
-    document.fonts.add(face);
-    return face.load().catch(() => undefined);
-  });
-  const settle = Promise.all(faces).then(() => undefined);
-  const cap = new Promise<void>((r) => setTimeout(r, 8000));
-  Promise.race([settle, cap]).finally(() => continueRender(handle));
+    document.fonts.add(new FontFace(`PNC ${f.family}`, bytes.buffer, { weight: f.weight, style: f.style }));
+  }
 }
 export const SERIF = "'PNC Newsreader', Georgia, serif";
 export const SANS = "'PNC IBMPlexSans', 'Segoe UI', sans-serif";
