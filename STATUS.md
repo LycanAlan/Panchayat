@@ -11,7 +11,38 @@ Last updated: **11 Sep, 16:25** by Alakshendra
 Last updated: **11 Sep, 04:15** by Kartik
 Last updated: **12 Sep, 09:20** by Kartik (previous: 11 Sep, 02:30 by Alakshendra)
 Last updated: **13 Sep** by Kartik -- `feat/mesh-ambient-and-fixes`, see below
-Last updated: **14 Sep, 03:20** by Raghav -- PR #43, see below
+Last updated: **14 Sep, 19:30** by Ali -- PR #48, see below
+
+---
+
+## 14 Sep -- PR #48: one fault on one street is one case (Ali, in the mesh lane)
+
+**Merged and deployed** (watchdog + ambient Lambdas, web). `pytest` 607
+passed, 37 skipped, ruff clean. **Kartik: this is your lane** --
+`agents/pattern_watch.py`, `core/store.py`, `core/memstore.py`, plus
+`handlers/ambient.py` and `handlers/web_api.py`. Read it and revert anything
+that is off. Full write-up in `docs/handoff/status-2026-09-14.md`.
+
+1. **Clustering merged nothing.** The request path mints a case per report,
+   Pattern Watch added the household to the oldest case and left its own alive,
+   and the Watchdog would have filed both. Now the survivor **absorbs** the
+   household's own case: `db.absorb_case(survivor, source)` withdraws the
+   source with `merged_into:<id>` and writes `absorbed:<id>` on the survivor,
+   one transaction, and deletes the source's `FEEDER#` row so recurrence does
+   not count one outage as twelve. Survivor = furthest along, then oldest.
+   Only an OPEN/DRAFTED own case with no signed filing folds; a case holding a
+   ticket stays and the trace says why. Split children are never re-absorbed.
+2. **The ambient Lambda now also fires on `CASE#…/META` inserts**, because the
+   claim lands before the case exists and the first version merged nothing
+   live for exactly that reason.
+3. **The site never sent consent.** `handlers/web_api.py` dropped the
+   `consent` field, so Anti-Abuse refused every join (correctly). The door now
+   forwards a list of known scopes and the intake form has an unticked
+   "count my household with neighbours" box. **Tick it in the demo.**
+4. Verified on the deployed stack: two households on `ward12-1ststage`,
+   B withdrawn into A within ten seconds, corroboration 2, provenance both
+   ways. Pick a street with no open cases -- the survivor rule will happily
+   fold a demo household into a two-day-old test draft.
 
 ---
 
@@ -249,7 +280,7 @@ are tested and which are not.
 | Kartik | `eval/tau_sweep.py` | **DONE** | `python -m eval.tau_sweep`. Sweeps both scoring regimes off the shared corpus (it used to carry a duplicate generator that picked reporters directly). **TAU_TOPOLOGICAL = 0.82**, see issue #20. |
 | Kartik | `tests/test_store_pure.py` | **DONE** | 24 tests, no AWS, runs on every offline `pytest` |
 | Kartik | `tests/test_store_dynamodb.py` | **DONE** | 23 tests, skipped unless `PANCHAYAT_BACKEND=dynamodb` |
-| Kartik | `agents/pattern_watch.py` | **DONE** | Ambient path. `on_new_claim` → `adjudicate` → `anti_abuse.verify` → `apply_upgrade`. Below TAU it returns `None` having invoked **no model**. `apply_upgrade` does **not** write `escalation_tier` — see the blocker. |
+| Kartik | `agents/pattern_watch.py` | **DONE** | Ambient path. `on_new_claim` → `adjudicate` → `anti_abuse.verify` → `apply_upgrade`. Below TAU it returns `None` having invoked **no model**. `apply_upgrade` does **not** write `escalation_tier` — see the blocker. **14 Sep (Ali, PR #48):** `apply_upgrade` now absorbs the household's own case into the survivor; survivor is furthest-along-then-oldest. |
 | Kartik | `agents/anti_abuse.py` | **DONE** | **Five** checks now — service, consent, register, feeder, dedup — each with a reason the trace UI can render. `rejection_reasons` keys ONLY on rejected claims; checks that could not run ride the trace as `checks_not_run=`. |
 | Kartik | `core/store.py` filings | **DONE** | `get_filing`, `unsigned_filings`, `sign_filing` now exist on the dynamodb backend too. **Ali: the Digest Agent works on the real table now** — it raised NotImplementedError there before. |
 | Kartik | `data/corpus/generator.py` | **DONE** | Failure model first: feeder fails → who notices → who bothers to **report**. **31% of affected households report**, the rest stay silent — that gap is the project's premise, not detail. `generate(n_households, days, seed)`, or `generate_corpus()` for ground truth (`fault.affected` vs `fault.claims`). Pass `geography=` to model the real curated ward. |
