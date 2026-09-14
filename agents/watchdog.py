@@ -288,8 +288,9 @@ class Watchdog:
         if len(history) + 1 >= REJECTIONS_BEFORE_HUMAN:
             self._hold_for_person(case, clock, authority + " refused again: " + reason)
             return
-        self._pause_and_retry(case, clock,
-                              authority + " refused: " + reason + " -- resubmitting once")
+        # _pause_and_retry says what happens next ("clock held, retry in
+        # 1d", or "again after a retry" when the case was already paused).
+        self._pause_and_retry(case, clock, authority + " refused: " + reason)
 
     def _hold_for_person(self, case: Case, clock: Clock, why: str) -> None:
         """Nothing more goes to this desk until a person changes the letter.
