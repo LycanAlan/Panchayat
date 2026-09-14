@@ -368,6 +368,23 @@ html[data-plate='ink'] .masthead-seam {
   margin-top: 0.5rem;
 }
 
+.intake-consent {
+  margin-top: 0.75rem;
+  max-width: 62ch;
+}
+
+.intake-consent label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.intake-consent input {
+  margin-top: 0.2em;
+  flex: none;
+}
+
 .intake-trace {
   margin-top: 1.1rem;
   border-left: 2px solid var(--marigold);

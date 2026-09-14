@@ -52,8 +52,16 @@ async function call(body) {
 }
 
 /** One household reports one problem. Resolves to the runtime's `result`. */
-export async function report({ text, segment }) {
-  const data = await call({ action: 'report', ...identity(), text, segment, service: 'water' })
+/**
+ * `consent` is a list of scope names the household granted, e.g.
+ * ['join_collective']. Nothing is implied: a report with no consent still
+ * drafts a letter for signature, but the household is never counted alongside
+ * neighbours (hard rule 7), so clustering cannot lift the case.
+ */
+export async function report({ text, segment, consent = [] }) {
+  const data = await call({
+    action: 'report', ...identity(), text, segment, service: 'water', consent,
+  })
   return data.result
 }
 
