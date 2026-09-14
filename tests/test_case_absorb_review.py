@@ -155,3 +155,43 @@ def test_a_case_that_already_carries_other_households_is_not_absorbed():
     assert out["failed"] == 0
     assert db.get_case(k2.case_id).status is CaseStatus.DRAFTED
     assert "absorbed:" + k2.case_id not in db.get_case(k1.case_id).merged_from
+
+
+# ------------------------------------------------- a reversal stays reversed
+
+
+def test_a_split_child_is_not_folded_straight_back(monkeypatch):
+    """Hard rule 6, made true rather than nominal. split_case writes the child
+    row; the stream delivers it; the merge must not undo the split."""
+    db.reset()
+    c1, k1 = _report("hh_first", 0)
+    db.put_claim(c1)
+    db.put_case(k1)
+    c2, k2 = _report("hh_second", 5)
+    db.put_claim(c2)
+    db.put_case(k2)
+    ambient.handler({"Records": [_record(_case_item(k2), "1")]})
+    assert db.get_case(k2.case_id).status is CaseStatus.WITHDRAWN
+
+    (child_id,) = db.split_case(k1.case_id, ["hh_second"])
+    child = db.get_case(child_id)
+    assert "hh_second" not in db.get_case(k1.case_id).household_ids
+
+    out = ambient.handler({"Records": [_record(_case_item(child), "2")]})
+
+    assert out["merged"] == 0, out
+    assert db.get_case(child_id).status is not CaseStatus.WITHDRAWN
+    assert "hh_second" not in db.get_case(k1.case_id).household_ids
+
+
+def test_a_put_after_absorb_does_not_bring_the_feeder_row_back():
+    """DynamoDB answers recurrence_count from FEEDER# rows that absorb_case
+    deletes. A later put_case on the withdrawn source must not write one."""
+    from core.store import _feeder_index_item
+
+    withdrawn = fakes.a_case(status=CaseStatus.WITHDRAWN, claim_ids=[], household_ids=[],
+                             merged_from=["merged_into:case_keep"])
+    assert _feeder_index_item(withdrawn) is None
+    live = fakes.a_case(status=CaseStatus.DRAFTED, claim_ids=[], household_ids=[],
+                        merged_from=[])
+    assert _feeder_index_item(live) is not None

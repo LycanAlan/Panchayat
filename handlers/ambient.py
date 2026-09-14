@@ -138,6 +138,12 @@ def _claim_of(record: Any):
     # on one street become one case (agents/pattern_watch.py::_absorb_own_case_of).
     # Both passes are idempotent, so the claim pass costs nothing extra.
     if pk.startswith("CASE#") and str(item.get("SK", "")) == "META":
+        if any(str(t).startswith("split_from:") for t in item.get("merged_from") or []):
+            # split_case writes this row, and the stream delivers it like any
+            # other insert. Running the merge on it would fold a reversal
+            # straight back into the parent. pattern_watch refuses it too;
+            # this saves the pass.
+            raise _Skip("a split child is not a new report")
         claim_ids = item.get("claim_ids") or []
         if not claim_ids:
             raise _Skip("case row without a claim")

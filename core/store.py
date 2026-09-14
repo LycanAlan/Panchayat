@@ -356,6 +356,10 @@ def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
 
 
+def _is_absorbed(case: Case) -> bool:
+    return any(t.startswith(_MERGED_INTO) for t in case.merged_from)
+
+
 def absorb_case(survivor_id: str, source_id: str) -> bool:
     """Fold `source` into `survivor`: withdraw it with provenance both ways.
 
@@ -471,7 +475,13 @@ def _feeder_index_item(case: Case) -> dict | None:
     this under-counts by one -- and under-counting costs leverage, while
     over-counting fabricates the evidence an escalation is built on.
     """
-    if not case.feeder_id or _is_split_child(case):
+    if not case.feeder_id or _is_split_child(case) or _is_absorbed(case):
+        # ABSORBED, TOO. absorb_case() deletes the row inside its transaction
+        # so the case stops counting as a prior failure of the main. Any
+        # later put_case on the withdrawn source -- the request path's re-run
+        # at graph/request_path.py:725, or the Watchdog's read-then-put --
+        # would otherwise write the row straight back, and DynamoDB would
+        # count the case again while memstore still excluded it.
         return None
     d = _feeder_index_key(case.feeder_id, case.service, case.created_at,
                           case.case_id)

@@ -415,6 +415,14 @@ class PatternWatch:
                 emit(Tag.PATTERN, "not_absorbed", case_id=survivor.case_id,
                      source_case_id=other.case_id, status=other.status.value)
                 continue
+            if any(t.startswith("split_from:") for t in other.merged_from):
+                # A split child is a merge somebody REVERSED. Folding it back
+                # would undo that within seconds of the split -- hard rule 6
+                # says merges are reversible, and this is what makes that
+                # true rather than nominal. It stays its own case.
+                emit(Tag.PATTERN, "not_absorbed", case_id=survivor.case_id,
+                     source_case_id=other.case_id, status="split child")
+                continue
             if set(other.household_ids) - {claim.household_id}:
                 # Only the household's OWN case -- one roof, one claim. A case
                 # that already carries other households is a cluster of its
