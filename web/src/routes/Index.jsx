@@ -147,14 +147,16 @@ export default function Index() {
                 <em>fixed.</em>
               </h1>
 
+              {/* Directly under the statement, so the one thing a visitor can
+                  do here is on screen when the page opens, not below the fold. */}
+              <div id="report" data-rise>
+                <ReportInput />
+              </div>
+
               <p className="lead plate-lead" data-rise>
                 In Bengaluru, civic complaints are marked resolved with no work done.
                 One pothole was closed fifteen times. Panchayat is what happens next.
               </p>
-
-              <div data-rise>
-                <ReportInput />
-              </div>
             </div>
 
             <div className="plate-right" data-rise>
