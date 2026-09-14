@@ -336,9 +336,91 @@ def _feeder_index_key(feeder_id: str, service, created_at: datetime,
 #: household ids are "hh_...", so the two cannot collide.
 _SPLIT_FROM = "split_from:"
 
+#: A cross-case merge, recorded on BOTH sides: "absorbed:<case>" on the
+#: survivor, "merged_into:<case>" on the withdrawn source. Same token text as
+#: core/memstore.py, pinned by the contract tests rather than a shared import.
+_ABSORBED = "absorbed:"
+_MERGED_INTO = "merged_into:"
+
+#: Every merged_from token that is a NOTE about the case rather than a
+#: household:claim pair. The attribution readers below skip all of them -- a
+#: note has a colon in it and would otherwise read as a household called
+#: "absorbed" holding a claim called "case_...".
+_NOTES = (_SPLIT_FROM, _ABSORBED, _MERGED_INTO)
+
+#: A source case may be absorbed only while nothing has left the building.
+_ABSORBABLE = (CaseStatus.OPEN, CaseStatus.DRAFTED)
+
 
 def _is_split_child(case: Case) -> bool:
     return any(t.startswith(_SPLIT_FROM) for t in case.merged_from)
+
+
+def absorb_case(survivor_id: str, source_id: str) -> bool:
+    """Fold `source` into `survivor`: withdraw it with provenance both ways.
+
+    True if this call did it; False if it could not or already had. A stream
+    record delivered twice must be a no-op, so "already withdrawn" is False
+    and never an error.
+
+    TWO CONDITIONAL WRITES, NOT A put_case. Three writers touch a Case row and
+    put_case is a whole-item overwrite; the Watchdog may be moving this very
+    case from DRAFTED to ESCALATING as the ambient pass reads it. So the
+    withdrawal is conditioned on the status still being absorbable, and if
+    the Watchdog got there first the condition fails and the case is left
+    alone -- which is also the answer for a source that already holds a
+    ticket, since you cannot un-file a complaint. A signed letter is checked
+    first for the same reason: it is a person's word, not ours to withdraw.
+
+    The status change rewrites GSI1PK, because open_cases() is a query on
+    STATUS#<s> and a withdrawn case that kept its old key would still be
+    listed as open on this backend and not on memstore -- the divergence
+    class the seam exists to catch.
+    """
+    if survivor_id == source_id:
+        return False
+    if any(f.signed_by for f in filings_for_case(source_id)):
+        return False
+    try:
+        _t().update_item(
+            Key={"PK": "CASE#" + source_id, "SK": "META"},
+            UpdateExpression=(
+                "SET #s = :withdrawn, GSI1PK = :gsi, "
+                "merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+            ConditionExpression=(
+                "attribute_exists(SK) AND #s IN (:open, :drafted) "
+                "AND NOT contains(merged_from, :token)"),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":withdrawn": CaseStatus.WITHDRAWN.value,
+                ":gsi": "STATUS#" + CaseStatus.WITHDRAWN.value,
+                ":open": CaseStatus.OPEN.value,
+                ":drafted": CaseStatus.DRAFTED.value,
+                ":empty": [],
+                ":note": [_MERGED_INTO + survivor_id],
+                ":token": _MERGED_INTO + survivor_id,
+            },
+        )
+    except ClientError as exc:
+        if _condition_failed(exc):
+            return False
+        raise
+    try:
+        _t().update_item(
+            Key={"PK": "CASE#" + survivor_id, "SK": "META"},
+            UpdateExpression=(
+                "SET merged_from = list_append(if_not_exists(merged_from, :empty), :note)"),
+            ConditionExpression="attribute_exists(SK) AND NOT contains(merged_from, :token)",
+            ExpressionAttributeValues={
+                ":empty": [],
+                ":note": [_ABSORBED + source_id],
+                ":token": _ABSORBED + source_id,
+            },
+        )
+    except ClientError as exc:
+        if not _condition_failed(exc):
+            raise
+    return True
 
 
 def _feeder_index_item(case: Case) -> dict | None:
@@ -547,16 +629,16 @@ def _claims_of(case: Case, household_id: str,
     """
     origin = case if origin is None else origin
     tagged = [t.split(":", 1)[1] for t in origin.merged_from
-              if not t.startswith(_SPLIT_FROM)
+              if not t.startswith(_NOTES)
               and t.startswith(household_id + ":")]
     if tagged or household_id not in origin.household_ids:
         return tagged
 
     attributed = {t.split(":", 1)[1] for t in origin.merged_from
-                  if not t.startswith(_SPLIT_FROM) and ":" in t}
+                  if not t.startswith(_NOTES) and ":" in t}
     untagged = [h for h in origin.household_ids
                 if not any(t.startswith(h + ":") for t in origin.merged_from
-                           if not t.startswith(_SPLIT_FROM))]
+                           if not t.startswith(_NOTES))]
     if len(untagged) > 1:
         # More than one household without provenance: the claims cannot be
         # attributed and GUESSING would hand somebody else's claim to this

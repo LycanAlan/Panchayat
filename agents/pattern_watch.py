@@ -56,6 +56,27 @@ WINDOW_HOURS = 72.0
 _DONE = frozenset((CaseStatus.RESOLVED, CaseStatus.WITHDRAWN,
                    CaseStatus.DORMANT))
 
+#: How far along a case is. The SURVIVOR of a merge is the case furthest
+#: along, oldest as the tiebreak -- not merely the oldest. On the demo street
+#: the two agree: twelve reports land within minutes, all drafted, and the
+#: first one wins. They part company when a newer case already holds a ticket
+#: while the oldest is still an unsigned draft: folding households into the
+#: draft while the filed complaint runs on separately is exactly the duplicate
+#: this merge exists to prevent.
+_PROGRESS = {
+    CaseStatus.OPEN: 0,
+    CaseStatus.DRAFTED: 1,
+    CaseStatus.FILED: 2,
+    CaseStatus.TRACKING: 3,
+    CaseStatus.BREACHED: 4,
+    CaseStatus.ESCALATING: 5,
+}
+
+#: A source case is absorbed only while nothing has left the building. A
+#: case that holds a ticket cannot be un-filed; one with a signature is a
+#: person's word. Both stay alive, and the trace says so.
+_ABSORBABLE = frozenset((CaseStatus.OPEN, CaseStatus.DRAFTED))
+
 _SYSTEM_PROMPT = (
     "You judge whether citizen reports describe THE SAME failure of "
     "infrastructure. You are given reports that already agree on topology and "
@@ -115,7 +136,8 @@ class PatternWatch:
     # --------------------------------------------------------- retrieval
 
     def _cases_in_flight(self, claim: Claim) -> list[Case]:
-        """Open cases on the same trunk main and service, oldest first."""
+        """Open cases on the same trunk main and service: furthest along
+        first, then oldest. See _PROGRESS for why not merely oldest."""
         open_cases = getattr(self.store, "open_cases", None)
         if open_cases is None:
             return []
@@ -126,7 +148,7 @@ class PatternWatch:
                 continue
             if feeder and normalise_id(case.feeder_id) == feeder:
                 out.append(case)
-        return sorted(out, key=lambda c: c.created_at)
+        return sorted(out, key=lambda c: (-_PROGRESS.get(c.status, 0), c.created_at))
 
     def _candidates(self, claim: Claim, cases: list[Case]) -> list[Claim]:
         """Claims that could corroborate this one, retrieved by INDEX.
@@ -387,6 +409,46 @@ class PatternWatch:
 
     # ------------------------------------------------------- the merge
 
+    def _absorb_own_case_of(self, claim: Claim, survivor: Case) -> None:
+        """Fold the claim's OWN case into the survivor, so one fault is one case.
+
+        graph/request_path.py mints a fresh case per report, so a household
+        that has just joined the survivor still has its own case alive, with
+        its own clock and tier, and the Watchdog would file both -- the
+        duplicate that "reads as spam and gets both copies closed" (hard rule
+        5). This was the cross-case merge that on_new_claim's comment said did
+        not exist. It does now: `store.absorb_case` withdraws the source with
+        provenance pointing both ways, so nothing is deleted and split_case
+        still reverses the membership (hard rule 6).
+
+        A source that already holds a ticket or a signature is NOT absorbed,
+        by the store's own rule; both stay alive and the existing loud trace
+        says so. A re-delivered stream record finds it already withdrawn and
+        does nothing.
+        """
+        absorb = getattr(self.store, "absorb_case", None)
+        open_cases = getattr(self.store, "open_cases", None)
+        if absorb is None or open_cases is None:
+            return
+        for other in open_cases(claim.service):
+            if other.case_id == survivor.case_id or other.status in _DONE:
+                continue
+            if claim.claim_id not in other.claim_ids:
+                continue
+            if other.status not in _ABSORBABLE:
+                _trace("MERGING", "pattern",
+                       f"{other.case_id} also carries this claim and is {other.status.value}"
+                       " -- not absorbed, a filed complaint cannot be withdrawn")
+                emit(Tag.PATTERN, "not_absorbed", case_id=survivor.case_id,
+                     source_case_id=other.case_id, status=other.status.value)
+                continue
+            if absorb(survivor.case_id, other.case_id):
+                emit(Tag.PATTERN, "absorbed", case_id=survivor.case_id,
+                     source_case_id=other.case_id, claim_id=claim.claim_id)
+                _trace("MERGING", "pattern",
+                       f"{other.case_id} folded into {survivor.case_id}"
+                       " -- one fault, one case, provenance kept")
+
     def apply_upgrade(self, proposal: MergeProposal) -> str:
         """Mutate a case already in flight. Returns case_id.
 
@@ -446,6 +508,7 @@ class PatternWatch:
             self.store.add_household_to_case(case.case_id, claim.household_id,
                                              claim.claim_id)
             joined += 1
+            self._absorb_own_case_of(claim, survivor=case)
 
         # Guarded like the read above it. The ambient path runs alongside
         # split_case and the Watchdog, and dereferencing None here would be an
